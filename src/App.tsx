@@ -36,6 +36,9 @@ export default function App() {
     geminiApiKey: '',
     openaiApiKey: '',
     anthropicApiKey: '',
+    geminiModel: 'gemini-3.1-pro-preview',
+    openaiModel: 'gpt-5.4-mini',
+    anthropicModel: 'claude-sonnet-4-6',
     localBaseUrl: 'http://localhost:1234/v1/chat/completions',
     localApiKey: '',
     localModel: 'local-model'

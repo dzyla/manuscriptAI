@@ -11,6 +11,9 @@ export interface AISettings {
   geminiApiKey?: string;
   openaiApiKey?: string;
   anthropicApiKey?: string;
+  geminiModel?: string;
+  openaiModel?: string;
+  anthropicModel?: string;
   localBaseUrl: string;
   localApiKey: string;
   localModel: string;
