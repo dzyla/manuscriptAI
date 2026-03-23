@@ -4,7 +4,7 @@ import Sidebar from './components/Sidebar';
 import SettingsModal from './components/SettingsModal';
 import { AgentType, Message, Suggestion, HistoryItem, AISettings } from './types';
 import { analyzeText, chatWithAgent, resolveConflicts, rebutSuggestion, manuscriptSummary, AGENT_INFO, AGENT_ICONS, estimateTokens } from './services/ai';
-import { Sparkles, FileText, Settings, Download, Keyboard, Eye, Moon, Sun, ChevronDown, FilePlus, Coins, BookOpen } from 'lucide-react';
+import { Sparkles, FileText, Settings, Download, Keyboard, Eye, Moon, Sun, ChevronDown, FilePlus, Coins, BookOpen, Github } from 'lucide-react';
 import { saveAs } from 'file-saver';
 import TurndownService from 'turndown';
 
@@ -581,9 +581,15 @@ export default function App() {
             </button>
           </div>
           
-          <button onClick={() => setIsSettingsOpen(true)} className="p-2 rounded-lg transition-colors hover:bg-stone-100" style={{ color: 'var(--text-muted)' }}>
-            <Settings size={18} />
-          </button>
+          <div className="flex flex-col items-center space-y-3 pb-2">
+            <a href="https://github.com/dzyla/manuscriptAI" target="_blank" rel="noopener noreferrer" className="p-2 rounded-lg transition-colors hover:bg-stone-100 flex flex-col items-center gap-1 opacity-70 hover:opacity-100" style={{ color: 'var(--text-muted)' }} title="Developer: Dawid Zyla">
+              <Github size={18} />
+              <span className="text-[9px] font-medium leading-[1]" style={{ color: 'var(--text-muted)' }}>Dawid</span>
+            </a>
+            <button onClick={() => setIsSettingsOpen(true)} className="p-2 rounded-lg transition-colors hover:bg-stone-100" style={{ color: 'var(--text-muted)' }}>
+              <Settings size={18} />
+            </button>
+          </div>
         </div>
       )}
 
@@ -688,6 +694,7 @@ export default function App() {
             suggestions={suggestions}
             onSuggestionClick={handleSuggestionClick}
             onSelectionQuery={handleSelectionQuery}
+            isDistractionFree={isDistractionFree}
           />
         </main>
 
