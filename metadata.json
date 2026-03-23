@@ -1,0 +1,5 @@
+{
+  "name": "Manuscript AI Editor",
+  "description": "An intelligent, Word-like manuscript editor with autonomous AI agents for continuity, copyediting, and fact-checking.",
+  "requestFramePermissions": []
+}
