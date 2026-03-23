@@ -128,6 +128,18 @@ export default function SettingsModal({ isOpen, onClose, settings, onUpdateSetti
                             style={inputStyle}
                           />
                         </div>
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>Model Name</label>
+                          <input
+                            type="text"
+                            value={settings.geminiModel || ''}
+                            onChange={(e) => onUpdateSettings({ ...settings, geminiModel: e.target.value })}
+                            placeholder="gemini-3.1-pro-preview"
+                            className="w-full p-3 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-stone-800/10 transition-all"
+                            style={inputStyle}
+                          />
+                        </div>
+
                       </motion.div>
                     )}
 
@@ -144,6 +156,18 @@ export default function SettingsModal({ isOpen, onClose, settings, onUpdateSetti
                             style={inputStyle}
                           />
                         </div>
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>Model Name</label>
+                          <input
+                            type="text"
+                            value={settings.openaiModel || ''}
+                            onChange={(e) => onUpdateSettings({ ...settings, openaiModel: e.target.value })}
+                            placeholder="gpt-5.4-mini"
+                            className="w-full p-3 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-stone-800/10 transition-all"
+                            style={inputStyle}
+                          />
+                        </div>
+
                       </motion.div>
                     )}
 
@@ -160,8 +184,20 @@ export default function SettingsModal({ isOpen, onClose, settings, onUpdateSetti
                             style={inputStyle}
                           />
                         </div>
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>Model Name</label>
+                          <input
+                            type="text"
+                            value={settings.anthropicModel || ''}
+                            onChange={(e) => onUpdateSettings({ ...settings, anthropicModel: e.target.value })}
+                            placeholder="claude-sonnet-4-6"
+                            className="w-full p-3 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-stone-800/10 transition-all"
+                            style={inputStyle}
+                          />
+                        </div>
+
                         <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                          Uses Claude claude-sonnet-4-20250514. Requires CORS-enabled browser or proxy for direct browser access.
+                          Requires CORS-enabled browser or proxy for direct browser access.
                         </p>
                       </motion.div>
                     )}

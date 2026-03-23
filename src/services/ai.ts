@@ -135,7 +135,7 @@ async function callAnthropicLLM(prompt: string, settings: AISettings, systemProm
     method: 'POST',
     headers: getAnthropicHeaders(settings),
     body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
+      model: settings.anthropicModel || 'claude-sonnet-4-6',
       max_tokens: 4096,
       system: systemPrompt || undefined,
       messages: [{ role: 'user', content: prompt }],
@@ -406,7 +406,7 @@ async function callLLM(prompt: string, settings: AISettings, systemPrompt: strin
   } else if (settings.provider === 'openai') {
     const openai = getOpenAIClient(settings);
     const response = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: settings.openaiModel || 'gpt-5.4-mini',
       messages: [
         ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
         { role: 'user' as const, content: prompt }
@@ -417,7 +417,7 @@ async function callLLM(prompt: string, settings: AISettings, systemPrompt: strin
   } else {
     const ai = getGeminiClient(settings);
     const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash",
+      model: settings.geminiModel || 'gemini-3.1-pro-preview',
       contents: (systemPrompt ? systemPrompt + '\n\n' : '') + prompt,
       ...(jsonMode ? {
         config: {
