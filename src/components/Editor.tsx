@@ -22,6 +22,7 @@ interface EditorProps {
   suggestions: Suggestion[];
   onSuggestionClick: (suggestionId: string) => void;
   onSelectionQuery?: (selectedText: string, instruction: string, agent: AgentType) => void;
+  isDistractionFree?: boolean;
 }
 
 export interface EditorRef {
@@ -94,7 +95,7 @@ const AGENT_QUICK_ACTIONS: Record<AgentType, { label: string; instruction: strin
   ],
 };
 
-const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggestions, onSuggestionClick, onSelectionQuery }, ref) => {
+const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggestions, onSuggestionClick, onSelectionQuery, isDistractionFree }, ref) => {
   const [isMounted, setIsMounted] = useState(false);
   const [showSelectionBar, setShowSelectionBar] = useState(false);
   const [selectionInstruction, setSelectionInstruction] = useState('');
@@ -327,7 +328,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
   );
 
   return (
-    <div className="w-full max-w-4xl mx-auto">
+    <div className={`w-full max-w-4xl mx-auto ${isDistractionFree ? 'focus-mode' : ''}`}>
       <div className="bg-[var(--editor-bg)] min-h-[600px] shadow-[var(--editor-shadow)] rounded-sm border border-[var(--border-subtle)] transition-colors duration-300">
         
         {/* Floating Toolbar (Portal) */}
