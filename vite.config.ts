@@ -7,6 +7,11 @@ import electron from 'vite-plugin-electron/simple';
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
   return {
+    // Dynamically set the base path: 
+    // Use '/manuscriptAI/' for GitHub Pages (production) and '/' for local development.
+    // IMPORTANT: If your exact GitHub repository name is different, change 'manuscriptAI' below!
+    base: process.env.NODE_ENV === 'production' ? '/manuscriptAI/' : '/',
+    
     plugins: [
       react(), 
       tailwindcss(),
@@ -46,7 +51,7 @@ export default defineConfig(({mode}) => {
     },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
-      // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
+      // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
       proxy: {
         '/api/proxy': {
