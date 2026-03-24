@@ -1,8 +1,14 @@
 import { useState, useRef, useEffect, useMemo, createElement } from 'react';
 import { AgentType, Message, Suggestion, HistoryItem, SuggestionSeverity } from '../types';
-import { Send, Sparkles, Check, X, MessageSquare, History as HistoryIcon, Info, Clock, CheckCheck, XCircle, Filter, ChevronDown, ChevronUp } from 'lucide-react';
+import { Send, Sparkles, Check, X, MessageSquare, History as HistoryIcon, Info, Clock, CheckCheck, XCircle, Filter, ChevronDown, ChevronUp, BookOpen, Trash2, FileText, UploadCloud } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
+import * as pdfjsLib from 'pdfjs-dist';
+import { Cite } from '@citation-js/core';
+import '@citation-js/plugin-bibtex';
+import localforage from 'localforage';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
 import { AGENT_INFO, AGENT_ICONS } from '../services/ai';
 
 interface SidebarProps {
@@ -21,8 +27,8 @@ interface SidebarProps {
   isAnalyzing: boolean;
   highlightedSuggestionId?: string | null;
   analysisProgress?: { agent: string; total: number; done: number } | null;
-  activeTabOverride?: 'chat' | 'suggestions' | 'history';
-  onTabChange?: (tab: 'chat' | 'suggestions' | 'history') => void;
+  activeTabOverride?: 'chat' | 'suggestions' | 'history' | 'sources';
+  onTabChange?: (tab: 'chat' | 'suggestions' | 'history' | 'sources') => void;
 }
 
 const SEVERITY_CONFIG: Record<SuggestionSeverity, { label: string; color: string; dotColor: string }> = {
@@ -94,14 +100,69 @@ export default function Sidebar({
 }: SidebarProps) {
   const [input, setInput] = useState('');
   const [rebuttalTexts, setRebuttalTexts] = useState<Record<string, string>>({});
-  const [activeTab, setActiveTabLocal] = useState<'chat' | 'suggestions' | 'history'>('chat');
+  const [activeTab, setActiveTabLocal] = useState<'chat' | 'suggestions' | 'history' | 'sources'>('chat');
+  const [sources, setSources] = useState<{id: string, name: string, type: 'pdf' | 'bib', text: string}[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
+  const [isParsing, setIsParsing] = useState(false);
+
+  useEffect(() => {
+    localforage.getItem('manuscript-sources').then((saved: any) => {
+      if (saved && Array.isArray(saved)) setSources(saved);
+    }).catch(console.error);
+  }, []);
+
+  useEffect(() => {
+    localforage.setItem('manuscript-sources', sources).catch(console.error);
+  }, [sources]);
+
+  const extractTextFromPDF = async (file: File): Promise<string> => {
+    const arrayBuffer = await file.arrayBuffer();
+    const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+    const pdf = await loadingTask.promise;
+    let text = '';
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      const pageText = content.items.map((item: any) => item.str).join(' ');
+      text += pageText + '\n\n';
+    }
+    return text;
+  };
+
+  const handleFileDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const files = Array.from(e.dataTransfer.files).filter(f => f.name.endsWith('.pdf') || f.name.endsWith('.bib'));
+    if (files.length === 0) return;
+
+    setIsParsing(true);
+    const newSources = [];
+
+    for (const file of files) {
+      try {
+        if (file.name.endsWith('.pdf')) {
+          const text = await extractTextFromPDF(file);
+          newSources.push({ id: Date.now().toString() + Math.random(), name: file.name, type: 'pdf' as const, text });
+        } else if (file.name.endsWith('.bib')) {
+          const text = await file.text();
+          new Cite(text);
+          newSources.push({ id: Date.now().toString() + Math.random(), name: file.name, type: 'bib' as const, text });
+        }
+      } catch (err) {
+        console.error('Failed to parse file:', file.name, err);
+      }
+    }
+
+    if (newSources.length > 0) setSources(prev => [...prev, ...newSources]);
+    setIsParsing(false);
+  };
 
   // Sync tab from parent override
   useEffect(() => {
     if (activeTabOverride) setActiveTabLocal(activeTabOverride);
   }, [activeTabOverride]);
 
-  const setActiveTab = (tab: 'chat' | 'suggestions' | 'history') => {
+  const setActiveTab = (tab: 'chat' | 'suggestions' | 'history' | 'sources') => {
     setActiveTabLocal(tab);
     onTabChange?.(tab);
   };
@@ -162,6 +223,7 @@ export default function Sidebar({
           { key: 'chat' as const, icon: <MessageSquare size={14} />, label: 'Chat' },
           { key: 'suggestions' as const, icon: <Sparkles size={14} />, label: 'Review' },
           { key: 'history' as const, icon: <Clock size={14} />, label: 'History' },
+          { key: 'sources' as const, icon: <BookOpen size={14} />, label: 'Sources' },
         ]).map(tab => (
           <button
             key={tab.key}
@@ -480,7 +542,7 @@ export default function Sidebar({
               </AnimatePresence>
             )}
           </div>
-        ) : (
+        ) : activeTab === 'history' ? (
           <div className="space-y-3">
             {history.length === 0 ? (
               <div className="text-center py-16" style={{ color: 'var(--text-muted)' }}>
@@ -543,7 +605,50 @@ export default function Sidebar({
               </div>
             )}
           </div>
-        )}
+        ) : activeTab === 'sources' ? (
+          <div className="space-y-4 relative"
+            onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+            onDragLeave={(e) => { e.preventDefault(); setIsDragging(false); }}
+            onDrop={handleFileDrop}
+          >
+            {isParsing && (
+              <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/50 backdrop-blur-sm rounded-xl">
+                <div className="flex flex-col items-center gap-2">
+                  <Sparkles className="animate-spin text-blue-500" size={24} />
+                  <span className="text-xs font-semibold">Parsing files...</span>
+                </div>
+              </div>
+            )}
+            <div className={`text-center py-6 border-2 border-dashed rounded-xl transition-colors ${isDragging ? 'border-blue-500 bg-blue-50/50' : ''}`} style={{ borderColor: isDragging ? 'var(--accent-blue)' : 'var(--border)' }}>
+                <UploadCloud size={24} className="mx-auto mb-2 opacity-50" style={{ color: 'var(--text-muted)' }} />
+                <p className="text-xs font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>Drop PDFs & .bib files here</p>
+                <p className="text-[10px]" style={{ color: 'var(--text-secondary)' }}>These will be used to verify citations and facts</p>
+            </div>
+
+            {sources.length > 0 && (
+                <div className="space-y-2">
+                    <h3 className="text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>Uploaded Sources ({sources.length})</h3>
+                    {sources.map((source) => (
+                        <div key={source.id} className="flex items-center justify-between p-3 border rounded-xl shadow-sm" style={{ borderColor: 'var(--border)', background: 'var(--surface-1)' }}>
+                            <div className="flex items-center gap-2 overflow-hidden">
+                                <FileText size={14} style={{ color: 'var(--text-tertiary)' }} />
+                                <div className="truncate">
+                                    <p className="text-xs font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{source.name}</p>
+                                    <p className="text-[9px]" style={{ color: 'var(--text-tertiary)' }}>{source.type.toUpperCase()} • {Math.round(source.text.length / 1024)} KB</p>
+                                </div>
+                            </div>
+                            <button
+                                className="p-1.5 rounded-lg hover:bg-stone-100 transition-colors" style={{ color: 'var(--text-muted)' }}
+                                onClick={() => setSources(s => s.filter(src => src.id !== source.id))}
+                            >
+                                <Trash2 size={12} />
+                            </button>
+                        </div>
+                    ))}
+                </div>
+            )}
+          </div>
+        ) : null}
       </div>
 
       {/* Chat input */}

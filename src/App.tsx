@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect, useMemo, createElement } from
 import Editor, { EditorRef } from './components/Editor';
 import Sidebar from './components/Sidebar';
 import SettingsModal from './components/SettingsModal';
+import PostDraftingView from './components/PostDraftingView';
 import { AgentType, Message, Suggestion, HistoryItem, AISettings } from './types';
 import { analyzeText, chatWithAgent, resolveConflicts, rebutSuggestion, manuscriptSummary, AGENT_INFO, AGENT_ICONS, estimateTokens } from './services/ai';
 import { Sparkles, FileText, Settings, Download, Keyboard, Eye, Moon, Sun, ChevronDown, FilePlus, Coins, BookOpen, Github } from 'lucide-react';
@@ -30,6 +31,7 @@ export default function App() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [highlightedSuggestionId, setHighlightedSuggestionId] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isPostDraftingOpen, setIsPostDraftingOpen] = useState(false);
   const [isDistractionFree, setIsDistractionFree] = useState(false);
   const [aiSettings, setAiSettings] = useState<AISettings>({
     provider: 'local',
@@ -50,7 +52,7 @@ export default function App() {
   const [darkMode, setDarkMode] = useState(false);
   const [showAnalyzeMenu, setShowAnalyzeMenu] = useState(false);
   const analyzeMenuRef = useRef<HTMLDivElement>(null);
-  const [sidebarTab, setSidebarTab] = useState<'chat' | 'suggestions' | 'history'>('chat');
+  const [sidebarTab, setSidebarTab] = useState<'chat' | 'suggestions' | 'history' | 'sources'>('chat');
   const [sidebarWidth, setSidebarWidth] = useState(400);
 
   // Resize handler for Sidebar
@@ -493,7 +495,7 @@ export default function App() {
     }
   };
 
-  const handleDownload = (format: 'md' | 'docx' | 'json') => {
+  const handleDownload = async (format: 'md' | 'docx' | 'json' | 'tex') => {
     const currentContent = editorRef.current?.getHTML() || content;
     if (format === 'md') {
       const turndownService = new TurndownService();
@@ -501,6 +503,25 @@ export default function App() {
       saveAs(new Blob([markdown], { type: 'text/markdown;charset=utf-8' }), `${title.replace(/\s+/g, '_')}.md`);
     } else if (format === 'docx') {
       saveAs(new Blob([currentContent], { type: 'application/msword' }), `${title.replace(/\s+/g, '_')}.doc`);
+    } else if (format === 'tex') {
+      setIsAnalyzing(true);
+      showToast('Converting to LaTeX...', 'info');
+      try {
+        const turndownService = new TurndownService();
+        const markdown = turndownService.turndown(currentContent);
+        // Fallback to simple LLM conversion to avoid heavy pandoc-wasm dependency
+        const { chatWithAgent } = await import('./services/ai');
+        const prompt = "Convert the following academic manuscript (Markdown) into a clean, well-structured LaTeX document suitable for a generic academic journal. Include a preamble with standard packages (article class, geometry, graphicx, hyperref). Put the title as '"+title+"'. Ensure all sections, bolding, italics, and lists are properly converted. Return ONLY the raw LaTeX code, starting with \\documentclass and ending with \\end{document}.";
+        const result = await chatWithAgent(prompt, markdown, 'editor', aiSettings);
+        let tex = result.text.replace(/```(latex|tex)?\n/g, '').replace(/\n```/g, '');
+        saveAs(new Blob([tex], { type: 'application/x-tex' }), `${title.replace(/\s+/g, '_')}.tex`);
+        showToast('LaTeX conversion complete', 'success');
+      } catch (err) {
+        showToast('LaTeX conversion failed', 'error');
+        console.error(err);
+      } finally {
+        setIsAnalyzing(false);
+      }
     } else {
       const workspace = { title, content: currentContent, suggestions, history, messages, aiSettings };
       saveAs(new Blob([JSON.stringify(workspace, null, 2)], { type: 'application/json' }), 'workspace.json');
@@ -567,6 +588,8 @@ export default function App() {
                 </button>
                 <button onClick={() => handleDownload('md')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>Export Markdown</button>
                 <button onClick={() => handleDownload('docx')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>Export Word</button>
+                <button onClick={() => handleDownload('tex')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>AI Convert to LaTeX</button>
+                <button onClick={() => setIsPostDraftingOpen(true)} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>Post-Drafting Assistant</button>
                 <button onClick={() => handleDownload('json')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg font-medium" style={{ color: 'var(--text-primary)' }}>Save Workspace</button>
               </div>
               <input type="file" ref={fileInputRef} onChange={handleLoadWorkspace} accept=".json" className="hidden" />
@@ -751,6 +774,12 @@ export default function App() {
         onClose={() => setIsSettingsOpen(false)}
         settings={aiSettings}
         onUpdateSettings={setAiSettings}
+      />
+      <PostDraftingView
+        isOpen={isPostDraftingOpen}
+        onClose={() => setIsPostDraftingOpen(false)}
+        manuscriptText={content.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()}
+        aiSettings={aiSettings}
       />
 
       {/* Toast */}
