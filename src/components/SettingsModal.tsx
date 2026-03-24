@@ -237,9 +237,24 @@ export default function SettingsModal({ isOpen, onClose, settings, onUpdateSetti
                             style={inputStyle}
                           />
                         </div>
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>Context / Chunking</label>
+                          <select
+                            value={settings.localChunkSize === 0 ? '0' : String(settings.localChunkSize ?? 2000)}
+                            onChange={(e) => onUpdateSettings({ ...settings, localChunkSize: Number(e.target.value) })}
+                            className="w-full p-3 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-stone-800/10 transition-all"
+                            style={inputStyle}
+                          >
+                            <option value="0">No chunking — full manuscript (large context models)</option>
+                            <option value="1000">Small chunks — 1000 chars (small models, 4k ctx)</option>
+                            <option value="2000">Default chunks — 2000 chars (8k ctx models)</option>
+                            <option value="4000">Large chunks — 4000 chars (16k ctx models)</option>
+                            <option value="8000">XL chunks — 8000 chars (32k+ ctx models)</option>
+                          </select>
+                        </div>
                         <div className="p-3 rounded-lg text-[10px] leading-relaxed space-y-1" style={{ background: 'var(--surface-2)', color: 'var(--text-tertiary)' }}>
                           <p className="font-semibold" style={{ color: 'var(--text-secondary)' }}>Local LLM Tips:</p>
-                          <p>• Text is split by sections (IMRAD) for better focus</p>
+                          <p>• Set "No chunking" for models with 32k+ context (Qwen2.5, Llama 3.1 70B, etc.)</p>
                           <p>• Parallel mode runs all agents simultaneously (CPU/GPU intensive!)</p>
                           <p>• If parallel mode causes crashes, run agents one by one from Analyze menu</p>
                           <p>• Recommended: use 7B+ models for best suggestion quality</p>

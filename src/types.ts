@@ -1,4 +1,4 @@
-export type AgentType = 'manager' | 'editor' | 'reviewer-2' | 'researcher';
+export type AgentType = 'manager' | 'editor' | 'reviewer-2' | 'researcher' | 'literature-reviewer';
 
 export type AIProvider = 'gemini' | 'openai' | 'anthropic' | 'local';
 
@@ -17,6 +17,7 @@ export interface AISettings {
   localBaseUrl: string;
   localApiKey: string;
   localModel: string;
+  localChunkSize?: number;  // 0 = no chunking (full manuscript), undefined/default = 2000 chars
   customPrompts?: Partial<Record<AgentType, string>>;
 }
 

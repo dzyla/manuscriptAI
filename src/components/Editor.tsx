@@ -6,15 +6,17 @@ import Highlight from '@tiptap/extension-highlight';
 import Underline from '@tiptap/extension-underline';
 import TextAlign from '@tiptap/extension-text-align';
 import Link from '@tiptap/extension-link';
-import { forwardRef, useImperativeHandle, useEffect, useState, useRef } from 'react';
+import { forwardRef, useImperativeHandle, useEffect, useState, useRef, useCallback } from 'react';
 import { AgentType, Suggestion } from '../types';
 import { GrammarChecker } from '../extensions/GrammarChecker';
-import { 
-  Bold, Italic, Underline as UnderlineIcon, List, ListOrdered, 
-  AlignLeft, AlignCenter, AlignRight, Quote, Heading2, 
-  Heading3, Undo, Redo, Clock, Sparkles, PenLine, FlaskConical, Beaker, Send, MessageSquare
+import {
+  Bold, Italic, Underline as UnderlineIcon, List, ListOrdered,
+  AlignLeft, AlignCenter, AlignRight, AlignJustify, Quote, Heading2,
+  Heading3, Undo, Redo, Clock, Sparkles, PenLine, FlaskConical, Beaker, Send, MessageSquare, BookOpen, RefreshCw
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
+import { getThesaurus } from '../services/ai';
+import { AISettings } from '../types';
 
 interface EditorProps {
   content: string;
@@ -22,8 +24,13 @@ interface EditorProps {
   suggestions: Suggestion[];
   onSuggestionClick: (suggestionId: string) => void;
   onSelectionQuery?: (selectedText: string, instruction: string, agent: AgentType) => void;
+  onRewriteSection?: (selectedText: string) => void;
+  onTransformSelection?: (selectedText: string, instruction: string, agent: AgentType) => void;
   isDistractionFree?: boolean;
   editorZoom?: number;
+  editorWidth?: 'normal' | 'wide' | 'full';
+  currentAgent?: AgentType;
+  aiSettings?: AISettings;
 }
 
 export interface EditorRef {
@@ -77,35 +84,72 @@ const findTextPosition = (doc: any, searchText: string): { from: number; to: num
   return null;
 };
 
-// Default quick actions per agent
-const AGENT_QUICK_ACTIONS: Record<AgentType, { label: string; instruction: string; icon: any }[]> = {
-  editor: [
-    { label: 'Polish', instruction: 'Polish this text: fix grammar, improve clarity, tighten sentences.', icon: PenLine },
-    { label: 'Simplify', instruction: 'Simplify this text: shorter sentences, simpler words, remove jargon.', icon: PenLine },
-  ],
-  'reviewer-2': [
-    { label: 'Critique', instruction: 'Critically review this text: find unsupported claims, logical gaps, and methodology issues.', icon: FlaskConical },
-    { label: 'Strengthen', instruction: 'Suggest how to make the arguments in this text stronger and more convincing.', icon: FlaskConical },
-  ],
-  researcher: [
-    { label: 'Sharpen', instruction: 'Strengthen topic sentences and tighten hedging language. Make every sentence earn its place.', icon: Beaker },
-    { label: 'Cut fluff', instruction: 'Find paragraphs or sentences that don\'t add value. Suggest what to cut, merge, or tighten.', icon: Beaker },
-  ],
-  manager: [
-    { label: 'Review structure', instruction: 'Evaluate the structure and flow of this section. Does it fit well in the manuscript?', icon: Sparkles },
-  ],
-};
+// Bubble actions: transform = produces accept/reject suggestion; analyze = produces chat reply only
+const BUBBLE_ACTIONS: { label: string; instruction: string; agent: AgentType; icon: any; mode: 'transform' | 'analyze' }[] = [
+  {
+    label: 'Polish',
+    instruction: 'Fix grammar, convert passive voice to active, tighten wordy phrases, and improve sentence flow. Keep all scientific content intact.',
+    agent: 'editor',
+    icon: PenLine,
+    mode: 'transform'
+  },
+  {
+    label: 'Shorten',
+    instruction: 'Condense this text for a scientific manuscript: cut redundant words, remove unnecessary hedging, combine short sentences. Preserve all key scientific information and claims.',
+    agent: 'editor',
+    icon: PenLine,
+    mode: 'transform'
+  },
+  {
+    label: 'Sharpen',
+    instruction: 'Strengthen the topic sentence to clearly state the paragraph\'s conclusion, reduce excessive hedging language ("may possibly" → "suggests"), and improve the opening for maximum impact.',
+    agent: 'researcher',
+    icon: Beaker,
+    mode: 'transform'
+  },
+  {
+    label: 'Strengthen',
+    instruction: 'Revise this text to be more scientifically rigorous: make vague claims specific, add appropriate qualifications to overclaimed statements, and make the argument more concrete and evidenced.',
+    agent: 'reviewer-2',
+    icon: FlaskConical,
+    mode: 'transform'
+  },
+  {
+    label: 'Critique',
+    instruction: 'Identify the specific scientific weaknesses in this text: unsupported claims, logical gaps, missing methodology details, conclusions that exceed the data. Be direct and concise.',
+    agent: 'reviewer-2',
+    icon: FlaskConical,
+    mode: 'analyze'
+  },
+  {
+    label: 'Explain',
+    instruction: 'Explain the key scientific concept, finding, or argument in this passage clearly. What is the author trying to say? What assumptions are being made? What would make this clearer for the reader?',
+    agent: 'researcher',
+    icon: Beaker,
+    mode: 'analyze'
+  },
+];
 
-const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggestions, onSuggestionClick, onSelectionQuery, isDistractionFree, editorZoom = 100 }, ref) => {
+const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggestions, onSuggestionClick, onSelectionQuery, onTransformSelection, onRewriteSection, isDistractionFree, editorZoom = 100, editorWidth = 'normal', aiSettings }, ref) => {
   const [isMounted, setIsMounted] = useState(false);
   const [showSelectionBar, setShowSelectionBar] = useState(false);
   const [selectionInstruction, setSelectionInstruction] = useState('');
   const [selectionAgent, setSelectionAgent] = useState<AgentType>('editor');
+  const [thesaurusWord, setThesaurusWord] = useState<string | null>(null);
+  const [thesaurusSynonyms, setThesaurusSynonyms] = useState<string[]>([]);
+  const [thesaurusLoading, setThesaurusLoading] = useState(false);
   const isExternalUpdate = useRef(false);
   const lastExternalContent = useRef(content);
   const instructionInputRef = useRef<HTMLInputElement>(null);
+  const zoomContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { setIsMounted(true); }, []);
+
+  useEffect(() => {
+    if (zoomContainerRef.current) {
+      (zoomContainerRef.current.style as any).zoom = String(editorZoom / 100);
+    }
+  }, [editorZoom]);
 
   const editor = useEditor({
     extensions: [
@@ -128,30 +172,40 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
       const { from, to } = editor.state.selection;
       const hasSelection = from !== to;
       setShowSelectionBar(hasSelection);
+      if (!hasSelection) {
+        setThesaurusWord(null);
+        setThesaurusSynonyms([]);
+      }
     },
     editorProps: {
       attributes: { class: 'prose max-w-none focus:outline-none min-h-[500px]' },
     },
   });
 
-  // Handle clicks on highlight marks via standard DOM events (more reliable than ProseMirror resolve)
+  // Handle clicks on highlight marks: find suggestion by ProseMirror position (TipTap Highlight
+  // doesn't render custom attributes to DOM, so we can't use data-suggestion-id on the element)
   useEffect(() => {
-    const editorEl = document.querySelector('.ProseMirror');
-    if (!editorEl) return;
+    if (!editor) return;
+    const editorEl = editor.view.dom;
 
     const handleDomClick = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
-      if (target.tagName === 'MARK') {
-        const id = target.getAttribute('data-suggestion-id');
-        if (id) {
-          onSuggestionClick(id);
+      if (target.tagName !== 'MARK') return;
+      const resolved = editor.view.posAtCoords({ left: e.clientX, top: e.clientY });
+      if (!resolved) return;
+      const pos = resolved.pos;
+      for (const s of suggestions) {
+        const match = findTextPosition(editor.state.doc, s.originalText);
+        if (match && pos >= match.from && pos <= match.to) {
+          onSuggestionClick(s.id);
+          return;
         }
       }
     };
 
     editorEl.addEventListener('click', handleDomClick);
     return () => editorEl.removeEventListener('click', handleDomClick);
-  }, [onSuggestionClick]);
+  }, [editor, suggestions, onSuggestionClick]);
 
   // Sync content from parent
   useEffect(() => {
@@ -198,6 +252,30 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
     onSelectionQuery(text, instruction, agent);
     setSelectionInstruction('');
     setShowSelectionBar(false);
+  };
+
+  const handleThesaurus = useCallback(async () => {
+    const text = getSelectedText().trim();
+    const isSingleWord = text && !text.includes(' ') && text.length > 1;
+    if (!isSingleWord) return;
+    setThesaurusWord(text);
+    setThesaurusSynonyms([]);
+    setThesaurusLoading(true);
+    try {
+      const synonyms = await getThesaurus(text, aiSettings || { provider: 'local', localBaseUrl: 'http://localhost:1234/v1/chat/completions', localApiKey: '', localModel: 'local-model', geminiApiKey: '', openaiApiKey: '', anthropicApiKey: '', geminiModel: '', openaiModel: '', anthropicModel: '' });
+      setThesaurusSynonyms(synonyms);
+    } finally {
+      setThesaurusLoading(false);
+    }
+  }, [aiSettings]);
+
+  const replaceWithSynonym = (synonym: string) => {
+    if (!editor || !thesaurusWord) return;
+    const { from, to } = editor.state.selection;
+    editor.chain().focus().setTextSelection({ from, to }).insertContent(synonym).run();
+    setThesaurusWord(null);
+    setThesaurusSynonyms([]);
+    onChange(editor.getHTML());
   };
 
   useImperativeHandle(ref, () => ({
@@ -328,8 +406,10 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
     >{children}</button>
   );
 
+  const widthClass = editorWidth === 'wide' ? 'max-w-6xl' : editorWidth === 'full' ? 'max-w-none' : 'max-w-4xl';
+
   return (
-    <div className={`w-full max-w-4xl mx-auto ${isDistractionFree ? 'focus-mode' : ''}`} style={{ fontSize: `${(editorZoom / 100)}em` }}>
+    <div ref={zoomContainerRef} className={`w-full ${widthClass} mx-auto ${isDistractionFree ? 'focus-mode' : ''}`}>
       <div className="bg-[var(--editor-bg)] min-h-[600px] shadow-[var(--editor-shadow)] rounded-sm border border-[var(--border-subtle)] transition-colors duration-300">
         
         {/* Floating Toolbar (Portal) */}
@@ -348,6 +428,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
             <div className="w-px h-4 bg-stone-200 mx-0.5" />
             <ToolbarButton onClick={() => editor.chain().focus().setTextAlign('left').run()} isActive={editor.isActive({ textAlign: 'left' })} title="Left"><AlignLeft size={15} /></ToolbarButton>
             <ToolbarButton onClick={() => editor.chain().focus().setTextAlign('center').run()} isActive={editor.isActive({ textAlign: 'center' })} title="Center"><AlignCenter size={15} /></ToolbarButton>
+            <ToolbarButton onClick={() => editor.chain().focus().setTextAlign('justify').run()} isActive={editor.isActive({ textAlign: 'justify' })} title="Justify"><AlignJustify size={15} /></ToolbarButton>
             <div className="w-px h-4 bg-stone-200 mx-0.5" />
             <ToolbarButton onClick={() => editor.chain().focus().undo().run()} title="Undo"><Undo size={15} /></ToolbarButton>
             <ToolbarButton onClick={() => editor.chain().focus().redo().run()} title="Redo"><Redo size={15} /></ToolbarButton>
@@ -356,9 +437,6 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
         )}
 
         <div className="px-8 sm:px-12 md:px-16 py-12 md:py-20">
-          <div className="flex justify-end mb-4 absolute right-8 top-16 z-10 hidden sm:flex">
-             {/* If we wanted editor-specific zoom buttons here */}
-          </div>
           <EditorContent editor={editor} />
         </div>
 
@@ -380,27 +458,55 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
 
       {/* Enhanced Bubble Menu — formatting + AI actions when text is selected */}
       <BubbleMenu editor={editor}>
-        <div className="bg-stone-900 text-white rounded-xl shadow-2xl border border-stone-700 overflow-hidden" style={{ maxWidth: '420px' }}>
+        <div className="bg-stone-900 text-white rounded-xl shadow-2xl border border-stone-700 overflow-hidden" style={{ maxWidth: '480px' }}>
           {/* Formatting row */}
-          <div className="flex items-center gap-0.5 p-1 border-b border-stone-700">
+          <div className="flex items-center gap-0.5 p-1 border-b border-stone-700 flex-wrap">
             <button onClick={() => editor.chain().focus().toggleBold().run()} className={`p-1.5 rounded hover:bg-stone-800 ${editor.isActive('bold') ? 'text-blue-400' : ''}`}><Bold size={14} /></button>
             <button onClick={() => editor.chain().focus().toggleItalic().run()} className={`p-1.5 rounded hover:bg-stone-800 ${editor.isActive('italic') ? 'text-blue-400' : ''}`}><Italic size={14} /></button>
             <button onClick={() => editor.chain().focus().toggleUnderline().run()} className={`p-1.5 rounded hover:bg-stone-800 ${editor.isActive('underline') ? 'text-blue-400' : ''}`}><UnderlineIcon size={14} /></button>
             <div className="w-px h-4 bg-stone-700 mx-1" />
-            {/* Quick agent actions */}
-            {Object.entries(AGENT_QUICK_ACTIONS).map(([agentId, actions]) => (
-              actions.slice(0, 1).map(action => (
-                <button
-                  key={`${agentId}-${action.label}`}
-                  onClick={() => handleSelectionSend(action.instruction, agentId as AgentType)}
-                  className="px-2 py-1.5 rounded hover:bg-stone-800 text-[10px] font-medium flex items-center gap-1 whitespace-nowrap"
-                  title={action.instruction}
-                >
-                  <action.icon size={11} />
-                  {action.label}
-                </button>
-              ))
+            {BUBBLE_ACTIONS.map(action => (
+              <button
+                key={action.label}
+                onClick={() => {
+                  const text = getSelectedText();
+                  if (!text) return;
+                  if (action.mode === 'transform' && onTransformSelection) {
+                    onTransformSelection(text, action.instruction, action.agent);
+                  } else {
+                    handleSelectionSend(action.instruction, action.agent);
+                  }
+                }}
+                className="px-2 py-1.5 rounded hover:bg-stone-800 text-[10px] font-medium flex items-center gap-1 whitespace-nowrap"
+                title={`${action.label} — ${action.mode === 'transform' ? 'creates accept/reject suggestion' : 'opens in chat'}`}
+              >
+                <action.icon size={11} />
+                {action.label}
+              </button>
             ))}
+            <div className="w-px h-4 bg-stone-700 mx-1" />
+            <button
+              onClick={() => { const text = getSelectedText(); if (text && onRewriteSection) onRewriteSection(text); }}
+              className="px-2 py-1.5 rounded hover:bg-stone-800 text-[10px] font-medium flex items-center gap-1 whitespace-nowrap text-amber-400"
+              title="Rewrite and get accept/reject suggestion"
+            >
+              <RefreshCw size={11} />
+              Rewrite
+            </button>
+            {(() => {
+              const sel = getSelectedText().trim();
+              if (!sel || sel.includes(' ') || sel.length <= 1) return null;
+              return (
+                <button
+                  onClick={handleThesaurus}
+                  className="px-2 py-1.5 rounded hover:bg-stone-800 text-[10px] font-medium flex items-center gap-1 whitespace-nowrap text-green-400"
+                  title="Find synonyms"
+                >
+                  <BookOpen size={11} />
+                  Synonyms
+                </button>
+              );
+            })()}
             <button
               onClick={() => { setShowSelectionBar(true); setTimeout(() => instructionInputRef.current?.focus(), 100); }}
               className="px-2 py-1.5 rounded hover:bg-stone-800 text-[10px] font-medium flex items-center gap-1"
@@ -410,7 +516,31 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
               Ask AI
             </button>
           </div>
-          
+
+          {/* Thesaurus panel */}
+          {thesaurusWord && (
+            <div className="p-2 border-b border-stone-700">
+              <div className="text-[9px] uppercase tracking-widest text-stone-400 mb-1.5">Synonyms for "{thesaurusWord}"</div>
+              {thesaurusLoading ? (
+                <span className="text-[11px] text-stone-400 animate-pulse">Looking up...</span>
+              ) : thesaurusSynonyms.length > 0 ? (
+                <div className="flex flex-wrap gap-1">
+                  {thesaurusSynonyms.map(syn => (
+                    <button
+                      key={syn}
+                      onClick={() => replaceWithSynonym(syn)}
+                      className="px-2 py-0.5 rounded bg-stone-700 hover:bg-stone-600 text-[11px] font-medium transition-colors"
+                    >
+                      {syn}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <span className="text-[11px] text-stone-400">No synonyms found</span>
+              )}
+            </div>
+          )}
+
           {/* Custom instruction input — shown when "Ask AI" clicked */}
           {showSelectionBar && (
             <div className="flex items-center gap-1 p-1.5">

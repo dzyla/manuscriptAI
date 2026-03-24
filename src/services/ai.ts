@@ -1,7 +1,7 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import OpenAI from "openai";
 import { AgentType, Suggestion, AISettings } from "../types";
-import { Clipboard, PenLine, FlaskConical, Beaker } from 'lucide-react';
+import { Clipboard, PenLine, FlaskConical, Beaker, BookMarked } from 'lucide-react';
 
 export const AGENT_INFO: Record<AgentType, { label: string; color: string; bgSoft: string; description: string; iconName: string }> = {
   manager: {
@@ -31,6 +31,13 @@ export const AGENT_INFO: Record<AgentType, { label: string; color: string; bgSof
     bgSoft: 'bg-amber-50',
     iconName: 'beaker',
     description: 'Maximizes clarity and impact: strengthens topic sentences, tightens hedging language, ensures every paragraph earns its place, and makes arguments compelling.'
+  },
+  'literature-reviewer': {
+    label: 'Literature Reviewer',
+    color: 'bg-violet-600',
+    bgSoft: 'bg-violet-50',
+    iconName: 'book-marked',
+    description: 'Compares an uploaded reference manuscript against your manuscript. Identifies which claims are supported, contradicted, or extended by the reference work.'
   }
 };
 
@@ -39,80 +46,124 @@ export const AGENT_ICONS: Record<string, any> = {
   'pen-line': PenLine,
   'flask-conical': FlaskConical,
   'beaker': Beaker,
+  'book-marked': BookMarked,
 };
+
+// Writing style rules applied to all agents' suggested text
+const SCIENTIFIC_WRITING_RULES = `
+WRITING STYLE RULES — apply to every suggested replacement text:
+- Use simple, clear, professional scientific English appropriate for NIH grant applications and peer-reviewed journals.
+- Do NOT use em dashes (—) or en dashes (–). Use a comma, semicolon, or rewrite the sentence instead.
+- Do NOT use rhetorical questions, exclamations, or conversational filler words (e.g., "Indeed,", "Notably,", "Importantly,", "Of note,", "It is worth mentioning that").
+- Use a natural mix of active and passive voice as appropriate for the section: active voice in Methods ("We measured...") and Results ("X increased..."); passive voice is acceptable when the agent of the action is unknown or unimportant ("Samples were processed...").
+- Keep sentences concise (under 35 words each). Prefer one idea per sentence.
+- Use precise, field-standard terminology. Avoid vague intensifiers ("very", "quite", "extremely").
+- Do not start sentences with conjunctions ("But", "And", "So") in formal scientific prose.
+- Numbers: spell out one through nine; use numerals for 10 and above, and always with units (e.g., "5 mg", not "five mg").`;
 
 export const DEFAULT_AGENT_PROMPTS: Record<AgentType, string> = {
-  manager: `You are the STRUCTURE ARCHITECT — you evaluate ONLY the document's architecture and organization.
+  manager: `You are the STRUCTURE ARCHITECT. You evaluate ONLY the document's architecture and logical organization.
 
 Focus EXCLUSIVELY on:
-- Does the manuscript follow IMRAD structure? Are any required sections missing?
-- Does the abstract accurately summarize the key findings presented in the body?
-- Are section transitions smooth? Does each section logically follow the previous one?
-- Is the introduction properly scoped — does it set up the research question?
-- Does the discussion address limitations and future directions?
-- Is the conclusion proportional to the evidence (not overstated)?
-- Are there redundant sections or repeated information across sections?
-- Is the overall narrative arc compelling and logical?
+- Does the manuscript follow IMRAD structure? Are required sections missing or misplaced?
+- Does the abstract accurately and completely summarize the key findings presented in the body?
+- Are section transitions logical? Does each section follow from the previous one?
+- Is the introduction properly scoped, with a clear statement of the research gap and objective?
+- Does the discussion address limitations and future directions explicitly?
+- Is the conclusion proportional to the evidence and does not overstate findings?
+- Are there redundant sections or information repeated across sections?
+- Does the narrative follow a coherent arc: problem, knowledge gap, approach, contribution?
 
-DO NOT comment on grammar, word choice, or writing style — that's not your job.
-DO NOT comment on statistics or citations — that's handled by other agents.
+DO NOT comment on grammar, word choice, or sentence-level style.
+DO NOT comment on statistics or citation formatting.
 
-For each suggestion, quote the EXACT text that needs changing and suggest a structural improvement.`,
+Provide HIGH-IMPACT suggestions only. Each suggestion must represent a structural change that materially improves the manuscript's completeness or logical flow. Quote the EXACT text that requires revision.
+${SCIENTIFIC_WRITING_RULES}`,
 
-  editor: `You are the LANGUAGE SURGEON — you fix ONLY writing quality at the sentence/word level.
+  editor: `You are the LANGUAGE SURGEON. You fix ONLY writing quality at the sentence and word level.
 
-Focus EXCLUSIVELY on:
-- Convert passive voice to active: "It was observed that..." → "We observed..."
-- Tighten wordy phrases: "a large number of" → "many", "in order to" → "to"
-- Fix grammar, punctuation, and scientific notation errors
-- Split sentences longer than 30 words into shorter, clearer ones
-- Replace jargon with simpler alternatives when possible
-- Fix ambiguous pronoun references ("it", "this", "these")
-- Ensure consistent tense usage throughout
-- Improve parallel structure in lists and comparisons
+Focus EXCLUSIVELY on the highest-impact issues:
+- Convert passive constructions to active where appropriate: "It was observed that X" becomes "We observed X"
+- Remove wordy hedges and filler: delete "it is important to note that"; replace "in order to" with "to"
+- Split sentences longer than 35 words into two shorter, clearer sentences
+- Resolve ambiguous pronoun references: "it", "this", and "these" must have unambiguous antecedents
+- Eliminate nominalization bloat: "perform an analysis of" becomes "analyze"; "make a comparison of" becomes "compare"
+- Correct tense inconsistencies: use past tense for completed experiments, present tense for established facts
+- Fix non-parallel structures in lists and compound phrases
+- Replace em dashes (—) and en dashes (–) with commas, semicolons, or restructured sentences
+- Remove conversational filler: "Indeed,", "Notably,", "It is worth mentioning that", "Of note,"
 
-DO NOT comment on document structure, section ordering, or overall organization.
-DO NOT evaluate scientific claims or methodology — that's not your role.
+DO NOT comment on document structure, section ordering, or scientific validity.
 
-Each originalText must be an EXACT quote from the manuscript. suggestedText must be a drop-in replacement.`,
+CRITICAL RULE: originalText must be copied CHARACTER-FOR-CHARACTER from the manuscript. suggestedText must be a direct, complete drop-in replacement. Provide 4-6 high-impact suggestions.
+${SCIENTIFIC_WRITING_RULES}`,
 
-  'reviewer-2': `You are the DEVIL'S ADVOCATE — you challenge the scientific logic and argumentation.
+  'reviewer-2': `You are REVIEWER 2. You challenge the scientific rigor and logical integrity of the manuscript.
 
-Focus EXCLUSIVELY on:
-- Claims stated without supporting evidence: "X is well-established" — says who?
-- Conclusions that go beyond what the data actually shows
-- Missing control experiments or baseline comparisons
-- Methodology gaps: unclear sample selection, missing sample sizes
-- Logical leaps between observations and interpretations
-- Potential confounding variables not addressed
-- Missing acknowledgment of limitations
-- Cherry-picked results or selective data presentation
+Focus EXCLUSIVELY on the most critical scientific weaknesses:
+- Claims stated as established fact without citation: "X is well established" requires a reference or qualification
+- Conclusions that exceed what the data supports: "These results prove X" should be "These results suggest X"
+- Missing sample sizes, statistical tests, p-values, confidence intervals, or effect sizes
+- Undefined abbreviations, undefined terms, or unexplained methodological choices
+- Confounding variables not addressed in the analysis or acknowledged in the discussion
+- Overgeneralization: findings from a specific context or population stated as universal
+- Missing alternative interpretations of the results
+- Limitations section that is absent, vague, or incomplete
 
-DO NOT fix grammar or word choice — that's the Language Surgeon's job.
-DO NOT check numerical accuracy or citation formatting — the Evidence Auditor does that.
+DO NOT fix grammar or sentence style. Focus exclusively on scientific integrity and argumentation.
 
-For each issue, quote the EXACT problematic text and suggest what the author should ADD, CHANGE, or ACKNOWLEDGE.`,
+For each issue: quote the EXACT problematic text, state the specific scientific weakness in one sentence, and provide a concrete revised version that addresses the problem. Assign severity: "critical" for conclusions that exceed the data; "major" for missing quantitative detail or methodology; "minor" for missing caveats or qualifications.
+${SCIENTIFIC_WRITING_RULES}`,
 
-  researcher: `You are the CLARITY & IMPACT SPECIALIST — you maximize the persuasive power and readability of every paragraph.
+  researcher: `You are the CLARITY AND IMPACT SPECIALIST. You maximize the precision and communicative effectiveness of each paragraph.
 
-Focus EXCLUSIVELY on:
-- Weak topic sentences that don't preview the paragraph's argument
-- Excessive hedging: "It may be possible that..." → "Evidence suggests..."
-- Paragraphs that don't earn their place — suggest what to cut or merge
-- Key findings buried in the middle of paragraphs instead of leading
-- Vague quantifiers: "some", "many", "several" — suggest being specific or removing
-- Run-on paragraphs that try to make multiple points (split them)
-- Weak transitions between paragraphs
-- Conclusions that merely summarize instead of synthesizing and projecting
-- Abstract that buries the key finding instead of leading with it
+Focus EXCLUSIVELY on high-impact structural writing problems:
+- Topic sentences that bury the main point: the first sentence of each paragraph must state its conclusion or finding
+- Excessive hedging that weakens the argument: "may possibly suggest" becomes "suggests"; "could potentially indicate" becomes "indicates"
+- Key findings placed in the middle of a paragraph rather than at the beginning
+- Abstracts that do not state the main finding within the first two sentences
+- Discussion paragraphs that merely restate results rather than interpret them in the context of the field
+- Vague quantifiers used where numbers are available: "significantly improved" should cite the measured value
+- Paragraphs that address two or more distinct ideas and should be split
+- Weak closing sentences that merely summarize rather than state the implication or significance
 
-DO NOT fix grammar or punctuation — the Language Surgeon handles that.
-DO NOT evaluate document structure or section ordering — the Structure Architect does that.
-DO NOT question scientific claims — Reviewer 2 does that.
+DO NOT fix grammar or punctuation.
+DO NOT evaluate scientific validity.
 
-For each suggestion, quote the EXACT weak text and provide a stronger, more impactful alternative.
-Assign severity "major" for buried findings and "minor" for excess hedging.`
+For each suggestion, quote the EXACT weak text and provide a stronger, more precise replacement. List the most impactful suggestions first. Assign severity: "major" for buried findings or a weak abstract; "minor" for excess hedging or vague quantifiers.
+${SCIENTIFIC_WRITING_RULES}`,
+
+  'literature-reviewer': `You are a SCHOLARLY LITERATURE ANALYST. You assess how a reference paper relates to the current manuscript from a scientific perspective.
+
+Your task is NOT direct comparison. Identify the scientific relationship between the two works across these dimensions:
+
+1. Supporting Evidence: Does the reference provide data, methods, or findings that support claims in the manuscript? Specify which claims and what evidence.
+
+2. Differing Findings: Does the reference report results that differ from the manuscript? Analyze possible reasons, such as differences in study population, experimental conditions, sample size, or methodology. Differences are scientific nuance, not contradiction.
+
+3. Methodological Connections: Are the methods similar, complementary, or distinct? What methodological insights from the reference are relevant to the manuscript?
+
+4. Contextual Background: Does the reference establish field context, define standard terminology, or provide benchmarks relevant to the manuscript?
+
+5. Uncovered Gaps: Are there findings or aspects in the reference that the manuscript does not address but should acknowledge or build upon?
+
+6. Citation Recommendation: How should the author engage with this reference: as supporting evidence, as a contrasting finding to discuss, as a methodological precedent, or as background context?
+
+Structure your response with these section headings:
+## Relationship to Your Manuscript
+## Supporting Evidence
+## Differing Findings and Scientific Context
+## Methodological Connections
+## Recommended Citations and Usage
+## Summary
+
+Write in clear, direct scientific prose. Quote specific passages from both documents where relevant. Note that differences in findings often reflect methodological or population differences rather than errors.
+${SCIENTIFIC_WRITING_RULES}`
 };
+
+function truncateText(text: string, maxLen: number): string {
+  return text.length > maxLen ? text.substring(0, maxLen) + '\n...[truncated]' : text;
+}
 
 function getOpenAIClient(settings: AISettings) {
   return new OpenAI({
@@ -433,7 +484,7 @@ async function callLLM(prompt: string, settings: AISettings, systemPrompt: strin
 export async function resolveConflicts(suggestions: Suggestion[], settings: AISettings): Promise<Suggestion[]> {
   if (suggestions.length < 2) return suggestions;
 
-  // Simple dedup — always use this for speed
+  // Dedup by exact originalText
   const seen = new Set<string>();
   return suggestions.filter(s => {
     const key = s.originalText.trim().toLowerCase();
@@ -441,6 +492,104 @@ export async function resolveConflicts(suggestions: Suggestion[], settings: AISe
     seen.add(key);
     return true;
   });
+}
+
+const SEVERITY_RANK: Record<string, number> = { critical: 4, major: 3, minor: 2, style: 1 };
+
+/**
+ * Judge agent: runs after all suggestions are collected, finds overlapping suggestions
+ * (where originalText of one is a substring of another, or they cover the same passage),
+ * and for each conflict group selects the most impactful suggestion using LLM.
+ * Falls back to severity-based selection if LLM fails.
+ */
+export async function runJudgeAgent(suggestions: Suggestion[], settings: AISettings): Promise<Suggestion[]> {
+  if (suggestions.length < 2) return suggestions;
+
+  // Build conflict groups: two suggestions conflict if one's originalText contains or is contained by the other's,
+  // or if their startIndex/endIndex ranges overlap.
+  const groups: Suggestion[][] = [];
+  const assigned = new Set<string>();
+
+  for (let i = 0; i < suggestions.length; i++) {
+    if (assigned.has(suggestions[i].id)) continue;
+    const group = [suggestions[i]];
+    assigned.add(suggestions[i].id);
+    const a = suggestions[i];
+    for (let j = i + 1; j < suggestions.length; j++) {
+      if (assigned.has(suggestions[j].id)) continue;
+      const b = suggestions[j];
+      const overlap =
+        (a.startIndex !== undefined && b.startIndex !== undefined &&
+          a.startIndex <= b.endIndex && b.startIndex <= a.endIndex) ||
+        a.originalText.includes(b.originalText) ||
+        b.originalText.includes(a.originalText);
+      if (overlap) {
+        group.push(b);
+        assigned.add(b.id);
+      }
+    }
+    groups.push(group);
+  }
+
+  const winners: Suggestion[] = [];
+
+  for (const group of groups) {
+    if (group.length === 1) {
+      winners.push(group[0]);
+      continue;
+    }
+
+    // Try LLM judge for this conflict group
+    try {
+      const prompt = `You are a manuscript improvement judge. Given these overlapping suggestions for a scientific manuscript, pick the ONE suggestion that would have the MOST IMPACT on manuscript quality. Consider: severity, specificity, and scientific value.
+
+Suggestions:
+${group.map((s, i) => `[${i}] Agent: ${s.agent} | Severity: ${s.severity || 'minor'} | Category: ${s.category || 'general'}
+Original: "${s.originalText.substring(0, 150)}"
+Suggested: "${s.suggestedText.substring(0, 150)}"
+Reason: ${s.explanation.substring(0, 100)}`).join('\n\n')}
+
+Respond with ONLY a single number (the index of the best suggestion, e.g. "0" or "2").`;
+
+      const response = await callLLM(prompt, settings, 'You are a concise judge. Reply with only a number.');
+      const idx = parseInt(response.trim().match(/\d+/)?.[0] || '0', 10);
+      winners.push(group[Math.min(idx, group.length - 1)]);
+    } catch (_) {
+      // Fallback: pick by severity, then by shorter originalText (more specific)
+      const best = group.reduce((a, b) => {
+        const rankA = SEVERITY_RANK[a.severity || 'style'] ?? 1;
+        const rankB = SEVERITY_RANK[b.severity || 'style'] ?? 1;
+        if (rankA !== rankB) return rankA > rankB ? a : b;
+        return a.originalText.length <= b.originalText.length ? a : b;
+      });
+      winners.push(best);
+    }
+  }
+
+  return winners;
+}
+
+function buildFullTextPrompt(agentRole: string, text: string, existingContext: string): string {
+  return `${agentRole}
+
+Analyze this manuscript. Return ONLY valid JSON, nothing else.
+
+Manuscript:
+"""
+${text}
+"""
+${existingContext}
+
+Return ONLY this JSON format:
+{"suggestions":[{"originalText":"exact quote from text","suggestedText":"improved version","explanation":"brief reason","severity":"critical","category":"grammar"}]}
+
+Rules:
+- originalText MUST be copied CHARACTER-FOR-CHARACTER from the manuscript
+- Provide 5-10 specific, high-impact suggestions covering the ENTIRE manuscript (not just the beginning)
+- Cover different sections: introduction, methods, results, discussion
+- severity: "critical", "major", "minor", or "style"
+- category: "grammar", "flow", "research", "clarity", or "structure"
+- Return ONLY JSON, no other text`;
 }
 
 function buildLocalPrompt(agentRole: string, textChunk: string, existingContext: string): string {
@@ -475,15 +624,20 @@ export async function analyzeText(text: string, agent: AgentType, settings: AISe
   }
 
   if (settings.provider === 'local') {
-    const chunks = chunkTextForLocal(text);
+    // localChunkSize === 0 means no chunking — send full manuscript in one request
+    const chunkSize = settings.localChunkSize;
+    const useFullText = chunkSize === 0;
+    const chunks = useFullText ? [text] : chunkTextForLocal(text, chunkSize ?? 2000);
     const allSuggestions: Suggestion[] = [];
     let parsingFailed = false;
     let rawResponses: string[] = [];
     
     for (let i = 0; i < chunks.length; i++) {
       onProgress?.(`Chunk ${i + 1}/${chunks.length}`);
-      const shortRole = activePrompt.substring(0, 400);
-      const prompt = buildLocalPrompt(shortRole, chunks[i], existingContext);
+      const shortRole = useFullText ? activePrompt : activePrompt.substring(0, 400);
+      const prompt = useFullText
+        ? buildFullTextPrompt(shortRole, chunks[i], existingContext)
+        : buildLocalPrompt(shortRole, chunks[i], existingContext);
       
       try {
         const textResponse = await callLocalLLM(prompt, settings, "Return only valid JSON. No markdown, no explanations.");
@@ -592,17 +746,18 @@ Provide 8-15 highly specific suggestions. Each originalText MUST be an exact quo
 export async function chatWithAgent(message: string, context: string, agent: AgentType, settings: AISettings): Promise<{ text: string; suggestions?: Suggestion[] }> {
   const activePrompt = settings.customPrompts?.[agent] || DEFAULT_AGENT_PROMPTS[agent];
   const maxContext = settings.provider === 'local' ? 1500 : 3000;
-  const truncatedContext = context.length > maxContext ? context.substring(0, maxContext) + '\n...(truncated)' : context;
+  const truncatedContext = truncateText(context, maxContext);
 
   const prompt = `The researcher says: "${message}"
-    
+
 Current Manuscript Context:
 """
 ${truncatedContext}
 """
-    
-Provide a helpful response. If you have specific text improvements, include them at the end in this format:
-[SUGGESTIONS_START] [{"originalText": "...", "suggestedText": "...", "explanation": "...", "severity": "minor", "category": "grammar"}] [SUGGESTIONS_END]`;
+
+Respond helpfully. ONLY append inline edit suggestions if the user explicitly asked to edit, fix, improve, or rewrite specific text. For questions, analysis, explanations, or general feedback — reply in plain text only, no suggestions block.
+If inline suggestions are needed, append them AFTER your response in this exact format:
+[SUGGESTIONS_START] [{"originalText": "exact quote from manuscript", "suggestedText": "replacement", "explanation": "reason", "severity": "minor|major|critical|style", "category": "grammar|clarity|flow|structure|research"}] [SUGGESTIONS_END]`;
 
   let textResponse = await callLLM(prompt, settings, activePrompt);
   if (!textResponse) textResponse = "";
@@ -711,6 +866,164 @@ Provide your structured review as described in your instructions.`;
     return response || 'No review generated. Check your LLM connection.';
   } catch (error) {
     throw new Error(`Failed to generate manuscript summary: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+}
+
+export async function getThesaurus(word: string, settings: AISettings): Promise<string[]> {
+  // Use Datamuse API for fast, free synonym lookup without token cost
+  try {
+    const response = await fetch(`https://api.datamuse.com/words?rel_syn=${encodeURIComponent(word)}&max=10`);
+    if (response.ok) {
+      const data = await response.json();
+      if (data.length > 0) return data.map((d: any) => d.word);
+    }
+  } catch (_) {}
+
+  // Fallback to LLM
+  const prompt = `List 8 synonyms for the word "${word}" as used in academic writing. Return ONLY a JSON array of strings, e.g. ["word1","word2"]. No explanation.`;
+  try {
+    const response = await callLLM(prompt, settings, 'You are a thesaurus. Return only JSON arrays.', true);
+    const parsed = parseJSONRobust(response);
+    if (Array.isArray(parsed)) return parsed.slice(0, 8);
+  } catch (_) {}
+  return [];
+}
+
+export async function digestSourceForManuscript(sourceText: string, sourceName: string, manuscriptText: string, settings: AISettings): Promise<string> {
+  const isLocal = settings.provider === 'local';
+  const truncatedSource = truncateText(sourceText, isLocal ? 3000 : 8000);
+  const truncatedManuscript = truncateText(manuscriptText, isLocal ? 1000 : 2000);
+
+  const systemPrompt = `You are a research assistant helping to digest reference materials for a manuscript author.
+Given a source document and the current manuscript, extract and summarize the most relevant information from the source.
+Focus on: key findings, methods, data, or arguments that relate to the manuscript's topic.
+Be concise (max 300 words). Use bullet points for key facts.`;
+
+  const prompt = `Manuscript (for context):
+"""
+${truncatedManuscript}
+"""
+
+Source document "${sourceName}":
+"""
+${truncatedSource}
+"""
+
+Summarize what in this source is most relevant to the manuscript above. Focus on facts, findings, and methods the author could cite or build upon.`;
+
+  try {
+    const response = await callLLM(prompt, settings, systemPrompt, false);
+    return response || sourceText.substring(0, 500) + '...';
+  } catch (_) {
+    return sourceText.substring(0, 500) + '...';
+  }
+}
+
+export async function rewriteSection(sectionText: string, manuscriptContext: string, settings: AISettings): Promise<string> {
+  const truncatedContext = truncateText(manuscriptContext, settings.provider === 'local' ? 800 : 2000);
+
+  const systemPrompt = `You are an expert academic editor specializing in NIH-style scientific manuscripts. Rewrite the provided section to maximize clarity and scientific rigor while preserving all findings and meaning.
+
+Writing requirements:
+- Use simple, clear, professional scientific English appropriate for peer-reviewed journals and NIH applications.
+- Do NOT use em dashes (—) or en dashes (–). Use commas, semicolons, or rewrite affected sentences.
+- Do NOT use rhetorical questions, exclamations, or filler phrases ("Indeed,", "Notably,", "Of note,", "It is worth mentioning that").
+- Use a natural mix of active and passive voice: active in Methods and Results where the agent is clear; passive is acceptable when the subject is unknown or unimportant.
+- Keep sentences under 35 words. One idea per sentence.
+- Avoid vague intensifiers ("very", "quite", "extremely"). Use precise, field-standard terminology.
+- Do not start sentences with conjunctions ("But", "And", "So") in formal scientific prose.
+Return ONLY the rewritten text, no commentary.`;
+
+  const prompt = `Manuscript context (surrounding text):
+"""
+${truncatedContext}
+"""
+
+Section to rewrite:
+"""
+${sectionText}
+"""
+
+Provide a complete rewrite of the section above.`;
+
+  try {
+    const response = await callLLM(prompt, settings, systemPrompt, false);
+    return response || sectionText;
+  } catch (_) {
+    return sectionText;
+  }
+}
+
+export async function transformWithInstruction(
+  selectedText: string,
+  instruction: string,
+  manuscriptContext: string,
+  settings: AISettings
+): Promise<string> {
+  const truncatedContext = truncateText(manuscriptContext, settings.provider === 'local' ? 600 : 1500);
+
+  const systemPrompt = `You are an expert academic writing assistant specializing in scientific manuscripts. Transform the provided text according to the instruction. Preserve all key scientific information and claims.
+
+Writing requirements for the output:
+- Simple, clear, professional scientific English. NIH-compliant style.
+- Do NOT use em dashes (—) or en dashes (–).
+- Do NOT use rhetorical questions, exclamations, or conversational filler ("Indeed,", "Notably,", "Of note,").
+- Mix of active and passive voice appropriate to the section context.
+- Sentences under 35 words. Precise, field-standard terminology.
+Return ONLY the transformed text, no commentary, no quotation marks around the output.`;
+
+  const prompt = `Instruction: ${instruction}
+
+Manuscript context (for reference only):
+"""
+${truncatedContext}
+"""
+
+Text to transform:
+"""
+${selectedText}
+"""
+
+Apply the instruction to the text above. Return ONLY the transformed text.`;
+
+  try {
+    const response = await callLLM(prompt, settings, systemPrompt, false);
+    // Strip any quotes or markdown the LLM might add
+    return response.trim().replace(/^["'`]+|["'`]+$/g, '').trim() || selectedText;
+  } catch (_) {
+    return selectedText;
+  }
+}
+
+export async function analyzeSourceAgainstManuscript(
+  sourceText: string,
+  sourceName: string,
+  manuscriptText: string,
+  settings: AISettings
+): Promise<string> {
+  const isLocal = settings.provider === 'local';
+  const truncatedSource = truncateText(sourceText, isLocal ? 4000 : 12000);
+  const truncatedManuscript = truncateText(manuscriptText, isLocal ? 3000 : 8000);
+
+  const systemPrompt = DEFAULT_AGENT_PROMPTS['literature-reviewer'];
+
+  const prompt = `## Your manuscript (work-in-progress):
+"""
+${truncatedManuscript}
+"""
+
+## Reference paper "${sourceName}":
+"""
+${truncatedSource}
+"""
+
+Analyze the scientific relationship between these two manuscripts. Focus on how the reference paper can inform, support, complement, or nuance the current manuscript. Identify methodological connections, supporting evidence, differing findings (and why they might differ), and how the author should engage with this reference.`;
+
+  try {
+    const response = await callLLM(prompt, settings, systemPrompt, false);
+    return response || 'No analysis generated. Check your LLM connection.';
+  } catch (error) {
+    throw new Error(`Literature analysis failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
 

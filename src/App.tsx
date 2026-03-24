@@ -4,12 +4,15 @@ import Sidebar from './components/Sidebar';
 import SettingsModal from './components/SettingsModal';
 import PostDraftingView from './components/PostDraftingView';
 import { AgentType, Message, Suggestion, HistoryItem, AISettings } from './types';
-import { analyzeText, chatWithAgent, resolveConflicts, rebutSuggestion, manuscriptSummary, AGENT_INFO, AGENT_ICONS, estimateTokens } from './services/ai';
+import { analyzeText, chatWithAgent, resolveConflicts, runJudgeAgent, rebutSuggestion, manuscriptSummary, rewriteSection, transformWithInstruction, analyzeSourceAgainstManuscript, AGENT_INFO, AGENT_ICONS, estimateTokens } from './services/ai';
 import { Sparkles, FileText, Settings, Download, Keyboard, Eye, Moon, Sun, ChevronDown, FilePlus, Coins, BookOpen, Github } from 'lucide-react';
 import { saveAs } from 'file-saver';
 import TurndownService from 'turndown';
+import localforage from 'localforage';
 
 const AUTOSAVE_KEY = 'manuscript-ai-editor-autosave';
+
+const stripHtml = (html: string) => html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
 
 function AgentIcon({ agent, size = 12 }: { agent: AgentType; size?: number }) {
   const info = AGENT_INFO[agent];
@@ -54,13 +57,9 @@ export default function App() {
   const analyzeMenuRef = useRef<HTMLDivElement>(null);
   const [sidebarTab, setSidebarTab] = useState<'chat' | 'suggestions' | 'history' | 'sources'>('chat');
   const [sidebarWidth, setSidebarWidth] = useState(400);
-  const [guiZoom, setGuiZoom] = useState(100);
-  const [editorZoom, setEditorZoom] = useState(100);
-
-  // Apply zoom to document and editor
-  useEffect(() => {
-    document.documentElement.style.fontSize = `${(guiZoom / 100) * 16}px`;
-  }, [guiZoom]);
+  const [zoom, setZoom] = useState(100);
+  const [editorWidth, setEditorWidth] = useState<'normal' | 'wide' | 'full'>('normal');
+  const [currentAgent, setCurrentAgent] = useState<AgentType>('manager');
 
   // Resize handler for Sidebar
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
@@ -107,7 +106,7 @@ export default function App() {
 
   // Token count
   const tokenCount = useMemo(() => {
-    const plainText = content.replace(/<[^>]*>/g, ' ').trim();
+    const plainText = stripHtml(content);
     return estimateTokens(plainText);
   }, [content]);
 
@@ -171,7 +170,7 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [content, title, suggestions, history, messages]);
 
-  const handleNewManuscript = () => {
+  const handleNewManuscript = async () => {
     if (content.replace(/<[^>]*>/g, '').trim().length > 20) {
       if (!window.confirm('Start a new manuscript? Any unsaved changes will be lost.')) return;
     }
@@ -189,6 +188,7 @@ export default function App() {
     
     // Clear autosave so old content doesn't reload
     localStorage.removeItem(AUTOSAVE_KEY);
+    await localforage.removeItem('manuscript-sources');
     
     // Force editor content reset
     editorRef.current?.setContent(newContent);
@@ -201,9 +201,8 @@ export default function App() {
     setShowAnalyzeMenu(false);
     try {
       // Get the latest text directly from the editor
-      const currentHtml = editorRef.current?.getHTML() || content;
-      const plainText = currentHtml.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-      
+      const plainText = stripHtml(editorRef.current?.getHTML() || content);
+
       if (plainText.length < 20) {
         showToast('Write some text first before analyzing.', 'info');
         setIsAnalyzing(false);
@@ -251,6 +250,15 @@ export default function App() {
           const resolved = await resolveConflicts(combinedSuggestions, aiSettings);
           setSuggestions(prev => [...prev, ...resolved].sort((a, b) => a.startIndex - b.startIndex));
           totalNew = resolved.length;
+          // Run judge agent in the background to remove overlapping lower-impact suggestions
+          const resolvedIds = new Set(resolved.map(s => s.id));
+          runJudgeAgent(resolved, aiSettings).then(judged => {
+            if (judged.length < resolved.length) {
+              const judgedIds = new Set(judged.map(s => s.id));
+              setSuggestions(prev => prev.filter(s => !resolvedIds.has(s.id) || judgedIds.has(s.id)));
+              showToast(`Judge selected ${judged.length} best suggestions (${resolved.length - judged.length} overlapping removed)`, 'info');
+            }
+          }).catch(() => {});
         }
 
         // Provide clear feedback
@@ -282,7 +290,7 @@ export default function App() {
 
     setIsAnalyzing(true);
     try {
-      const plainText = (editorRef.current?.getHTML() || content).replace(/<[^>]*>/g, ' ');
+      const plainText = stripHtml(editorRef.current?.getHTML() || content);
       const result = await chatWithAgent(text, plainText, agent, aiSettings);
       const assistantMsg: Message = {
         id: (Date.now() + 1).toString(),
@@ -370,7 +378,7 @@ export default function App() {
     if (!suggestion) return;
     setIsAnalyzing(true);
     try {
-      const plainText = (editorRef.current?.getHTML() || content).replace(/<[^>]*>/g, ' ');
+      const plainText = stripHtml(editorRef.current?.getHTML() || content);
       const newSugs = await rebutSuggestion(suggestion, feedback, plainText, aiSettings);
       if (newSugs?.length) {
         setSuggestions(prev => {
@@ -404,7 +412,7 @@ export default function App() {
   // Handle selection-based agent query from the editor BubbleMenu
   const handleSelectionQuery = async (selectedText: string, instruction: string, agent: AgentType) => {
     setIsAnalyzing(true);
-    const fullText = (editorRef.current?.getHTML() || content).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+    const fullText = stripHtml(editorRef.current?.getHTML() || content);
     
     // Switch sidebar to chat to show the reply
     setSidebarTab('chat');
@@ -453,6 +461,79 @@ export default function App() {
     }
   };
 
+  const handleTransformSelection = async (selectedText: string, instruction: string, agent: AgentType) => {
+    setIsAnalyzing(true);
+    const plainText = stripHtml(editorRef.current?.getHTML() || content);
+    try {
+      const transformed = await transformWithInstruction(selectedText, instruction, plainText, aiSettings);
+      const suggestion: Suggestion = {
+        id: `suggestion-transform-${Date.now()}`,
+        originalText: selectedText,
+        suggestedText: transformed,
+        explanation: instruction,
+        agent,
+        startIndex: plainText.indexOf(selectedText),
+        endIndex: plainText.indexOf(selectedText) + selectedText.length,
+        severity: 'major',
+        category: 'clarity',
+        section: 'Transform',
+      };
+      setSuggestions(prev => [suggestion, ...prev]);
+      setSidebarTab('suggestions');
+      showToast('Suggestion ready — review in Suggestions tab', 'success');
+    } catch (error) {
+      showToast(`Error: ${error instanceof Error ? error.message : 'Unknown'}`, 'error');
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  const handleRewriteSection = async (selectedText: string) => {
+    setIsAnalyzing(true);
+    const plainText = stripHtml(editorRef.current?.getHTML() || content);
+    try {
+      const rewritten = await rewriteSection(selectedText, plainText, aiSettings);
+      const suggestion: Suggestion = {
+        id: `suggestion-rewrite-${Date.now()}`,
+        originalText: selectedText,
+        suggestedText: rewritten,
+        explanation: 'AI rewrite — improved clarity, flow, and scientific impact while preserving meaning.',
+        agent: 'editor',
+        startIndex: plainText.indexOf(selectedText),
+        endIndex: plainText.indexOf(selectedText) + selectedText.length,
+        severity: 'major',
+        category: 'clarity',
+        section: 'Rewrite',
+      };
+      setSuggestions(prev => [suggestion, ...prev]);
+      setSidebarTab('suggestions');
+      setHighlightedSuggestionId(suggestion.id);
+      setTimeout(() => setHighlightedSuggestionId(null), 2000);
+      showToast('Rewrite suggestion ready — accept or reject in Review tab', 'success');
+    } catch (error) {
+      showToast(`Rewrite failed: ${error instanceof Error ? error.message : 'Unknown error'}`, 'error');
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  const handleAnalyzeSource = async (analysisText: string, sourceName: string) => {
+    const userMsg: Message = {
+      id: Date.now().toString(),
+      role: 'user',
+      content: `Compare reference paper "${sourceName}" against my manuscript`,
+    };
+    const assistantMsg: Message = {
+      id: (Date.now() + 1).toString(),
+      role: 'assistant',
+      content: analysisText,
+      agent: 'literature-reviewer',
+    };
+    setMessages(prev => [...prev, userMsg, assistantMsg]);
+    setSidebarTab('chat');
+    showToast(`Literature analysis of "${sourceName}" ready`, 'success');
+  };
+
   // Manuscript Summary & Big Gaps — high-level review
   const handleManuscriptSummary = async () => {
     setIsAnalyzing(true);
@@ -467,8 +548,7 @@ export default function App() {
     setMessages(prev => [...prev, userMsg]);
     
     try {
-      const currentHtml = editorRef.current?.getHTML() || content;
-      const plainText = currentHtml.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+      const plainText = stripHtml(editorRef.current?.getHTML() || content);
       
       if (plainText.length < 50) {
         showToast('Write more text first for a meaningful summary.', 'info');
@@ -530,7 +610,8 @@ export default function App() {
         setIsAnalyzing(false);
       }
     } else {
-      const workspace = { title, content: currentContent, suggestions, history, messages, aiSettings };
+      const sources = await localforage.getItem('manuscript-sources').catch(() => []);
+      const workspace = { title, content: currentContent, suggestions, history, messages, aiSettings, sources };
       saveAs(new Blob([JSON.stringify(workspace, null, 2)], { type: 'application/json' }), 'workspace.json');
       setSaveState('Saved');
     }
@@ -540,7 +621,7 @@ export default function App() {
     const file = event.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       try {
         const data = JSON.parse(e.target?.result as string);
         if (data.content !== undefined) {
@@ -550,6 +631,7 @@ export default function App() {
           setHistory(data.history || []);
           setMessages(data.messages || []);
           if (data.aiSettings) setAiSettings(data.aiSettings);
+          if (data.sources) await localforage.setItem('manuscript-sources', data.sources);
           setSaveState('Saved');
           // Force editor reset
           editorRef.current?.setContent(data.content);
@@ -569,15 +651,30 @@ export default function App() {
     setTimeout(() => setHighlightedSuggestionId(null), 1500);
   };
 
-  const wordCount = content.replace(/<[^>]*>/g, ' ').trim().split(/\s+/).filter(w => w.length > 0).length;
+  const wordCount = stripHtml(content).split(/\s+/).filter(w => w.length > 0).length;
 
   return (
     <div className="flex h-screen w-screen overflow-hidden font-sans" style={{ background: 'var(--surface-0)', color: 'var(--text-primary)' }}>
       {/* Left Rail */}
       {!isDistractionFree && (
         <div className="w-14 flex flex-col items-center py-5 space-y-5 shrink-0" style={{ borderRight: '1px solid var(--border)', background: 'var(--surface-1)' }}>
-          <div className="w-9 h-9 bg-stone-900 rounded-xl flex items-center justify-center text-white shadow-sm">
-            <FileText size={16} />
+          <div className="relative group">
+            <div className="w-9 h-9 bg-stone-900 rounded-xl flex items-center justify-center text-white shadow-sm cursor-pointer" title="Manuscript AI Editor">
+              <FileText size={16} />
+            </div>
+            <div className="absolute left-full ml-2 top-0 border rounded-xl shadow-xl hidden group-hover:block z-50 p-3" style={{ borderColor: 'var(--border)', background: 'var(--surface-1)', width: '260px' }}>
+              <div className="space-y-2">
+                <div>
+                  <p className="text-[11px] font-bold" style={{ color: 'var(--text-primary)' }}>Manuscript AI Editor</p>
+                  <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>VC by Dawid Zyla · github.com/dzyla/manuscriptAI</p>
+                </div>
+                <div className="border-t pt-2" style={{ borderColor: 'var(--border-subtle)' }}>
+                  <p className="text-[10px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+                    <span className="font-semibold">AI tools assist, not decide.</span> All AI suggestions may contain errors, hallucinations, or scientifically incorrect statements. The researcher is solely responsible for verifying correctness, ensuring scientific accuracy, and maintaining the integrity of the manuscript. Use these tools to brainstorm and improve — always apply your expert judgment.
+                  </p>
+                </div>
+              </div>
+            </div>
           </div>
 
           <div className="flex-1 flex flex-col items-center space-y-3">
@@ -596,11 +693,14 @@ export default function App() {
                 <button onClick={() => handleDownload('md')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>Export Markdown</button>
                 <button onClick={() => handleDownload('docx')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>Export Word</button>
                 <button onClick={() => handleDownload('tex')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>AI Convert to LaTeX</button>
-                <button onClick={() => setIsPostDraftingOpen(true)} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>Post-Drafting Assistant</button>
                 <button onClick={() => handleDownload('json')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg font-medium" style={{ color: 'var(--text-primary)' }}>Save Workspace</button>
               </div>
               <input type="file" ref={fileInputRef} onChange={handleLoadWorkspace} accept=".json" className="hidden" />
             </div>
+
+            <button onClick={() => setIsPostDraftingOpen(true)} className="p-2 rounded-lg transition-colors hover:bg-stone-100" title="Post-Drafting: Rebuttal & Cover Letter" style={{ color: 'var(--text-muted)' }}>
+              <BookOpen size={18} />
+            </button>
 
             <button onClick={() => setShowShortcuts(!showShortcuts)} className="p-2 rounded-lg transition-colors hover:bg-stone-100" title="Keyboard Shortcuts" style={{ color: 'var(--text-muted)' }}>
               <Keyboard size={18} />
@@ -611,25 +711,29 @@ export default function App() {
             </button>
 
             <div className="relative group flex flex-col items-center">
-              <button className="p-2 rounded-lg transition-colors hover:bg-stone-100" style={{ color: 'var(--text-muted)' }} title="GUI Zoom">
+              <button className="p-2 rounded-lg transition-colors hover:bg-stone-100" style={{ color: 'var(--text-muted)' }} title="Text Zoom">
                 <div className="flex flex-col items-center leading-none text-[8px] font-bold">
-                  <span>{guiZoom}%</span>
-                  <span>GUI</span>
+                  <span>{zoom}%</span>
+                  <span>Zoom</span>
                 </div>
               </button>
               <div className="absolute left-full ml-2 top-0 border rounded-xl shadow-xl hidden group-hover:flex flex-col z-50 p-1.5 min-w-[40px] items-center gap-1" style={{ borderColor: 'var(--border)', background: 'var(--surface-1)' }}>
-                <button onClick={() => setGuiZoom(z => Math.min(150, z + 10))} className="w-full py-1 text-xs hover:bg-stone-50 rounded-lg font-bold" style={{ color: 'var(--text-primary)' }}>+</button>
-                <button onClick={() => setGuiZoom(100)} className="w-full py-1 text-[10px] hover:bg-stone-50 rounded-lg font-bold" style={{ color: 'var(--text-secondary)' }}>100%</button>
-                <button onClick={() => setGuiZoom(z => Math.max(50, z - 10))} className="w-full py-1 text-xs hover:bg-stone-50 rounded-lg font-bold" style={{ color: 'var(--text-primary)' }}>-</button>
+                <button onClick={() => setZoom(z => Math.min(150, z + 10))} className="w-full py-1 text-xs hover:bg-stone-50 rounded-lg font-bold" style={{ color: 'var(--text-primary)' }}>+</button>
+                <button onClick={() => setZoom(100)} className="w-full py-1 text-[10px] hover:bg-stone-50 rounded-lg font-bold" style={{ color: 'var(--text-secondary)' }}>100%</button>
+                <button onClick={() => setZoom(z => Math.max(50, z - 10))} className="w-full py-1 text-xs hover:bg-stone-50 rounded-lg font-bold" style={{ color: 'var(--text-primary)' }}>-</button>
               </div>
             </div>
           </div>
           
           <div className="flex flex-col items-center space-y-3 pb-2">
-            <a href="https://github.com/dzyla/manuscriptAI" target="_blank" rel="noopener noreferrer" className="p-2 rounded-lg transition-colors hover:bg-stone-100 flex flex-col items-center gap-1 opacity-70 hover:opacity-100" style={{ color: 'var(--text-muted)' }} title="Developer: Dawid Zyla">
+            <a href="https://github.com/dzyla/manuscriptAI" target="_blank" rel="noopener noreferrer" className="p-2 rounded-lg transition-colors hover:bg-stone-100 flex flex-col items-center gap-0.5 opacity-70 hover:opacity-100" style={{ color: 'var(--text-muted)' }} title="VC by Dawid Zyla — github.com/dzyla/manuscriptAI">
               <Github size={18} />
-              <span className="text-[9px] font-medium leading-[1]" style={{ color: 'var(--text-muted)' }}>Dawid</span>
+              <span className="text-[8px] font-semibold leading-[1]" style={{ color: 'var(--text-muted)' }}>VC by</span>
+              <span className="text-[8px] font-semibold leading-[1]" style={{ color: 'var(--text-muted)' }}>D. Zyla</span>
             </a>
+            <div className="w-9 flex flex-col items-center gap-0.5 text-center opacity-60 hover:opacity-100 cursor-default" title="AI may make mistakes. Researcher is responsible for scientific correctness.">
+              <span className="text-[6px] font-bold uppercase tracking-wider leading-tight text-center" style={{ color: 'var(--text-muted)', writingMode: 'vertical-rl', transform: 'rotate(180deg)', height: '60px' }}>AI · Verify All</span>
+            </div>
             <button onClick={() => setIsSettingsOpen(true)} className="p-2 rounded-lg transition-colors hover:bg-stone-100" style={{ color: 'var(--text-muted)' }}>
               <Settings size={18} />
             </button>
@@ -666,9 +770,22 @@ export default function App() {
           <div className="flex items-center gap-2 shrink-0">
                         {/* Zoom Controls */}
             <div className="hidden lg:flex items-center gap-1 border rounded-lg p-1 mr-2 bg-stone-50" style={{ borderColor: 'var(--border)' }}>
-              <button onClick={() => setGuiZoom(z => Math.max(50, z - 10))} className="px-1.5 hover:bg-stone-200 rounded text-xs font-medium" title="Zoom Out GUI">-</button>
-              <span className="text-[10px] font-bold px-1 w-10 text-center" title="GUI Zoom">{guiZoom}%</span>
-              <button onClick={() => setGuiZoom(z => Math.min(200, z + 10))} className="px-1.5 hover:bg-stone-200 rounded text-xs font-medium" title="Zoom In GUI">+</button>
+              <button onClick={() => setZoom(z => Math.max(50, z - 10))} className="px-1.5 hover:bg-stone-200 rounded text-xs font-medium" title="Zoom Out">-</button>
+              <span className="text-[10px] font-bold px-1 w-10 text-center" title="Text Zoom">{zoom}%</span>
+              <button onClick={() => setZoom(z => Math.min(200, z + 10))} className="px-1.5 hover:bg-stone-200 rounded text-xs font-medium" title="Zoom In">+</button>
+            </div>
+            {/* Editor width toggle */}
+            <div className="hidden lg:flex items-center gap-0.5 border rounded-lg p-1 mr-1 bg-stone-50" style={{ borderColor: 'var(--border)' }}>
+              {(['normal', 'wide', 'full'] as const).map(w => (
+                <button
+                  key={w}
+                  onClick={() => setEditorWidth(w)}
+                  className={`px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${editorWidth === w ? 'bg-stone-800 text-white' : 'hover:bg-stone-100 text-stone-500'}`}
+                  title={`Editor width: ${w}`}
+                >
+                  {w === 'normal' ? '◫' : w === 'wide' ? '⬛' : '⬜'}
+                </button>
+              ))}
             </div>
 
             <button
@@ -707,17 +824,19 @@ export default function App() {
                   <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
                     Run Single Agent
                   </div>
-                  {(Object.entries(AGENT_INFO) as [AgentType, typeof AGENT_INFO[AgentType]][]).map(([agentId, info]) => (
-                    <button
-                      key={agentId}
-                      onClick={() => handleAnalyze(agentId)}
-                      className="w-full text-left px-3 py-2 text-xs rounded-lg flex items-center gap-2 transition-colors hover:bg-stone-50"
-                      style={{ color: 'var(--text-secondary)' }}
-                    >
-                      <AgentIcon agent={agentId} size={14} />
-                      <span className="font-medium">{info.label}</span>
-                    </button>
-                  ))}
+                  {(Object.entries(AGENT_INFO) as [AgentType, typeof AGENT_INFO[AgentType]][])
+                    .filter(([agentId]) => agentId !== 'literature-reviewer')
+                    .map(([agentId, info]) => (
+                      <button
+                        key={agentId}
+                        onClick={() => handleAnalyze(agentId)}
+                        className="w-full text-left px-3 py-2 text-xs rounded-lg flex items-center gap-2 transition-colors hover:bg-stone-50"
+                        style={{ color: 'var(--text-secondary)' }}
+                      >
+                        <AgentIcon agent={agentId} size={14} />
+                        <span className="font-medium">{info.label}</span>
+                      </button>
+                    ))}
                 </div>
               )}
             </div>
@@ -745,8 +864,13 @@ export default function App() {
             suggestions={suggestions}
             onSuggestionClick={handleSuggestionClick}
             onSelectionQuery={handleSelectionQuery}
+            onRewriteSection={handleRewriteSection}
+            onTransformSelection={handleTransformSelection}
             isDistractionFree={isDistractionFree}
-            editorZoom={editorZoom}
+            editorZoom={zoom}
+            editorWidth={editorWidth}
+            currentAgent={currentAgent}
+            aiSettings={aiSettings}
           />
         </main>
 
@@ -794,6 +918,11 @@ export default function App() {
             analysisProgress={analysisProgress}
             activeTabOverride={sidebarTab}
             onTabChange={setSidebarTab}
+            onAgentChange={setCurrentAgent}
+            manuscriptContent={stripHtml(content)}
+            aiSettings={aiSettings}
+            onAnalyzeSource={handleAnalyzeSource}
+            contentZoom={zoom}
           />
         </div>
       )}
@@ -807,7 +936,7 @@ export default function App() {
       <PostDraftingView
         isOpen={isPostDraftingOpen}
         onClose={() => setIsPostDraftingOpen(false)}
-        manuscriptText={content.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()}
+        manuscriptText={stripHtml(content)}
         aiSettings={aiSettings}
       />
 

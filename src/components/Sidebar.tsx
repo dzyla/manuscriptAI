@@ -1,15 +1,17 @@
 import { useState, useRef, useEffect, useMemo, createElement } from 'react';
-import { AgentType, Message, Suggestion, HistoryItem, SuggestionSeverity } from '../types';
-import { Send, Sparkles, Check, X, MessageSquare, History as HistoryIcon, Info, Clock, CheckCheck, XCircle, Filter, ChevronDown, ChevronUp, BookOpen, Trash2, FileText, UploadCloud } from 'lucide-react';
+import { AgentType, Message, Suggestion, HistoryItem, SuggestionSeverity, AISettings } from '../types';
+import { Send, Sparkles, Check, X, MessageSquare, History as HistoryIcon, Info, Clock, CheckCheck, XCircle, Filter, ChevronDown, ChevronUp, BookOpen, Trash2, FileText, UploadCloud, FolderOpen, BookMarked } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import * as pdfjsLib from 'pdfjs-dist';
 import { Cite } from '@citation-js/core';
 import '@citation-js/plugin-bibtex';
 import localforage from 'localforage';
+import { digestSourceForManuscript, analyzeSourceAgainstManuscript, AGENT_INFO, AGENT_ICONS } from '../services/ai';
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
-import { AGENT_INFO, AGENT_ICONS } from '../services/ai';
+// Use bundled worker via Vite's URL import for Electron compatibility
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).href;
 
 interface SidebarProps {
   suggestions: Suggestion[];
@@ -29,6 +31,11 @@ interface SidebarProps {
   analysisProgress?: { agent: string; total: number; done: number } | null;
   activeTabOverride?: 'chat' | 'suggestions' | 'history' | 'sources';
   onTabChange?: (tab: 'chat' | 'suggestions' | 'history' | 'sources') => void;
+  onAgentChange?: (agent: AgentType) => void;
+  manuscriptContent?: string;
+  aiSettings?: AISettings;
+  onAnalyzeSource?: (analysis: string, sourceName: string) => void;
+  contentZoom?: number;
 }
 
 const SEVERITY_CONFIG: Record<SuggestionSeverity, { label: string; color: string; dotColor: string }> = {
@@ -97,13 +104,29 @@ export default function Sidebar({
   analysisProgress,
   activeTabOverride,
   onTabChange,
+  onAgentChange,
+  manuscriptContent = '',
+  aiSettings,
+  onAnalyzeSource,
+  contentZoom = 100,
 }: SidebarProps) {
   const [input, setInput] = useState('');
   const [rebuttalTexts, setRebuttalTexts] = useState<Record<string, string>>({});
   const [activeTab, setActiveTabLocal] = useState<'chat' | 'suggestions' | 'history' | 'sources'>('chat');
-  const [sources, setSources] = useState<{id: string, name: string, type: 'pdf' | 'bib', text: string}[]>([]);
+  const [sources, setSources] = useState<{id: string, name: string, type: 'pdf' | 'bib', text: string, digest?: string}[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [isParsing, setIsParsing] = useState(false);
+  const [parsingFileName, setParsingFileName] = useState<string | null>(null);
+  const [digestingId, setDigestingId] = useState<string | null>(null);
+  const [analyzingSourceId, setAnalyzingSourceId] = useState<string | null>(null);
+  const fileUploadRef = useRef<HTMLInputElement>(null);
+  const contentZoomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (contentZoomRef.current) {
+      (contentZoomRef.current.style as any).zoom = String(contentZoom / 100);
+    }
+  }, [contentZoom]);
 
   useEffect(() => {
     localforage.getItem('manuscript-sources').then((saved: any) => {
@@ -129,20 +152,20 @@ export default function Sidebar({
     return text;
   };
 
-  const handleFileDrop = async (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    const files = Array.from(e.dataTransfer.files).filter(f => f.name.endsWith('.pdf') || f.name.endsWith('.bib'));
-    if (files.length === 0) return;
+  const processFiles = async (files: File[]) => {
+    const filtered = files.filter(f => f.name.endsWith('.pdf') || f.name.endsWith('.bib'));
+    if (filtered.length === 0) return;
 
     setIsParsing(true);
-    const newSources = [];
+    const newSources: typeof sources = [];
 
-    for (const file of files) {
+    for (const file of filtered) {
+      setParsingFileName(file.name);
       try {
         if (file.name.endsWith('.pdf')) {
           const text = await extractTextFromPDF(file);
-          newSources.push({ id: Date.now().toString() + Math.random(), name: file.name, type: 'pdf' as const, text });
+          const id = Date.now().toString() + Math.random();
+          newSources.push({ id, name: file.name, type: 'pdf' as const, text });
         } else if (file.name.endsWith('.bib')) {
           const text = await file.text();
           new Cite(text);
@@ -152,9 +175,53 @@ export default function Sidebar({
         console.error('Failed to parse file:', file.name, err);
       }
     }
+    setParsingFileName(null);
 
-    if (newSources.length > 0) setSources(prev => [...prev, ...newSources]);
+    if (newSources.length > 0) {
+      setSources(prev => [...prev, ...newSources]);
+      // Auto-digest PDFs in relation to manuscript
+      if (aiSettings) {
+        for (const src of newSources) {
+          if (src.type === 'pdf') {
+            setDigestingId(src.id);
+            setParsingFileName(`Digesting ${src.name}...`);
+            try {
+              const digest = await digestSourceForManuscript(src.text, src.name, manuscriptContent, aiSettings);
+              setSources(prev => prev.map(s => s.id === src.id ? { ...s, digest } : s));
+            } catch (_) {}
+            setDigestingId(null);
+            setParsingFileName(null);
+          }
+        }
+      }
+    }
     setIsParsing(false);
+  };
+
+  const handleFileDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    await processFiles(Array.from(e.dataTransfer.files));
+  };
+
+  const handleFileInput = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    await processFiles(files);
+    if (fileUploadRef.current) fileUploadRef.current.value = '';
+  };
+
+  const handleAnalyzeSource = async (source: { id: string; name: string; text: string }) => {
+    if (!aiSettings || analyzingSourceId) return;
+    setAnalyzingSourceId(source.id);
+    setActiveTab('chat');
+    try {
+      const analysis = await analyzeSourceAgainstManuscript(source.text, source.name, manuscriptContent, aiSettings);
+      onAnalyzeSource?.(analysis, source.name);
+    } catch (err) {
+      onAnalyzeSource?.(`Failed to analyze "${source.name}": ${err instanceof Error ? err.message : 'Unknown error'}`, source.name);
+    } finally {
+      setAnalyzingSourceId(null);
+    }
   };
 
   // Sync tab from parent override
@@ -167,6 +234,10 @@ export default function Sidebar({
     onTabChange?.(tab);
   };
   const [selectedAgent, setSelectedAgent] = useState<AgentType>('manager');
+  const handleAgentChange = (agent: AgentType) => {
+    setSelectedAgent(agent);
+    onAgentChange?.(agent);
+  };
   const [showAgentInfo, setShowAgentInfo] = useState(false);
   const [severityFilter, setSeverityFilter] = useState<SuggestionSeverity | 'all'>('all');
   const [showFilters, setShowFilters] = useState(false);
@@ -179,9 +250,10 @@ export default function Sidebar({
     if (highlightedSuggestionId) {
       // Auto-switch to suggestions tab when a highlight is clicked in the editor
       setActiveTab('suggestions');
+      // Wait for tab switch + DOM render before scrolling
       setTimeout(() => {
         suggestionRefs.current[highlightedSuggestionId]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }, 100);
+      }, 300);
     }
   }, [highlightedSuggestionId]);
 
@@ -262,7 +334,7 @@ export default function Sidebar({
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto p-4">
+      <div ref={contentZoomRef} className="flex-1 overflow-y-auto p-4">
         {activeTab === 'chat' ? (
           <div className="space-y-4">
             {/* Chat History Title */}
@@ -299,6 +371,7 @@ export default function Sidebar({
                     ) : (
                       <div className="markdown-chat-content whitespace-normal break-words text-[13px] leading-relaxed">
                         <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
                           components={{
                             p: ({node, ...props}) => <p className="mb-2 last:mb-0" {...props} />,
                             ul: ({node, ...props}) => <ul className="list-disc pl-4 mb-2" {...props} />,
@@ -307,7 +380,14 @@ export default function Sidebar({
                             h2: ({node, ...props}) => <h2 className="text-[14px] font-bold mt-3 mb-1" {...props} />,
                             h3: ({node, ...props}) => <h3 className="text-[13px] font-bold mt-2 mb-1" {...props} />,
                             strong: ({node, ...props}) => <strong className="font-semibold" {...props} />,
-                            em: ({node, ...props}) => <em className="italic" {...props} />
+                            em: ({node, ...props}) => <em className="italic" {...props} />,
+                            table: () => null,
+                            thead: () => null,
+                            tbody: () => null,
+                            tr: () => null,
+                            th: () => null,
+                            td: () => null,
+                            code: ({node, ...props}) => <code className="px-1 py-0.5 rounded text-[11px] font-mono" style={{ background: 'var(--surface-2)' }} {...props} />,
                           }}
                         >
                           {msg.content}
@@ -363,6 +443,14 @@ export default function Sidebar({
                 <div className="flex items-center gap-2 text-xs animate-pulse" style={{ color: 'var(--text-muted)' }}>
                   <Sparkles size={12} />
                   Agent is thinking...
+                </div>
+              )}
+              {analyzingSourceId && (
+                <div className="flex items-start gap-2 border rounded-2xl rounded-tl-sm p-3 shadow-sm animate-pulse" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-1)' }}>
+                  <BookMarked size={13} className="mt-0.5 shrink-0" style={{ color: 'var(--accent-purple)' }} />
+                  <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                    Literature Reviewer is analyzing the reference paper against your manuscript...
+                  </div>
                 </div>
               )}
               <div ref={chatEndRef} />
@@ -611,41 +699,109 @@ export default function Sidebar({
             onDragLeave={(e) => { e.preventDefault(); setIsDragging(false); }}
             onDrop={handleFileDrop}
           >
-            {isParsing && (
-              <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/50 backdrop-blur-sm rounded-xl">
+            {(isParsing || digestingId) && (
+              <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/70 backdrop-blur-sm rounded-xl">
                 <div className="flex flex-col items-center gap-2">
                   <Sparkles className="animate-spin text-blue-500" size={24} />
-                  <span className="text-xs font-semibold">Parsing files...</span>
+                  <span className="text-xs font-semibold">{digestingId ? 'Digesting with AI...' : 'Parsing files...'}</span>
+                  {parsingFileName && <p className="text-[10px] text-stone-500 text-center max-w-[180px] truncate">{parsingFileName}</p>}
+                  {digestingId && !parsingFileName && <p className="text-[10px] text-stone-500 text-center max-w-[180px]">Summarizing relevant content in context of your manuscript</p>}
                 </div>
               </div>
             )}
-            <div className={`text-center py-6 border-2 border-dashed rounded-xl transition-colors ${isDragging ? 'border-blue-500 bg-blue-50/50' : ''}`} style={{ borderColor: isDragging ? 'var(--accent-blue)' : 'var(--border)' }}>
-                <UploadCloud size={24} className="mx-auto mb-2 opacity-50" style={{ color: 'var(--text-muted)' }} />
-                <p className="text-xs font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>Drop PDFs & .bib files here</p>
-                <p className="text-[10px]" style={{ color: 'var(--text-secondary)' }}>These will be used to verify citations and facts</p>
+            {analyzingSourceId && (
+              <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/70 backdrop-blur-sm rounded-xl">
+                <div className="flex flex-col items-center gap-2">
+                  <Sparkles className="animate-spin text-violet-500" size={24} />
+                  <span className="text-xs font-semibold">Comparing manuscripts...</span>
+                  <p className="text-[10px] text-stone-500 text-center max-w-[200px]">Literature Reviewer is analyzing support &amp; contradictions</p>
+                </div>
+              </div>
+            )}
+            <div
+              className={`text-center py-6 border-2 border-dashed rounded-xl transition-colors cursor-pointer ${isDragging ? 'border-blue-500 bg-blue-50/50' : 'hover:border-stone-400 hover:bg-stone-50/50'}`}
+              style={{ borderColor: isDragging ? 'var(--accent-blue)' : 'var(--border)' }}
+              onClick={() => fileUploadRef.current?.click()}
+            >
+              <UploadCloud size={24} className="mx-auto mb-2 opacity-50" style={{ color: 'var(--text-muted)' }} />
+              <p className="text-xs font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>Drop or click to upload PDFs & .bib files</p>
+              <p className="text-[10px]" style={{ color: 'var(--text-secondary)' }}>PDFs are AI-digested in context of your manuscript</p>
+              <div className="mt-2 flex items-center justify-center gap-1.5">
+                <button
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[10px] font-semibold border transition-colors hover:bg-stone-100"
+                  style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
+                  onClick={(e) => { e.stopPropagation(); fileUploadRef.current?.click(); }}
+                >
+                  <FolderOpen size={11} /> Browse files
+                </button>
+              </div>
             </div>
+            <input
+              ref={fileUploadRef}
+              type="file"
+              accept=".pdf,.bib"
+              multiple
+              className="hidden"
+              onChange={handleFileInput}
+            />
 
             {sources.length > 0 && (
-                <div className="space-y-2">
-                    <h3 className="text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>Uploaded Sources ({sources.length})</h3>
-                    {sources.map((source) => (
-                        <div key={source.id} className="flex items-center justify-between p-3 border rounded-xl shadow-sm" style={{ borderColor: 'var(--border)', background: 'var(--surface-1)' }}>
-                            <div className="flex items-center gap-2 overflow-hidden">
-                                <FileText size={14} style={{ color: 'var(--text-tertiary)' }} />
-                                <div className="truncate">
-                                    <p className="text-xs font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{source.name}</p>
-                                    <p className="text-[9px]" style={{ color: 'var(--text-tertiary)' }}>{source.type.toUpperCase()} • {Math.round(source.text.length / 1024)} KB</p>
-                                </div>
-                            </div>
-                            <button
-                                className="p-1.5 rounded-lg hover:bg-stone-100 transition-colors" style={{ color: 'var(--text-muted)' }}
-                                onClick={() => setSources(s => s.filter(src => src.id !== source.id))}
-                            >
-                                <Trash2 size={12} />
-                            </button>
+              <div className="space-y-2">
+                <h3 className="text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>Uploaded Sources ({sources.length})</h3>
+                {sources.map((source) => (
+                  <div key={source.id} className="border rounded-xl shadow-sm overflow-hidden" style={{ borderColor: 'var(--border)', background: 'var(--surface-1)' }}>
+                    <div className="flex items-center justify-between p-3">
+                      <div className="flex items-center gap-2 overflow-hidden">
+                        <FileText size={14} style={{ color: 'var(--text-tertiary)' }} className="shrink-0" />
+                        <div className="truncate">
+                          <p className="text-xs font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{source.name}</p>
+                          <p className="text-[9px]" style={{ color: 'var(--text-tertiary)' }}>
+                            {source.type.toUpperCase()} • {Math.round(source.text.length / 1024)} KB
+                            {source.digest && <span className="ml-1 text-emerald-600 font-semibold">• digested</span>}
+                          </p>
                         </div>
-                    ))}
-                </div>
+                      </div>
+                      <button
+                        className="p-1.5 rounded-lg hover:bg-stone-100 transition-colors shrink-0" style={{ color: 'var(--text-muted)' }}
+                        onClick={() => setSources(s => s.filter(src => src.id !== source.id))}
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                    {source.type === 'pdf' && aiSettings && (
+                      <div className="px-3 pb-3">
+                        <button
+                          disabled={!!analyzingSourceId}
+                          onClick={() => handleAnalyzeSource(source)}
+                          className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg text-[11px] font-semibold transition-colors disabled:opacity-50"
+                          style={{
+                            background: analyzingSourceId === source.id ? 'var(--surface-2)' : 'var(--violet-soft, #f5f3ff)',
+                            color: 'var(--violet-700, #6d28d9)',
+                            border: '1px solid var(--violet-200, #ddd6fe)'
+                          }}
+                        >
+                          <BookMarked size={12} />
+                          {analyzingSourceId === source.id ? 'Analyzing...' : 'Compare against manuscript'}
+                        </button>
+                      </div>
+                    )}
+                    {source.digest && (
+                      <div className="px-3 pb-3">
+                        <div className="text-[10px] font-bold uppercase tracking-widest mb-1" style={{ color: 'var(--text-muted)' }}>AI Summary (relevant to manuscript)</div>
+                        <div className="text-[11px] leading-relaxed p-2 rounded-lg" style={{ background: 'var(--surface-2)', color: 'var(--text-secondary)' }}>
+                          <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+                            ul: ({...props}) => <ul className="list-disc pl-4 space-y-0.5" {...props} />,
+                            li: ({...props}) => <li {...props} />,
+                            p: ({...props}) => <p className="mb-1" {...props} />,
+                          }}>
+                            {source.digest}
+                          </ReactMarkdown>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
             )}
           </div>
         ) : null}
@@ -659,7 +815,7 @@ export default function Sidebar({
             {agents.map(agent => (
               <button
                 key={agent.id}
-                onClick={() => setSelectedAgent(agent.id)}
+                onClick={() => handleAgentChange(agent.id)}
                 className={`px-2 py-1 rounded-md text-[10px] font-medium whitespace-nowrap transition-all flex items-center gap-1 ${
                   selectedAgent === agent.id ? `${agent.color} text-white` : 'border hover:bg-stone-50'
                 }`}
