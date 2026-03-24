@@ -54,6 +54,13 @@ export default function App() {
   const analyzeMenuRef = useRef<HTMLDivElement>(null);
   const [sidebarTab, setSidebarTab] = useState<'chat' | 'suggestions' | 'history' | 'sources'>('chat');
   const [sidebarWidth, setSidebarWidth] = useState(400);
+  const [guiZoom, setGuiZoom] = useState(100);
+  const [editorZoom, setEditorZoom] = useState(100);
+
+  // Apply zoom to document and editor
+  useEffect(() => {
+    document.documentElement.style.fontSize = `${(guiZoom / 100) * 16}px`;
+  }, [guiZoom]);
 
   // Resize handler for Sidebar
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
@@ -602,6 +609,20 @@ export default function App() {
             <button onClick={() => setDarkMode(!darkMode)} className="p-2 rounded-lg transition-colors hover:bg-stone-100" title={darkMode ? 'Light Mode' : 'Dark Mode'} style={{ color: 'var(--text-muted)' }}>
               {darkMode ? <Sun size={18} /> : <Moon size={18} />}
             </button>
+
+            <div className="relative group flex flex-col items-center">
+              <button className="p-2 rounded-lg transition-colors hover:bg-stone-100" style={{ color: 'var(--text-muted)' }} title="GUI Zoom">
+                <div className="flex flex-col items-center leading-none text-[8px] font-bold">
+                  <span>{guiZoom}%</span>
+                  <span>GUI</span>
+                </div>
+              </button>
+              <div className="absolute left-full ml-2 top-0 border rounded-xl shadow-xl hidden group-hover:flex flex-col z-50 p-1.5 min-w-[40px] items-center gap-1" style={{ borderColor: 'var(--border)', background: 'var(--surface-1)' }}>
+                <button onClick={() => setGuiZoom(z => Math.min(150, z + 10))} className="w-full py-1 text-xs hover:bg-stone-50 rounded-lg font-bold" style={{ color: 'var(--text-primary)' }}>+</button>
+                <button onClick={() => setGuiZoom(100)} className="w-full py-1 text-[10px] hover:bg-stone-50 rounded-lg font-bold" style={{ color: 'var(--text-secondary)' }}>100%</button>
+                <button onClick={() => setGuiZoom(z => Math.max(50, z - 10))} className="w-full py-1 text-xs hover:bg-stone-50 rounded-lg font-bold" style={{ color: 'var(--text-primary)' }}>-</button>
+              </div>
+            </div>
           </div>
           
           <div className="flex flex-col items-center space-y-3 pb-2">
@@ -643,6 +664,13 @@ export default function App() {
             <div id="toolbar-portal" className="flex-1 flex justify-end min-w-0 overflow-hidden" />
           </div>
           <div className="flex items-center gap-2 shrink-0">
+                        {/* Zoom Controls */}
+            <div className="hidden lg:flex items-center gap-1 border rounded-lg p-1 mr-2 bg-stone-50" style={{ borderColor: 'var(--border)' }}>
+              <button onClick={() => setGuiZoom(z => Math.max(50, z - 10))} className="px-1.5 hover:bg-stone-200 rounded text-xs font-medium" title="Zoom Out GUI">-</button>
+              <span className="text-[10px] font-bold px-1 w-10 text-center" title="GUI Zoom">{guiZoom}%</span>
+              <button onClick={() => setGuiZoom(z => Math.min(200, z + 10))} className="px-1.5 hover:bg-stone-200 rounded text-xs font-medium" title="Zoom In GUI">+</button>
+            </div>
+
             <button
               onClick={() => setIsDistractionFree(!isDistractionFree)}
               className={`p-2 rounded-lg transition-all ${isDistractionFree ? 'bg-stone-800 text-white' : 'hover:bg-stone-50'}`}
@@ -718,6 +746,7 @@ export default function App() {
             onSuggestionClick={handleSuggestionClick}
             onSelectionQuery={handleSelectionQuery}
             isDistractionFree={isDistractionFree}
+            editorZoom={editorZoom}
           />
         </main>
 

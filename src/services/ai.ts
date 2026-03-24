@@ -713,3 +713,34 @@ Provide your structured review as described in your instructions.`;
     throw new Error(`Failed to generate manuscript summary: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
+
+export async function generatePostDraftingContent(text: string, type: 'cover_letter' | 'rebuttal', settings: AISettings): Promise<string> {
+  const systemPrompt = type === 'cover_letter' ? POST_DRAFTING_PROMPTS.COVER_LETTER_AGENT : POST_DRAFTING_PROMPTS.REBUTTAL_AGENT;
+
+  const prompt = `Here is the manuscript text:\n\n"""\n${text}\n"""\n\nPlease generate the requested document based on your instructions.`;
+
+  try {
+    const response = await callLLM(prompt, settings, systemPrompt, false);
+    return response || 'No content generated. Check your LLM connection.';
+  } catch (error) {
+    throw new Error(`Failed to generate content: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+}
+
+export const POST_DRAFTING_PROMPTS = {
+  COVER_LETTER_AGENT: `You are an expert academic editor drafting a journal cover letter.
+Write a formal, persuasive cover letter to the Editor-in-Chief.
+1. State the manuscript title and target journal (use placeholders like [Journal Name] if unknown).
+2. Briefly summarize the core research question and methodology.
+3. Highlight the most significant findings and their broader impact.
+4. Explain why this paper is a perfect fit for the journal's readership.
+5. Include standard declarations (not under consideration elsewhere, all authors agree).
+Make it professional, confident, and concise (under 400 words).`,
+
+  REBUTTAL_AGENT: `You are an expert academic editor drafting a response to reviewers.
+Based on the provided manuscript, draft a template for a rebuttal letter.
+Include:
+1. A polite, appreciative opening to the Editor and Reviewers.
+2. A bulleted summary of the major changes made to the manuscript.
+3. A structured "Point-by-Point Response" section with placeholder examples showing how to respectfully agree with, or push back on, reviewer comments using evidence from the text.`
+};

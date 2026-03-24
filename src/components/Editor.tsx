@@ -23,6 +23,7 @@ interface EditorProps {
   onSuggestionClick: (suggestionId: string) => void;
   onSelectionQuery?: (selectedText: string, instruction: string, agent: AgentType) => void;
   isDistractionFree?: boolean;
+  editorZoom?: number;
 }
 
 export interface EditorRef {
@@ -95,7 +96,7 @@ const AGENT_QUICK_ACTIONS: Record<AgentType, { label: string; instruction: strin
   ],
 };
 
-const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggestions, onSuggestionClick, onSelectionQuery, isDistractionFree }, ref) => {
+const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggestions, onSuggestionClick, onSelectionQuery, isDistractionFree, editorZoom = 100 }, ref) => {
   const [isMounted, setIsMounted] = useState(false);
   const [showSelectionBar, setShowSelectionBar] = useState(false);
   const [selectionInstruction, setSelectionInstruction] = useState('');
@@ -328,7 +329,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
   );
 
   return (
-    <div className={`w-full max-w-4xl mx-auto ${isDistractionFree ? 'focus-mode' : ''}`}>
+    <div className={`w-full max-w-4xl mx-auto ${isDistractionFree ? 'focus-mode' : ''}`} style={{ fontSize: `${(editorZoom / 100)}em` }}>
       <div className="bg-[var(--editor-bg)] min-h-[600px] shadow-[var(--editor-shadow)] rounded-sm border border-[var(--border-subtle)] transition-colors duration-300">
         
         {/* Floating Toolbar (Portal) */}
@@ -355,6 +356,9 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
         )}
 
         <div className="px-8 sm:px-12 md:px-16 py-12 md:py-20">
+          <div className="flex justify-end mb-4 absolute right-8 top-16 z-10 hidden sm:flex">
+             {/* If we wanted editor-specific zoom buttons here */}
+          </div>
           <EditorContent editor={editor} />
         </div>
 
