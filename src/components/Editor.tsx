@@ -23,6 +23,7 @@ interface EditorProps {
   onSuggestionClick: (suggestionId: string) => void;
   onSelectionQuery?: (selectedText: string, instruction: string, agent: AgentType) => void;
   isDistractionFree?: boolean;
+  docZoom?: number;
 }
 
 export interface EditorRef {
@@ -95,7 +96,7 @@ const AGENT_QUICK_ACTIONS: Record<AgentType, { label: string; instruction: strin
   ],
 };
 
-const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggestions, onSuggestionClick, onSelectionQuery, isDistractionFree }, ref) => {
+const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggestions, onSuggestionClick, onSelectionQuery, isDistractionFree, docZoom = 1 }, ref) => {
   const [isMounted, setIsMounted] = useState(false);
   const [showSelectionBar, setShowSelectionBar] = useState(false);
   const [selectionInstruction, setSelectionInstruction] = useState('');
@@ -355,7 +356,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
         )}
 
         <div className="px-8 sm:px-12 md:px-16 py-12 md:py-20">
-          <EditorContent editor={editor} />
+          <EditorContent editor={editor} style={{ zoom: docZoom }} />
         </div>
 
         {/* Stats Bar */}

@@ -52,6 +52,11 @@ export default function App() {
   const analyzeMenuRef = useRef<HTMLDivElement>(null);
   const [sidebarTab, setSidebarTab] = useState<'chat' | 'suggestions' | 'history'>('chat');
   const [sidebarWidth, setSidebarWidth] = useState(400);
+  const [guiZoom, setGuiZoom] = useState(1);
+  const [docZoom, setDocZoom] = useState(1);
+  useEffect(() => {
+    document.body.style.zoom = guiZoom.toString();
+  }, [guiZoom]);
 
   // Resize handler for Sidebar
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
@@ -695,6 +700,7 @@ export default function App() {
             onSuggestionClick={handleSuggestionClick}
             onSelectionQuery={handleSelectionQuery}
             isDistractionFree={isDistractionFree}
+            docZoom={docZoom}
           />
         </main>
 
@@ -703,6 +709,16 @@ export default function App() {
           <div className="flex items-center gap-4">
             <span>{wordCount} words</span>
             <span>~{tokenCount.toLocaleString()} tokens</span>
+            <div className="flex items-center gap-2 ml-4">
+              <span title="GUI Zoom">GUI:</span>
+              <button onClick={() => setGuiZoom(z => Math.max(0.5, z - 0.1))} className="px-1 hover:bg-stone-200 rounded">-</button>
+              <span>{Math.round(guiZoom * 100)}%</span>
+              <button onClick={() => setGuiZoom(z => Math.min(2, z + 0.1))} className="px-1 hover:bg-stone-200 rounded">+</button>
+              <span className="ml-2" title="Document Zoom">Doc:</span>
+              <button onClick={() => setDocZoom(z => Math.max(0.5, z - 0.1))} className="px-1 hover:bg-stone-200 rounded">-</button>
+              <span>{Math.round(docZoom * 100)}%</span>
+              <button onClick={() => setDocZoom(z => Math.min(3, z + 0.1))} className="px-1 hover:bg-stone-200 rounded">+</button>
+            </div>
             <span>{suggestions.length} suggestions</span>
           </div>
           <div className="flex items-center gap-3">
