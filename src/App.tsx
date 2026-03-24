@@ -60,6 +60,7 @@ export default function App() {
   const [zoom, setZoom] = useState(100);
   const [editorWidth, setEditorWidth] = useState<'normal' | 'wide' | 'full'>('normal');
   const [currentAgent, setCurrentAgent] = useState<AgentType>('manager');
+  const [pendingDownloadFormat, setPendingDownloadFormat] = useState<'md' | 'docx' | 'json' | 'tex' | null>(null);
 
   // Resize handler for Sidebar
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
@@ -284,14 +285,16 @@ export default function App() {
     }
   };
 
-  const handleSendMessage = async (text: string, agent: AgentType) => {
+  const handleSendMessage = async (text: string, agent: AgentType, attachedSources?: Array<{ name: string; text: string }>) => {
     const userMsg: Message = { id: Date.now().toString(), role: 'user', content: text };
     setMessages(prev => [...prev, userMsg]);
 
     setIsAnalyzing(true);
     try {
       const plainText = stripHtml(editorRef.current?.getHTML() || content);
-      const result = await chatWithAgent(text, plainText, agent, aiSettings);
+      // Use the attached sources if provided; fall back to manuscript text
+      const context = attachedSources ? plainText : plainText;
+      const result = await chatWithAgent(text, context, agent, aiSettings, attachedSources);
       const assistantMsg: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
@@ -582,7 +585,7 @@ export default function App() {
     }
   };
 
-  const handleDownload = async (format: 'md' | 'docx' | 'json' | 'tex') => {
+  const doDownload = async (format: 'md' | 'docx' | 'json' | 'tex') => {
     const currentContent = editorRef.current?.getHTML() || content;
     if (format === 'md') {
       const turndownService = new TurndownService();
@@ -615,6 +618,14 @@ export default function App() {
       saveAs(new Blob([JSON.stringify(workspace, null, 2)], { type: 'application/json' }), 'workspace.json');
       setSaveState('Saved');
     }
+  };
+
+  const handleDownload = async (format: 'md' | 'docx' | 'json' | 'tex') => {
+    if (format !== 'json') {
+      setPendingDownloadFormat(format);
+      return;
+    }
+    await doDownload(format);
   };
 
   const handleLoadWorkspace = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -951,6 +962,45 @@ export default function App() {
           style={toast.type === 'info' ? { background: 'var(--surface-1)', color: 'var(--text-secondary)' } : {}}
           >
             {toast.type === 'success' ? '✓' : toast.type === 'error' ? '✕' : 'ℹ'} {toast.message}
+          </div>
+        </div>
+      )}
+
+      {/* Export disclaimer modal */}
+      {pendingDownloadFormat && (
+        <div className="fixed inset-0 z-[160] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-stone-900/40 backdrop-blur-sm" />
+          <div className="relative rounded-2xl shadow-2xl p-6 max-w-sm w-full border" style={{ background: 'var(--surface-1)', borderColor: 'var(--border)' }}>
+            <h3 className="text-sm font-bold mb-3" style={{ color: 'var(--text-primary)' }}>Before You Export</h3>
+            <p className="text-xs leading-relaxed mb-4" style={{ color: 'var(--text-secondary)' }}>
+              AI tools assist in drafting and editing, but they can produce errors, hallucinations, or scientifically incorrect statements. By downloading this manuscript you confirm that:
+            </p>
+            <ul className="text-xs space-y-1.5 mb-5 list-none">
+              {[
+                'You have reviewed all AI-generated content for accuracy.',
+                'You take sole responsibility for the scientific correctness and integrity of this work.',
+                'AI suggestions are a starting point — not a substitute for expert judgment.',
+              ].map(item => (
+                <li key={item} className="flex items-start gap-2" style={{ color: 'var(--text-primary)' }}>
+                  <span className="text-emerald-600 font-bold shrink-0">✓</span>{item}
+                </li>
+              ))}
+            </ul>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setPendingDownloadFormat(null)}
+                className="flex-1 py-2 border rounded-xl text-xs font-semibold transition-colors hover:bg-stone-50"
+                style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => { const fmt = pendingDownloadFormat; setPendingDownloadFormat(null); await doDownload(fmt); }}
+                className="flex-1 py-2 bg-stone-900 text-white rounded-xl text-xs font-semibold hover:bg-stone-800 transition-colors"
+              >
+                I Acknowledge — Download
+              </button>
+            </div>
           </div>
         </div>
       )}

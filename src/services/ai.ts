@@ -743,24 +743,86 @@ Provide 8-15 highly specific suggestions. Each originalText MUST be an exact quo
   }
 }
 
-export async function chatWithAgent(message: string, context: string, agent: AgentType, settings: AISettings): Promise<{ text: string; suggestions?: Suggestion[] }> {
+// Intent categories for chat messages
+type ChatIntent = 'command' | 'analysis_request' | 'info_question';
+
+function detectChatIntent(message: string): ChatIntent {
+  const lower = message.toLowerCase();
+  // Direct execution commands: user wants text produced/transformed
+  const commandPatterns = /\b(rewrite|write|draft|create|expand|rephrase|generate|produce|compose|restructure|revise|convert|transform|make it|turn this into)\b/;
+  // Analysis/improvement requests: user wants assessment + specific fixes
+  const analysisPatterns = /\b(improve|how (can|do|should|to)|what('s| is) wrong|review|analyze|analyse|evaluate|assess|critique|strengthen|fix|suggest|give me feedback|what should|how would|check|identify|find)\b/;
+  // Pure information questions: user wants explanation, not edits
+  const infoPatterns = /\b(what (does|is|are|means?)|explain|define|tell me about|describe|what happened|why did)\b/;
+
+  if (commandPatterns.test(lower)) return 'command';
+  if (infoPatterns.test(lower) && !analysisPatterns.test(lower)) return 'info_question';
+  return 'analysis_request'; // default — most research questions want analysis
+}
+
+export async function chatWithAgent(
+  message: string,
+  context: string,
+  agent: AgentType,
+  settings: AISettings,
+  attachedSources?: Array<{ name: string; text: string }>
+): Promise<{ text: string; suggestions?: Suggestion[] }> {
   const activePrompt = settings.customPrompts?.[agent] || DEFAULT_AGENT_PROMPTS[agent];
-  const maxContext = settings.provider === 'local' ? 1500 : 3000;
-  const truncatedContext = truncateText(context, maxContext);
+  const isLocal = settings.provider === 'local';
+  const localLargeContext = isLocal && settings.localChunkSize === 0;
 
-  const prompt = `The researcher says: "${message}"
+  // Context budget: cloud models have large context windows; use them fully.
+  // Local large-context mode (no chunking): allow up to 50k chars.
+  // Local small-context: conservative limit.
+  const maxContextChars = localLargeContext ? 50000 : isLocal ? 5000 : 40000;
 
-Current Manuscript Context:
+  // Build context block
+  let contextBlock: string;
+  let referenceContext = context; // used for suggestion position lookup
+  if (attachedSources && attachedSources.length > 0) {
+    const perSourceBudget = Math.floor(maxContextChars / attachedSources.length);
+    contextBlock = attachedSources.map(src =>
+      `=== ${src.name} ===\n${truncateText(src.text, perSourceBudget)}`
+    ).join('\n\n');
+    if (attachedSources.length === 1) referenceContext = attachedSources[0].text;
+  } else {
+    contextBlock = truncateText(context, maxContextChars);
+  }
+
+  const intent = detectChatIntent(message);
+
+  let taskInstruction: string;
+  if (intent === 'command') {
+    taskInstruction = `The researcher issued a direct command: execute it. Produce the requested text directly. Do NOT explain or critique — just do what was asked. If you produce a replacement for existing manuscript text, include it as a suggestion so the researcher can accept it.`;
+  } else if (intent === 'analysis_request') {
+    taskInstruction = `The researcher is requesting analysis or improvements. Read the FULL manuscript context provided, identify the relevant section(s), and:
+1. Give a concise, specific answer focused on the section/aspect they asked about.
+2. Back up your assessment with concrete examples from the text.
+3. ALWAYS include specific text suggestions (originalText → suggestedText) for every problem you identify — do not describe problems without proposing fixes.
+4. Aim for 3–8 targeted suggestions from the relevant section.`;
+  } else {
+    // info_question
+    taskInstruction = `The researcher is asking an informational question. Answer clearly and concisely. No suggestions needed unless specific text edits would directly answer the question.`;
+  }
+
+  const prompt = `${taskInstruction}
+
+Researcher: "${message}"
+
+Manuscript / Context:
 """
-${truncatedContext}
+${contextBlock}
 """
 
-Respond helpfully. ONLY append inline edit suggestions if the user explicitly asked to edit, fix, improve, or rewrite specific text. For questions, analysis, explanations, or general feedback — reply in plain text only, no suggestions block.
-If inline suggestions are needed, append them AFTER your response in this exact format:
-[SUGGESTIONS_START] [{"originalText": "exact quote from manuscript", "suggestedText": "replacement", "explanation": "reason", "severity": "minor|major|critical|style", "category": "grammar|clarity|flow|structure|research"}] [SUGGESTIONS_END]`;
+${intent !== 'info_question' ? `After your response, append any text edit suggestions in this exact format:
+[SUGGESTIONS_START]
+[
+  {"originalText": "exact verbatim quote from the text above", "suggestedText": "improved replacement", "explanation": "specific reason", "severity": "critical|major|minor|style", "category": "grammar|clarity|flow|structure|research"}
+]
+[SUGGESTIONS_END]` : 'Reply in plain text only — no suggestions block needed.'}`;
 
   let textResponse = await callLLM(prompt, settings, activePrompt);
-  if (!textResponse) textResponse = "";
+  if (!textResponse) textResponse = '';
 
   const suggestionsMatch = textResponse.match(/\[SUGGESTIONS_START\]([\s\S]*?)\[SUGGESTIONS_END\]/);
   let suggestions: Suggestion[] = [];
@@ -775,16 +837,16 @@ If inline suggestions are needed, append them AFTER your response in this exact 
         .map((s: any, index: number) => ({
           ...s,
           id: `suggestion-chat-${Date.now()}-${index}`,
-          agent: agent,
-          startIndex: context.indexOf(s.originalText),
-          endIndex: context.indexOf(s.originalText) + (s.originalText?.length || 0),
+          agent,
+          startIndex: referenceContext.indexOf(s.originalText),
+          endIndex: referenceContext.indexOf(s.originalText) + (s.originalText?.length || 0),
           severity: s.severity || 'minor',
-          category: s.category || 'style'
+          category: s.category || 'clarity',
         }))
         .filter((s: any) => s.startIndex !== -1);
-      cleanText = textResponse.replace(/\[SUGGESTIONS_START\][\s\S]*?\[SUGGESTIONS_END\]/, "").trim();
+      cleanText = textResponse.replace(/\[SUGGESTIONS_START\][\s\S]*?\[SUGGESTIONS_END\]/, '').trim();
     } catch (e) {
-      console.error("Failed to parse chat suggestions:", e);
+      console.error('Failed to parse chat suggestions:', e);
     }
   }
 

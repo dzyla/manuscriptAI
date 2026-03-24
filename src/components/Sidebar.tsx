@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo, createElement } from 'react';
 import { AgentType, Message, Suggestion, HistoryItem, SuggestionSeverity, AISettings } from '../types';
-import { Send, Sparkles, Check, X, MessageSquare, History as HistoryIcon, Info, Clock, CheckCheck, XCircle, Filter, ChevronDown, ChevronUp, BookOpen, Trash2, FileText, UploadCloud, FolderOpen, BookMarked } from 'lucide-react';
+import { Send, Sparkles, Check, X, MessageSquare, History as HistoryIcon, Info, Clock, CheckCheck, XCircle, Filter, ChevronDown, ChevronUp, BookOpen, Trash2, FileText, UploadCloud, FolderOpen, BookMarked, Plus } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -17,7 +17,7 @@ interface SidebarProps {
   suggestions: Suggestion[];
   messages: Message[];
   history: HistoryItem[];
-  onSendMessage: (text: string, agent: AgentType) => void;
+  onSendMessage: (text: string, agent: AgentType, attachedSources?: Array<{ name: string; text: string }>) => void;
   onAcceptSuggestion: (suggestion: Suggestion) => void;
   onRejectSuggestion: (suggestion: Suggestion) => void;
   onRevertHistory: (historyId: string) => void;
@@ -112,6 +112,9 @@ export default function Sidebar({
 }: SidebarProps) {
   const [input, setInput] = useState('');
   const [rebuttalTexts, setRebuttalTexts] = useState<Record<string, string>>({});
+  const [showSourcePicker, setShowSourcePicker] = useState(false);
+  const [attachedSourceIds, setAttachedSourceIds] = useState<Set<string>>(new Set(['__manuscript__']));
+  const sourcePickerRef = useRef<HTMLDivElement>(null);
   const [activeTab, setActiveTabLocal] = useState<'chat' | 'suggestions' | 'history' | 'sources'>('chat');
   const [sources, setSources] = useState<{id: string, name: string, type: 'pdf' | 'bib', text: string, digest?: string}[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -120,13 +123,6 @@ export default function Sidebar({
   const [digestingId, setDigestingId] = useState<string | null>(null);
   const [analyzingSourceId, setAnalyzingSourceId] = useState<string | null>(null);
   const fileUploadRef = useRef<HTMLInputElement>(null);
-  const contentZoomRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (contentZoomRef.current) {
-      (contentZoomRef.current.style as any).zoom = String(contentZoom / 100);
-    }
-  }, [contentZoom]);
 
   useEffect(() => {
     localforage.getItem('manuscript-sources').then((saved: any) => {
@@ -226,6 +222,17 @@ export default function Sidebar({
 
   // Sync tab from parent override
   useEffect(() => {
+    if (!showSourcePicker) return;
+    const handleClick = (e: MouseEvent) => {
+      if (sourcePickerRef.current && !sourcePickerRef.current.contains(e.target as Node)) {
+        setShowSourcePicker(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [showSourcePicker]);
+
+  useEffect(() => {
     if (activeTabOverride) setActiveTabLocal(activeTabOverride);
   }, [activeTabOverride]);
 
@@ -283,8 +290,18 @@ export default function Sidebar({
 
   const handleSend = () => {
     if (!input.trim()) return;
-    onSendMessage(input, selectedAgent);
+    const attached: Array<{ name: string; text: string }> = [];
+    if (attachedSourceIds.has('__manuscript__') && manuscriptContent) {
+      attached.push({ name: 'Current Manuscript', text: manuscriptContent });
+    }
+    sources.forEach(src => {
+      if (attachedSourceIds.has(src.id)) {
+        attached.push({ name: src.name, text: src.text });
+      }
+    });
+    onSendMessage(input, selectedAgent, attached.length > 0 ? attached : undefined);
     setInput('');
+    setShowSourcePicker(false);
   };
 
   return (
@@ -334,7 +351,10 @@ export default function Sidebar({
         </div>
       )}
 
-      <div ref={contentZoomRef} className="flex-1 overflow-y-auto p-4">
+      <div
+        className="flex-1 overflow-y-auto p-4"
+        style={{ zoom: contentZoom / 100, width: `${(10000 / contentZoom).toFixed(2)}%` }}
+      >
         {activeTab === 'chat' ? (
           <div className="space-y-4">
             {/* Chat History Title */}
@@ -769,11 +789,11 @@ export default function Sidebar({
                       </button>
                     </div>
                     {source.type === 'pdf' && aiSettings && (
-                      <div className="px-3 pb-3">
+                      <div className="px-3 pb-3 flex gap-2">
                         <button
                           disabled={!!analyzingSourceId}
                           onClick={() => handleAnalyzeSource(source)}
-                          className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg text-[11px] font-semibold transition-colors disabled:opacity-50"
+                          className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-[11px] font-semibold transition-colors disabled:opacity-50"
                           style={{
                             background: analyzingSourceId === source.id ? 'var(--surface-2)' : 'var(--violet-soft, #f5f3ff)',
                             color: 'var(--violet-700, #6d28d9)',
@@ -781,7 +801,23 @@ export default function Sidebar({
                           }}
                         >
                           <BookMarked size={12} />
-                          {analyzingSourceId === source.id ? 'Analyzing...' : 'Compare against manuscript'}
+                          {analyzingSourceId === source.id ? 'Analyzing...' : 'Compare'}
+                        </button>
+                        <button
+                          onClick={() => {
+                            // Set source-only context and switch to chat
+                            setAttachedSourceIds(new Set([source.id]));
+                            setActiveTab('chat');
+                          }}
+                          className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-[11px] font-semibold transition-colors"
+                          style={{
+                            background: 'var(--accent-blue-soft)',
+                            color: 'var(--accent-blue)',
+                            border: '1px solid rgba(59,111,212,0.2)'
+                          }}
+                        >
+                          <MessageSquare size={12} />
+                          Chat
                         </button>
                       </div>
                     )}
@@ -827,16 +863,106 @@ export default function Sidebar({
             ))}
           </div>
         )}
+        {/* Attached context indicator */}
+        {activeTab === 'chat' && (
+          <div className="flex items-center gap-1 flex-wrap">
+            <span className="text-[9px] font-bold uppercase tracking-widest shrink-0" style={{ color: 'var(--text-muted)' }}>Context:</span>
+            {attachedSourceIds.has('__manuscript__') && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded-full font-medium border" style={{ background: 'var(--surface-3)', color: 'var(--text-secondary)', borderColor: 'var(--border)' }}>Manuscript</span>
+            )}
+            {sources.filter(s => attachedSourceIds.has(s.id)).map(s => (
+              <span key={s.id} className="text-[9px] px-1.5 py-0.5 rounded-full font-medium truncate max-w-[110px] border" style={{ background: 'var(--accent-blue-soft)', color: 'var(--accent-blue)', borderColor: 'rgba(59,111,212,0.25)' }} title={s.name}>{s.name}</span>
+            ))}
+            {/* Source-only mode notice + reset */}
+            {!attachedSourceIds.has('__manuscript__') && attachedSourceIds.size > 0 && (
+              <button
+                className="text-[9px] px-1.5 py-0.5 rounded-full font-medium ml-auto shrink-0"
+                style={{ background: 'var(--surface-3)', color: 'var(--text-muted)', border: '1px dashed var(--border)' }}
+                onClick={() => setAttachedSourceIds(prev => { const n = new Set(prev); n.add('__manuscript__'); return n; })}
+                title="Add manuscript back to context"
+              >
+                + manuscript
+              </button>
+            )}
+            {attachedSourceIds.size === 0 && (
+              <span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>none — use + to attach</span>
+            )}
+          </div>
+        )}
         <div className="relative">
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), handleSend())}
-            placeholder={activeTab === 'chat' ? `Ask the ${AGENT_INFO[selectedAgent]?.label} agent...` : "Switch to chat to send messages..."}
+            placeholder={
+              activeTab !== 'chat' ? 'Switch to chat to send messages...' :
+              (!attachedSourceIds.has('__manuscript__') && attachedSourceIds.size > 0)
+                ? `Ask about the attached source document...`
+                : `Ask the ${AGENT_INFO[selectedAgent]?.label} agent about your manuscript...`
+            }
             disabled={activeTab !== 'chat'}
-            className="w-full p-3 pr-12 border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-stone-800/10 resize-none min-h-[64px] transition-all disabled:opacity-50"
+            className="w-full p-3 pr-20 border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-stone-800/10 resize-none min-h-[64px] transition-all disabled:opacity-50"
             style={{ background: 'var(--surface-2)', borderColor: 'var(--border)', color: 'var(--text-primary)' }}
           />
+          {/* Source picker button */}
+          {activeTab === 'chat' && (
+            <div className="absolute right-12 bottom-3" ref={sourcePickerRef}>
+              <button
+                onClick={() => setShowSourcePicker(p => !p)}
+                className="p-2 rounded-lg transition-all hover:bg-stone-200"
+                style={{ color: attachedSourceIds.size > 1 || (attachedSourceIds.size === 1 && !attachedSourceIds.has('__manuscript__')) ? 'var(--accent-blue)' : 'var(--text-muted)' }}
+                title="Attach context sources"
+              >
+                <Plus size={14} />
+              </button>
+              {showSourcePicker && (
+                <div className="absolute bottom-full right-0 mb-1 border rounded-xl shadow-xl z-50 p-2 min-w-[220px]" style={{ background: 'var(--surface-1)', borderColor: 'var(--border)' }}>
+                  <p className="text-[9px] font-bold uppercase tracking-widest px-2 pb-1.5" style={{ color: 'var(--text-muted)' }}>Context to send</p>
+                  {/* Manuscript option */}
+                  <button
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-[11px] hover:bg-stone-50 transition-colors"
+                    style={{ color: 'var(--text-primary)' }}
+                    onClick={() => setAttachedSourceIds(prev => {
+                      const next = new Set(prev);
+                      if (next.has('__manuscript__')) next.delete('__manuscript__');
+                      else next.add('__manuscript__');
+                      return next;
+                    })}
+                  >
+                    <span className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${attachedSourceIds.has('__manuscript__') ? 'bg-stone-800 border-stone-800' : ''}`} style={{ borderColor: 'var(--border)' }}>
+                      {attachedSourceIds.has('__manuscript__') && <Check size={9} className="text-white" />}
+                    </span>
+                    <FileText size={11} style={{ color: 'var(--text-muted)' }} />
+                    <span className="font-medium">Current Manuscript</span>
+                    <span className="text-[9px] ml-auto" style={{ color: 'var(--text-muted)' }}>default</span>
+                  </button>
+                  {/* PDF sources */}
+                  {sources.filter(s => s.type === 'pdf').map(src => (
+                    <button
+                      key={src.id}
+                      className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-[11px] hover:bg-stone-50 transition-colors"
+                      style={{ color: 'var(--text-primary)' }}
+                      onClick={() => setAttachedSourceIds(prev => {
+                        const next = new Set(prev);
+                        if (next.has(src.id)) next.delete(src.id);
+                        else next.add(src.id);
+                        return next;
+                      })}
+                    >
+                      <span className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${attachedSourceIds.has(src.id) ? 'bg-stone-800 border-stone-800' : ''}`} style={{ borderColor: 'var(--border)' }}>
+                        {attachedSourceIds.has(src.id) && <Check size={9} className="text-white" />}
+                      </span>
+                      <BookOpen size={11} style={{ color: 'var(--accent-blue)' }} />
+                      <span className="truncate font-medium">{src.name}</span>
+                    </button>
+                  ))}
+                  {sources.filter(s => s.type === 'pdf').length === 0 && (
+                    <p className="text-[10px] px-2 py-1" style={{ color: 'var(--text-muted)' }}>Upload PDFs in Sources tab to attach them</p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
           <button
             onClick={handleSend}
             disabled={!input.trim() || isAnalyzing || activeTab !== 'chat'}

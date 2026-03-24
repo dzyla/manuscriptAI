@@ -141,15 +141,8 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
   const isExternalUpdate = useRef(false);
   const lastExternalContent = useRef(content);
   const instructionInputRef = useRef<HTMLInputElement>(null);
-  const zoomContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { setIsMounted(true); }, []);
-
-  useEffect(() => {
-    if (zoomContainerRef.current) {
-      (zoomContainerRef.current.style as any).zoom = String(editorZoom / 100);
-    }
-  }, [editorZoom]);
 
   const editor = useEditor({
     extensions: [
@@ -409,7 +402,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
   const widthClass = editorWidth === 'wide' ? 'max-w-6xl' : editorWidth === 'full' ? 'max-w-none' : 'max-w-4xl';
 
   return (
-    <div ref={zoomContainerRef} className={`w-full ${widthClass} mx-auto ${isDistractionFree ? 'focus-mode' : ''}`}>
+    <div className={`w-full ${widthClass} mx-auto ${isDistractionFree ? 'focus-mode' : ''}`}>
       <div className="bg-[var(--editor-bg)] min-h-[600px] shadow-[var(--editor-shadow)] rounded-sm border border-[var(--border-subtle)] transition-colors duration-300">
         
         {/* Floating Toolbar (Portal) */}
@@ -436,7 +429,13 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
           document.getElementById('toolbar-portal') || document.body
         )}
 
-        <div className="px-8 sm:px-12 md:px-16 py-12 md:py-20">
+        <div
+          className="px-8 sm:px-12 md:px-16 py-12 md:py-20"
+          style={{
+            zoom: editorZoom / 100,
+            width: `${(10000 / editorZoom).toFixed(2)}%`,
+          }}
+        >
           <EditorContent editor={editor} />
         </div>
 
