@@ -4,7 +4,7 @@ import Sidebar from './components/Sidebar';
 import SettingsModal from './components/SettingsModal';
 import PostDraftingView from './components/PostDraftingView';
 import { AgentType, Message, Suggestion, HistoryItem, AISettings } from './types';
-import { analyzeText, chatWithAgent, resolveConflicts, runJudgeAgent, rebutSuggestion, manuscriptSummary, rewriteSection, transformWithInstruction, analyzeSourceAgainstManuscript, AGENT_INFO, AGENT_ICONS, estimateTokens } from './services/ai';
+import { analyzeText, chatWithAgent, chatWithManuscript, resolveConflicts, runJudgeAgent, rebutSuggestion, manuscriptSummary, rewriteSection, transformWithInstruction, analyzeSourceAgainstManuscript, AGENT_INFO, AGENT_ICONS, estimateTokens } from './services/ai';
 import { Sparkles, FileText, Settings, Download, Keyboard, Eye, Moon, Sun, ChevronDown, FilePlus, Coins, BookOpen, Github } from 'lucide-react';
 import { saveAs } from 'file-saver';
 import TurndownService from 'turndown';
@@ -292,19 +292,20 @@ export default function App() {
     setIsAnalyzing(true);
     try {
       const plainText = stripHtml(editorRef.current?.getHTML() || content);
-      // Use the attached sources if provided; fall back to manuscript text
-      const context = attachedSources ? plainText : plainText;
-      const result = await chatWithAgent(text, context, agent, aiSettings, attachedSources);
+      const result = agent === 'manuscript-ai'
+        ? await chatWithManuscript(text, plainText, aiSettings, attachedSources)
+        : await chatWithAgent(text, plainText, agent, aiSettings, attachedSources);
+      const suggestions: Suggestion[] | undefined = 'suggestions' in result ? (result as any).suggestions : undefined;
       const assistantMsg: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
         content: result.text || "I couldn't process that request. Check your LLM connection.",
         agent,
-        suggestions: result.suggestions
+        suggestions,
       };
       setMessages(prev => [...prev, assistantMsg]);
-      if (result.suggestions && result.suggestions.length > 0) {
-        const resolved = await resolveConflicts(result.suggestions, aiSettings);
+      if (suggestions && suggestions.length > 0) {
+        const resolved = await resolveConflicts(suggestions, aiSettings);
         setSuggestions(prev => [...prev, ...resolved].sort((a, b) => a.startIndex - b.startIndex));
       }
     } catch (error) {

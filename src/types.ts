@@ -1,4 +1,4 @@
-export type AgentType = 'manager' | 'editor' | 'reviewer-2' | 'researcher' | 'literature-reviewer';
+export type AgentType = 'manager' | 'editor' | 'reviewer-2' | 'researcher' | 'literature-reviewer' | 'manuscript-ai';
 
 export type AIProvider = 'gemini' | 'openai' | 'anthropic' | 'local';
 

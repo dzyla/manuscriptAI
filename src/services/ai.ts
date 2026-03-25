@@ -1,7 +1,7 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import OpenAI from "openai";
 import { AgentType, Suggestion, AISettings } from "../types";
-import { Clipboard, PenLine, FlaskConical, Beaker, BookMarked } from 'lucide-react';
+import { Clipboard, PenLine, FlaskConical, Beaker, BookMarked, MessageCircle } from 'lucide-react';
 
 export const AGENT_INFO: Record<AgentType, { label: string; color: string; bgSoft: string; description: string; iconName: string }> = {
   manager: {
@@ -38,6 +38,13 @@ export const AGENT_INFO: Record<AgentType, { label: string; color: string; bgSof
     bgSoft: 'bg-violet-50',
     iconName: 'book-marked',
     description: 'Compares an uploaded reference manuscript against your manuscript. Identifies which claims are supported, contradicted, or extended by the reference work.'
+  },
+  'manuscript-ai': {
+    label: 'Manuscript AI',
+    color: 'bg-emerald-700',
+    bgSoft: 'bg-emerald-50',
+    iconName: 'message-circle',
+    description: 'Your scholarly research assistant. Discusses, critiques, and answers questions about your manuscript or attached sources — in plain conversation, no suggestion cards.'
   }
 };
 
@@ -47,7 +54,23 @@ export const AGENT_ICONS: Record<string, any> = {
   'flask-conical': FlaskConical,
   'beaker': Beaker,
   'book-marked': BookMarked,
+  'message-circle': MessageCircle,
 };
+
+// Manuscript AI: conversational, scholarly, no suggestion cards
+const MANUSCRIPT_AI_SYSTEM_PROMPT = `You are Manuscript AI — an expert academic research assistant with deep knowledge of scientific writing, research methodology, and scholarly communication.
+
+Your role is to be the researcher's intellectual peer: discuss their work critically, answer questions precisely, and help them think through problems. You have read the full manuscript provided and can speak to any part of it.
+
+Guidelines:
+- Be direct and honest. Point out weaknesses without being diplomatic to the point of uselessness.
+- Quote specific phrases from the manuscript when relevant to ground your critique.
+- If asked about a specific section, focus your analysis there but acknowledge related issues elsewhere.
+- When comparing against attached reference papers, be analytically precise: note where claims align, diverge, or need citation.
+- Use academic but accessible prose. No bullet-point lists unless explicitly asked — write in paragraphs.
+- Do NOT produce structured "accept/reject" suggestion blocks. Discuss in natural prose only.
+- If the researcher's question is ambiguous, interpret it charitably and answer the most useful interpretation.
+- Keep responses focused: 150–400 words unless the question clearly requires more.`;
 
 // Writing style rules applied to all agents' suggested text
 const SCIENTIFIC_WRITING_RULES = `
@@ -158,7 +181,8 @@ Structure your response with these section headings:
 ## Summary
 
 Write in clear, direct scientific prose. Quote specific passages from both documents where relevant. Note that differences in findings often reflect methodological or population differences rather than errors.
-${SCIENTIFIC_WRITING_RULES}`
+${SCIENTIFIC_WRITING_RULES}`,
+  'manuscript-ai': MANUSCRIPT_AI_SYSTEM_PROMPT,
 };
 
 function truncateText(text: string, maxLen: number): string {
@@ -851,6 +875,39 @@ ${intent !== 'info_question' ? `After your response, append any text edit sugges
   }
 
   return { text: cleanText, suggestions };
+}
+
+export async function chatWithManuscript(
+  message: string,
+  context: string,
+  settings: AISettings,
+  attachedSources?: Array<{ name: string; text: string }>
+): Promise<{ text: string }> {
+  const isLocal = settings.provider === 'local';
+  const localLargeContext = isLocal && settings.localChunkSize === 0;
+  const maxContextChars = localLargeContext ? 50000 : isLocal ? 6000 : 40000;
+
+  let contextBlock: string;
+  if (attachedSources && attachedSources.length > 0) {
+    const perSourceBudget = Math.floor(maxContextChars / attachedSources.length);
+    contextBlock = attachedSources.map(src =>
+      `=== ${src.name} ===\n${truncateText(src.text, perSourceBudget)}`
+    ).join('\n\n');
+  } else {
+    contextBlock = truncateText(context, maxContextChars);
+  }
+
+  const prompt = `Manuscript / Context:
+"""
+${contextBlock}
+"""
+
+Researcher: "${message}"
+
+Respond as a knowledgeable academic peer. Be specific, critical, and grounded in the text above.`;
+
+  const text = await callLLM(prompt, settings, MANUSCRIPT_AI_SYSTEM_PROMPT);
+  return { text: text || 'No response generated.' };
 }
 
 export async function rebutSuggestion(suggestion: Suggestion, feedback: string, fullText: string, settings: AISettings): Promise<Suggestion[]> {

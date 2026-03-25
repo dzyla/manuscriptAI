@@ -241,6 +241,7 @@ export default function Sidebar({
     onTabChange?.(tab);
   };
   const [selectedAgent, setSelectedAgent] = useState<AgentType>('manager');
+  const [agentMode, setAgentMode] = useState(false);
   const handleAgentChange = (agent: AgentType) => {
     setSelectedAgent(agent);
     onAgentChange?.(agent);
@@ -270,10 +271,9 @@ export default function Sidebar({
     }
   }, [messages, activeTab]);
 
-  const agents = Object.entries(AGENT_INFO).map(([id, info]) => ({
-    id: id as AgentType,
-    ...info
-  }));
+  const agents = Object.entries(AGENT_INFO)
+    .filter(([id]) => id !== 'manuscript-ai' && id !== 'literature-reviewer')
+    .map(([id, info]) => ({ id: id as AgentType, ...info }));
 
   const filteredSuggestions = useMemo(() => {
     if (severityFilter === 'all') return suggestions;
@@ -299,7 +299,7 @@ export default function Sidebar({
         attached.push({ name: src.name, text: src.text });
       }
     });
-    onSendMessage(input, selectedAgent, attached.length > 0 ? attached : undefined);
+    onSendMessage(input, agentMode ? selectedAgent : 'manuscript-ai', attached.length > 0 ? attached : undefined);
     setInput('');
     setShowSourcePicker(false);
   };
@@ -380,11 +380,18 @@ export default function Sidebar({
                 >
                   <div
                     className={`max-w-[85%] p-3 text-sm leading-relaxed ${
-                      msg.role === 'user' 
-                        ? 'bg-stone-800 text-white rounded-2xl rounded-tr-sm' 
-                        : 'border rounded-2xl rounded-tl-sm shadow-sm'
+                      msg.role === 'user'
+                        ? 'bg-stone-800 text-white rounded-2xl rounded-tr-sm'
+                        : msg.agent === 'manuscript-ai'
+                          ? 'border rounded-2xl rounded-tl-sm shadow-sm'
+                          : 'border rounded-2xl rounded-tl-sm shadow-sm'
                     }`}
-                    style={msg.role === 'assistant' ? { borderColor: 'var(--border-subtle)', color: 'var(--text-primary)', background: 'var(--surface-1)' } : {}}
+                    style={msg.role === 'assistant'
+                      ? msg.agent === 'manuscript-ai'
+                        ? { borderColor: 'rgba(21,128,61,0.2)', color: 'var(--text-primary)', background: 'rgba(240,253,244,0.6)' }
+                        : { borderColor: 'var(--border-subtle)', color: 'var(--text-primary)', background: 'var(--surface-1)' }
+                      : {}
+                    }
                   >
                     {msg.role === 'user' ? (
                       <p className="whitespace-pre-wrap">{msg.content}</p>
@@ -418,12 +425,15 @@ export default function Sidebar({
                   {msg.agent && (
                     <div className="flex items-center gap-1 mt-1">
                       <AgentIcon agent={msg.agent} size={9} />
-                      <span className="text-[9px] uppercase tracking-wider font-semibold" style={{ color: 'var(--text-muted)' }}>
+                      <span
+                        className="text-[9px] uppercase tracking-wider font-semibold"
+                        style={{ color: msg.agent === 'manuscript-ai' ? 'var(--accent-green)' : 'var(--text-muted)' }}
+                      >
                         {AGENT_INFO[msg.agent]?.label}
                       </span>
                     </div>
                   )}
-                  {msg.suggestions && msg.suggestions.length > 0 && (
+                  {msg.suggestions && msg.suggestions.length > 0 && msg.agent !== 'manuscript-ai' && (
                     <div className="mt-2 space-y-2 w-full max-w-[85%]">
                       {msg.suggestions.map(s => (
                         <div 
@@ -844,132 +854,149 @@ export default function Sidebar({
       </div>
 
       {/* Chat input */}
-      <div className="p-3 flex flex-col gap-2" style={{ borderTop: '1px solid var(--border)', background: 'var(--surface-1)' }}>
+      <div className="flex flex-col" style={{ borderTop: '1px solid var(--border)', background: 'var(--surface-1)' }}>
+
+        {/* Mode switcher — Manuscript AI (default) vs Agent mode */}
         {activeTab === 'chat' && (
-          <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5" style={{ scrollbarWidth: 'none' }}>
-            <span className="text-[9px] font-bold uppercase tracking-widest shrink-0 mr-1" style={{ color: 'var(--text-muted)' }}>Reply as:</span>
-            {agents.map(agent => (
-              <button
-                key={agent.id}
-                onClick={() => handleAgentChange(agent.id)}
-                className={`px-2 py-1 rounded-md text-[10px] font-medium whitespace-nowrap transition-all flex items-center gap-1 ${
-                  selectedAgent === agent.id ? `${agent.color} text-white` : 'border hover:bg-stone-50'
-                }`}
-                style={selectedAgent !== agent.id ? { borderColor: 'var(--border)', color: 'var(--text-secondary)' } : {}}
-              >
-                <AgentIcon agent={agent.id} size={10} />
-                {agent.label}
-              </button>
-            ))}
+          <div className="flex items-stretch" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+            <button
+              onClick={() => setAgentMode(false)}
+              className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 text-[11px] font-semibold transition-all ${!agentMode ? 'border-b-2 border-emerald-600' : 'hover:bg-stone-50'}`}
+              style={{ color: !agentMode ? 'var(--accent-green)' : 'var(--text-muted)' }}
+            >
+              <AgentIcon agent="manuscript-ai" size={12} />
+              Manuscript AI
+            </button>
+            <div style={{ width: '1px', background: 'var(--border-subtle)' }} />
+            <button
+              onClick={() => setAgentMode(true)}
+              className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 text-[11px] font-semibold transition-all ${agentMode ? 'border-b-2 border-stone-700' : 'hover:bg-stone-50'}`}
+              style={{ color: agentMode ? 'var(--text-primary)' : 'var(--text-muted)' }}
+            >
+              <Sparkles size={11} />
+              Agents
+            </button>
           </div>
         )}
-        {/* Attached context indicator */}
-        {activeTab === 'chat' && (
-          <div className="flex items-center gap-1 flex-wrap">
-            <span className="text-[9px] font-bold uppercase tracking-widest shrink-0" style={{ color: 'var(--text-muted)' }}>Context:</span>
-            {attachedSourceIds.has('__manuscript__') && (
-              <span className="text-[9px] px-1.5 py-0.5 rounded-full font-medium border" style={{ background: 'var(--surface-3)', color: 'var(--text-secondary)', borderColor: 'var(--border)' }}>Manuscript</span>
-            )}
-            {sources.filter(s => attachedSourceIds.has(s.id)).map(s => (
-              <span key={s.id} className="text-[9px] px-1.5 py-0.5 rounded-full font-medium truncate max-w-[110px] border" style={{ background: 'var(--accent-blue-soft)', color: 'var(--accent-blue)', borderColor: 'rgba(59,111,212,0.25)' }} title={s.name}>{s.name}</span>
-            ))}
-            {/* Source-only mode notice + reset */}
-            {!attachedSourceIds.has('__manuscript__') && attachedSourceIds.size > 0 && (
-              <button
-                className="text-[9px] px-1.5 py-0.5 rounded-full font-medium ml-auto shrink-0"
-                style={{ background: 'var(--surface-3)', color: 'var(--text-muted)', border: '1px dashed var(--border)' }}
-                onClick={() => setAttachedSourceIds(prev => { const n = new Set(prev); n.add('__manuscript__'); return n; })}
-                title="Add manuscript back to context"
-              >
-                + manuscript
-              </button>
-            )}
-            {attachedSourceIds.size === 0 && (
-              <span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>none — use + to attach</span>
-            )}
-          </div>
-        )}
-        <div className="relative">
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), handleSend())}
-            placeholder={
-              activeTab !== 'chat' ? 'Switch to chat to send messages...' :
-              (!attachedSourceIds.has('__manuscript__') && attachedSourceIds.size > 0)
-                ? `Ask about the attached source document...`
-                : `Ask the ${AGENT_INFO[selectedAgent]?.label} agent about your manuscript...`
-            }
-            disabled={activeTab !== 'chat'}
-            className="w-full p-3 pr-20 border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-stone-800/10 resize-none min-h-[64px] transition-all disabled:opacity-50"
-            style={{ background: 'var(--surface-2)', borderColor: 'var(--border)', color: 'var(--text-primary)' }}
-          />
-          {/* Source picker button */}
+
+        <div className="p-3 flex flex-col gap-2">
+          {/* Agent selector row — only in agent mode */}
+          {activeTab === 'chat' && agentMode && (
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5" style={{ scrollbarWidth: 'none' }}>
+              <span className="text-[9px] font-bold uppercase tracking-widest shrink-0 mr-1" style={{ color: 'var(--text-muted)' }}>Reply as:</span>
+              {agents.map(agent => (
+                <button
+                  key={agent.id}
+                  onClick={() => handleAgentChange(agent.id)}
+                  className={`px-2 py-1 rounded-md text-[10px] font-medium whitespace-nowrap transition-all flex items-center gap-1 ${
+                    selectedAgent === agent.id ? `${agent.color} text-white` : 'border hover:bg-stone-50'
+                  }`}
+                  style={selectedAgent !== agent.id ? { borderColor: 'var(--border)', color: 'var(--text-secondary)' } : {}}
+                >
+                  <AgentIcon agent={agent.id} size={10} />
+                  {agent.label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Context chips */}
           {activeTab === 'chat' && (
-            <div className="absolute right-12 bottom-3" ref={sourcePickerRef}>
-              <button
-                onClick={() => setShowSourcePicker(p => !p)}
-                className="p-2 rounded-lg transition-all hover:bg-stone-200"
-                style={{ color: attachedSourceIds.size > 1 || (attachedSourceIds.size === 1 && !attachedSourceIds.has('__manuscript__')) ? 'var(--accent-blue)' : 'var(--text-muted)' }}
-                title="Attach context sources"
-              >
-                <Plus size={14} />
-              </button>
-              {showSourcePicker && (
-                <div className="absolute bottom-full right-0 mb-1 border rounded-xl shadow-xl z-50 p-2 min-w-[220px]" style={{ background: 'var(--surface-1)', borderColor: 'var(--border)' }}>
-                  <p className="text-[9px] font-bold uppercase tracking-widest px-2 pb-1.5" style={{ color: 'var(--text-muted)' }}>Context to send</p>
-                  {/* Manuscript option */}
-                  <button
-                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-[11px] hover:bg-stone-50 transition-colors"
-                    style={{ color: 'var(--text-primary)' }}
-                    onClick={() => setAttachedSourceIds(prev => {
-                      const next = new Set(prev);
-                      if (next.has('__manuscript__')) next.delete('__manuscript__');
-                      else next.add('__manuscript__');
-                      return next;
-                    })}
-                  >
-                    <span className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${attachedSourceIds.has('__manuscript__') ? 'bg-stone-800 border-stone-800' : ''}`} style={{ borderColor: 'var(--border)' }}>
-                      {attachedSourceIds.has('__manuscript__') && <Check size={9} className="text-white" />}
-                    </span>
-                    <FileText size={11} style={{ color: 'var(--text-muted)' }} />
-                    <span className="font-medium">Current Manuscript</span>
-                    <span className="text-[9px] ml-auto" style={{ color: 'var(--text-muted)' }}>default</span>
-                  </button>
-                  {/* PDF sources */}
-                  {sources.filter(s => s.type === 'pdf').map(src => (
-                    <button
-                      key={src.id}
-                      className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-[11px] hover:bg-stone-50 transition-colors"
-                      style={{ color: 'var(--text-primary)' }}
-                      onClick={() => setAttachedSourceIds(prev => {
-                        const next = new Set(prev);
-                        if (next.has(src.id)) next.delete(src.id);
-                        else next.add(src.id);
-                        return next;
-                      })}
-                    >
-                      <span className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${attachedSourceIds.has(src.id) ? 'bg-stone-800 border-stone-800' : ''}`} style={{ borderColor: 'var(--border)' }}>
-                        {attachedSourceIds.has(src.id) && <Check size={9} className="text-white" />}
-                      </span>
-                      <BookOpen size={11} style={{ color: 'var(--accent-blue)' }} />
-                      <span className="truncate font-medium">{src.name}</span>
-                    </button>
-                  ))}
-                  {sources.filter(s => s.type === 'pdf').length === 0 && (
-                    <p className="text-[10px] px-2 py-1" style={{ color: 'var(--text-muted)' }}>Upload PDFs in Sources tab to attach them</p>
-                  )}
-                </div>
+            <div className="flex items-center gap-1 flex-wrap">
+              <span className="text-[9px] font-bold uppercase tracking-widest shrink-0" style={{ color: 'var(--text-muted)' }}>Context:</span>
+              {attachedSourceIds.has('__manuscript__') && (
+                <span className="text-[9px] px-1.5 py-0.5 rounded-full font-medium border" style={{ background: 'var(--surface-3)', color: 'var(--text-secondary)', borderColor: 'var(--border)' }}>Manuscript</span>
+              )}
+              {sources.filter(s => attachedSourceIds.has(s.id)).map(s => (
+                <span key={s.id} className="text-[9px] px-1.5 py-0.5 rounded-full font-medium truncate max-w-[110px] border" style={{ background: 'var(--accent-blue-soft)', color: 'var(--accent-blue)', borderColor: 'rgba(59,111,212,0.25)' }} title={s.name}>{s.name}</span>
+              ))}
+              {!attachedSourceIds.has('__manuscript__') && attachedSourceIds.size > 0 && (
+                <button
+                  className="text-[9px] px-1.5 py-0.5 rounded-full font-medium ml-auto shrink-0"
+                  style={{ background: 'var(--surface-3)', color: 'var(--text-muted)', border: '1px dashed var(--border)' }}
+                  onClick={() => setAttachedSourceIds(prev => { const n = new Set(prev); n.add('__manuscript__'); return n; })}
+                  title="Add manuscript back to context"
+                >+ manuscript</button>
+              )}
+              {attachedSourceIds.size === 0 && (
+                <span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>none — use + to attach</span>
               )}
             </div>
           )}
-          <button
-            onClick={handleSend}
-            disabled={!input.trim() || isAnalyzing || activeTab !== 'chat'}
-            className="absolute right-3 bottom-3 p-2 bg-stone-800 text-white rounded-lg hover:bg-stone-700 disabled:opacity-40 transition-all shadow-sm"
-          >
-            <Send size={14} />
-          </button>
+
+          {/* Textarea + buttons */}
+          <div className="relative">
+            <textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), handleSend())}
+              placeholder={
+                activeTab !== 'chat' ? 'Switch to chat to send messages...' :
+                !attachedSourceIds.has('__manuscript__') && attachedSourceIds.size > 0
+                  ? 'Ask about the attached source document...'
+                  : agentMode
+                    ? `Ask the ${AGENT_INFO[selectedAgent]?.label} — produces suggestions...`
+                    : 'Ask Manuscript AI anything about your manuscript...'
+              }
+              disabled={activeTab !== 'chat'}
+              className="w-full p-3 pr-20 border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-stone-800/10 resize-none min-h-[64px] transition-all disabled:opacity-50"
+              style={{ background: 'var(--surface-2)', borderColor: 'var(--border)', color: 'var(--text-primary)' }}
+            />
+            {/* Source picker button */}
+            {activeTab === 'chat' && (
+              <div className="absolute right-12 bottom-3" ref={sourcePickerRef}>
+                <button
+                  onClick={() => setShowSourcePicker(p => !p)}
+                  className="p-2 rounded-lg transition-all hover:bg-stone-200"
+                  style={{ color: attachedSourceIds.size > 1 || (attachedSourceIds.size === 1 && !attachedSourceIds.has('__manuscript__')) ? 'var(--accent-blue)' : 'var(--text-muted)' }}
+                  title="Attach context sources"
+                >
+                  <Plus size={14} />
+                </button>
+                {showSourcePicker && (
+                  <div className="absolute bottom-full right-0 mb-1 border rounded-xl shadow-xl z-50 p-2 min-w-[220px]" style={{ background: 'var(--surface-1)', borderColor: 'var(--border)' }}>
+                    <p className="text-[9px] font-bold uppercase tracking-widest px-2 pb-1.5" style={{ color: 'var(--text-muted)' }}>Context to send</p>
+                    <button
+                      className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-[11px] hover:bg-stone-50 transition-colors"
+                      style={{ color: 'var(--text-primary)' }}
+                      onClick={() => setAttachedSourceIds(prev => { const next = new Set(prev); if (next.has('__manuscript__')) next.delete('__manuscript__'); else next.add('__manuscript__'); return next; })}
+                    >
+                      <span className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${attachedSourceIds.has('__manuscript__') ? 'bg-stone-800 border-stone-800' : ''}`} style={{ borderColor: 'var(--border)' }}>
+                        {attachedSourceIds.has('__manuscript__') && <Check size={9} className="text-white" />}
+                      </span>
+                      <FileText size={11} style={{ color: 'var(--text-muted)' }} />
+                      <span className="font-medium">Current Manuscript</span>
+                      <span className="text-[9px] ml-auto" style={{ color: 'var(--text-muted)' }}>default</span>
+                    </button>
+                    {sources.filter(s => s.type === 'pdf').map(src => (
+                      <button
+                        key={src.id}
+                        className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-[11px] hover:bg-stone-50 transition-colors"
+                        style={{ color: 'var(--text-primary)' }}
+                        onClick={() => setAttachedSourceIds(prev => { const next = new Set(prev); if (next.has(src.id)) next.delete(src.id); else next.add(src.id); return next; })}
+                      >
+                        <span className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${attachedSourceIds.has(src.id) ? 'bg-stone-800 border-stone-800' : ''}`} style={{ borderColor: 'var(--border)' }}>
+                          {attachedSourceIds.has(src.id) && <Check size={9} className="text-white" />}
+                        </span>
+                        <BookOpen size={11} style={{ color: 'var(--accent-blue)' }} />
+                        <span className="truncate font-medium">{src.name}</span>
+                      </button>
+                    ))}
+                    {sources.filter(s => s.type === 'pdf').length === 0 && (
+                      <p className="text-[10px] px-2 py-1" style={{ color: 'var(--text-muted)' }}>Upload PDFs in Sources tab to attach them</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+            <button
+              onClick={handleSend}
+              disabled={!input.trim() || isAnalyzing || activeTab !== 'chat'}
+              className="absolute right-3 bottom-3 p-2 bg-stone-800 text-white rounded-lg hover:bg-stone-700 disabled:opacity-40 transition-all shadow-sm"
+            >
+              <Send size={14} />
+            </button>
+          </div>
         </div>
       </div>
     </div>
