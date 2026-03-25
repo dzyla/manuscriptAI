@@ -29,6 +29,7 @@
     "file-saver": "^2.0.5",
     "localforage": "^1.10.0",
     "lucide-react": "^0.546.0",
+    "mammoth": "^1.12.0",
     "motion": "^12.23.24",
     "openai": "^6.32.0",
     "pandoc-wasm": "^1.0.1",

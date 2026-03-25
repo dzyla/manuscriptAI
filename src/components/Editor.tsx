@@ -407,7 +407,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
         
         {/* Floating Toolbar (Portal) */}
         {isMounted && createPortal(
-          <div className="flex items-center gap-1 bg-[var(--surface-1)] border border-[var(--border)] rounded-lg p-1 shadow-sm flex-wrap">
+          <div className="flex items-center gap-0.5 bg-[var(--surface-1)] border border-[var(--border)] rounded-lg p-1 shadow-sm flex-wrap justify-end">
             <ToolbarButton onClick={() => editor.chain().focus().toggleBold().run()} isActive={editor.isActive('bold')} title="Bold"><Bold size={15} /></ToolbarButton>
             <ToolbarButton onClick={() => editor.chain().focus().toggleItalic().run()} isActive={editor.isActive('italic')} title="Italic"><Italic size={15} /></ToolbarButton>
             <ToolbarButton onClick={() => editor.chain().focus().toggleUnderline().run()} isActive={editor.isActive('underline')} title="Underline"><UnderlineIcon size={15} /></ToolbarButton>
@@ -432,8 +432,8 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
         <div
           className="px-8 sm:px-12 md:px-16 py-12 md:py-20"
           style={{
-            zoom: editorZoom / 100,
-            width: `${(10000 / editorZoom).toFixed(2)}%`,
+            fontSize: `${editorZoom}%`,
+
           }}
         >
           <EditorContent editor={editor} />
