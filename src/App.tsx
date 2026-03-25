@@ -7,6 +7,7 @@ import { AgentType, Message, Suggestion, HistoryItem, AISettings } from './types
 import { analyzeText, chatWithAgent, chatWithManuscript, resolveConflicts, runJudgeAgent, rebutSuggestion, manuscriptSummary, rewriteSection, transformWithInstruction, analyzeSourceAgainstManuscript, AGENT_INFO, AGENT_ICONS, estimateTokens } from './services/ai';
 import { Sparkles, FileText, Settings, Download, Keyboard, Eye, Moon, Sun, ChevronDown, FilePlus, Coins, BookOpen, Github } from 'lucide-react';
 import { saveAs } from 'file-saver';
+import * as mammoth from 'mammoth';
 import TurndownService from 'turndown';
 import localforage from 'localforage';
 
@@ -700,14 +701,14 @@ export default function App() {
               </button>
               <div className="absolute left-full ml-2 top-0 border rounded-xl shadow-xl hidden group-hover:block z-50 p-1.5 min-w-[200px]" style={{ borderColor: 'var(--border)', background: 'var(--surface-1)' }}>
                 <button onClick={() => fileInputRef.current?.click()} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg font-bold" style={{ color: 'var(--text-primary)', borderBottom: '1px solid var(--border-subtle)', marginBottom: '4px', paddingBottom: '8px' }}>
-                  Load Workspace (.json)
+                  Load Document (.json, .docx, .md, .txt)
                 </button>
                 <button onClick={() => handleDownload('md')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>Export Markdown</button>
                 <button onClick={() => handleDownload('docx')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>Export Word</button>
                 <button onClick={() => handleDownload('tex')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>AI Convert to LaTeX</button>
                 <button onClick={() => handleDownload('json')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg font-medium" style={{ color: 'var(--text-primary)' }}>Save Workspace</button>
               </div>
-              <input type="file" ref={fileInputRef} onChange={handleLoadWorkspace} accept=".json" className="hidden" />
+              <input type="file" ref={fileInputRef} onChange={handleLoadWorkspace} accept=".json,.docx,.md,.txt" className="hidden" />
             </div>
 
             <button onClick={() => setIsPostDraftingOpen(true)} className="p-2 rounded-lg transition-colors hover:bg-stone-100" title="Post-Drafting: Rebuttal & Cover Letter" style={{ color: 'var(--text-muted)' }}>
@@ -722,19 +723,6 @@ export default function App() {
               {darkMode ? <Sun size={18} /> : <Moon size={18} />}
             </button>
 
-            <div className="relative group flex flex-col items-center">
-              <button className="p-2 rounded-lg transition-colors hover:bg-stone-100" style={{ color: 'var(--text-muted)' }} title="Text Zoom">
-                <div className="flex flex-col items-center leading-none text-[8px] font-bold">
-                  <span>{zoom}%</span>
-                  <span>Zoom</span>
-                </div>
-              </button>
-              <div className="absolute left-full ml-2 top-0 border rounded-xl shadow-xl hidden group-hover:flex flex-col z-50 p-1.5 min-w-[40px] items-center gap-1" style={{ borderColor: 'var(--border)', background: 'var(--surface-1)' }}>
-                <button onClick={() => setZoom(z => Math.min(150, z + 10))} className="w-full py-1 text-xs hover:bg-stone-50 rounded-lg font-bold" style={{ color: 'var(--text-primary)' }}>+</button>
-                <button onClick={() => setZoom(100)} className="w-full py-1 text-[10px] hover:bg-stone-50 rounded-lg font-bold" style={{ color: 'var(--text-secondary)' }}>100%</button>
-                <button onClick={() => setZoom(z => Math.max(50, z - 10))} className="w-full py-1 text-xs hover:bg-stone-50 rounded-lg font-bold" style={{ color: 'var(--text-primary)' }}>-</button>
-              </div>
-            </div>
           </div>
           
           <div className="flex flex-col items-center space-y-3 pb-2">
