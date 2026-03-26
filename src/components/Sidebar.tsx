@@ -155,7 +155,27 @@ export default function Sidebar({
   const [globalSearchQuery, setGlobalSearchQuery] = useState('');
   const [globalSearchResults, setGlobalSearchResults] = useState<SemanticSearchResult[]>([]);
   const [isGlobalSearching, setIsGlobalSearching] = useState(false);
+  const [globalSearchError, setGlobalSearchError] = useState<string | null>(null);
   const fileUploadRef = useRef<HTMLInputElement>(null);
+
+  const runGlobalSearch = () => {
+    const q = globalSearchQuery.trim();
+    if (q.length < 3) return;
+    setIsGlobalSearching(true);
+    setGlobalSearchResults([]);
+    setGlobalSearchError(null);
+    searchSimilarManuscripts(q, 10)
+      .then(r => setGlobalSearchResults(r))
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        const isCors = msg.includes('status 0') || msg.includes('CORS') || msg.includes('fetch') || msg.includes('NetworkError') || msg.includes('Failed to fetch');
+        setGlobalSearchError(isCors
+          ? 'Search API unreachable — CORS preflight failed. Apply nginx-cors.conf on the server (see repo) and reload nginx.'
+          : `Search failed: ${msg}`
+        );
+      })
+      .finally(() => setIsGlobalSearching(false));
+  };
 
   // Citation management state
   const [citationAnalyses, setCitationAnalyses] = useState<Record<string, CitationAnalysis>>({});
@@ -926,31 +946,17 @@ export default function Sidebar({
                 <div className="flex gap-1.5">
                   <input
                     value={globalSearchQuery}
-                    onChange={e => setGlobalSearchQuery(e.target.value)}
+                    onChange={e => { setGlobalSearchQuery(e.target.value); setGlobalSearchError(null); }}
                     onKeyDown={e => {
-                      if (e.key === 'Enter' && globalSearchQuery.trim().length >= 3) {
-                        setIsGlobalSearching(true);
-                        setGlobalSearchResults([]);
-                        searchSimilarManuscripts(globalSearchQuery.trim(), 10)
-                          .then(r => setGlobalSearchResults(r))
-                          .catch(() => {})
-                          .finally(() => setIsGlobalSearching(false));
-                      }
+                      if (e.key === 'Enter' && globalSearchQuery.trim().length >= 3) runGlobalSearch();
                     }}
                     placeholder="Title, keywords, or paste abstract…"
                     className="flex-1 text-[11px] px-2.5 py-1.5 border rounded-lg focus:outline-none"
-                    style={{ borderColor: 'var(--border)', background: 'var(--surface-0)', color: 'var(--text-primary)' }}
+                    style={{ borderColor: globalSearchError ? '#f87171' : 'var(--border)', background: 'var(--surface-0)', color: 'var(--text-primary)' }}
                   />
                   <button
                     disabled={isGlobalSearching || globalSearchQuery.trim().length < 3}
-                    onClick={() => {
-                      setIsGlobalSearching(true);
-                      setGlobalSearchResults([]);
-                      searchSimilarManuscripts(globalSearchQuery.trim(), 10)
-                        .then(r => setGlobalSearchResults(r))
-                        .catch(() => {})
-                        .finally(() => setIsGlobalSearching(false));
-                    }}
+                    onClick={runGlobalSearch}
                     className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors disabled:opacity-40"
                     style={{ background: 'var(--accent-blue)', color: '#fff' }}
                   >
@@ -958,6 +964,9 @@ export default function Sidebar({
                     {isGlobalSearching ? '' : 'Search'}
                   </button>
                 </div>
+                {globalSearchError && (
+                  <p className="text-[10px] px-1" style={{ color: '#ef4444' }}>{globalSearchError}</p>
+                )}
 
                 {/* Results */}
                 {globalSearchResults.length > 0 && (
@@ -1019,7 +1028,7 @@ export default function Sidebar({
                   </div>
                 )}
 
-                {!isGlobalSearching && globalSearchQuery.trim().length >= 3 && globalSearchResults.length === 0 && (
+                {!isGlobalSearching && !globalSearchError && globalSearchQuery.trim().length >= 3 && globalSearchResults.length === 0 && (
                   <p className="text-[10px] text-center py-2" style={{ color: 'var(--text-muted)' }}>No results — try different keywords</p>
                 )}
               </div>
