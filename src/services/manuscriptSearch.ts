@@ -51,6 +51,10 @@ export async function searchSimilarManuscripts(
   );
 
   if (!result.ok) {
+    if (result.status === 0) {
+      // status 0 means the browser blocked the request (CORS preflight failed or network error)
+      throw new Error('Search API unreachable — likely a CORS issue. Add CORS headers to your nginx config (see nginx-cors.conf).');
+    }
     throw new Error(`Search API error ${result.status}: ${result.text.slice(0, 200)}`);
   }
 
