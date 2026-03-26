@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect, useMemo, createElement } from 'react';
 import { AgentType, Message, Suggestion, HistoryItem, SuggestionSeverity, AISettings } from '../types';
-import { Send, Sparkles, Check, X, MessageSquare, History as HistoryIcon, Info, Clock, CheckCheck, XCircle, Filter, ChevronDown, ChevronUp, BookOpen, Trash2, FileText, UploadCloud, FolderOpen, BookMarked, Plus } from 'lucide-react';
+import { Send, Sparkles, Check, X, MessageSquare, History as HistoryIcon, Info, Clock, CheckCheck, XCircle, Filter, ChevronDown, ChevronUp, BookOpen, Trash2, FileText, UploadCloud, FolderOpen, BookMarked, Plus, List, AlertTriangle, CheckCircle2, Library, Search, ExternalLink, Copy, Zap, RefreshCw } from 'lucide-react';
+import { SemanticSearchResult, ManuscriptSource } from '../types';
+import { searchSimilarManuscripts, resultToBibtex, doiToUrl } from '../services/manuscriptSearch';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -8,7 +10,8 @@ import * as pdfjsLib from 'pdfjs-dist';
 import { Cite } from '@citation-js/core';
 import '@citation-js/plugin-bibtex';
 import localforage from 'localforage';
-import { digestSourceForManuscript, analyzeSourceAgainstManuscript, AGENT_INFO, AGENT_ICONS } from '../services/ai';
+import { digestSourceForManuscript, digestApiSource, analyzeSourceAgainstManuscript, AGENT_INFO, AGENT_ICONS } from '../services/ai';
+import { detectOrphanedCitations, formatBibliography, BIB_STYLE_LABELS, type BibStyle, type CitationAnalysis } from '../services/citations';
 
 // Use bundled worker via Vite's URL import for Electron compatibility
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).href;
@@ -29,13 +32,23 @@ interface SidebarProps {
   isAnalyzing: boolean;
   highlightedSuggestionId?: string | null;
   analysisProgress?: { agent: string; total: number; done: number } | null;
-  activeTabOverride?: 'chat' | 'suggestions' | 'history' | 'sources';
-  onTabChange?: (tab: 'chat' | 'suggestions' | 'history' | 'sources') => void;
+  activeTabOverride?: 'chat' | 'suggestions' | 'history' | 'sources' | 'outline';
+  onTabChange?: (tab: 'chat' | 'suggestions' | 'history' | 'sources' | 'outline') => void;
   onAgentChange?: (agent: AgentType) => void;
   manuscriptContent?: string;
+  manuscriptHtml?: string;
+  onScrollToSection?: (headingText: string) => void;
+  onAnalyzeSection?: (sectionText: string, sectionTitle: string) => void;
+  onSourcesChange?: (sources: ManuscriptSource[]) => void;
   aiSettings?: AISettings;
   onAnalyzeSource?: (analysis: string, sourceName: string) => void;
   contentZoom?: number;
+  externalApiSources?: ManuscriptSource[];
+  onExternalSourcesMerged?: () => void;
+  clearSourcesTrigger?: number;
+  citationRegistry?: Record<string, number>;
+  onRenumberCitations?: () => void;
+  onRemoveCitation?: (sourceId: string) => void;
 }
 
 const SEVERITY_CONFIG: Record<SuggestionSeverity, { label: string; color: string; dotColor: string }> = {
@@ -106,23 +119,49 @@ export default function Sidebar({
   onTabChange,
   onAgentChange,
   manuscriptContent = '',
+  manuscriptHtml = '',
+  onScrollToSection,
+  onAnalyzeSection,
+  onSourcesChange,
   aiSettings,
   onAnalyzeSource,
   contentZoom = 100,
+  externalApiSources,
+  onExternalSourcesMerged,
+  clearSourcesTrigger,
+  citationRegistry,
+  onRenumberCitations,
+  onRemoveCitation,
 }: SidebarProps) {
   const [input, setInput] = useState('');
   const [rebuttalTexts, setRebuttalTexts] = useState<Record<string, string>>({});
   const [showSourcePicker, setShowSourcePicker] = useState(false);
   const [attachedSourceIds, setAttachedSourceIds] = useState<Set<string>>(new Set(['__manuscript__']));
   const sourcePickerRef = useRef<HTMLDivElement>(null);
-  const [activeTab, setActiveTabLocal] = useState<'chat' | 'suggestions' | 'history' | 'sources'>('chat');
-  const [sources, setSources] = useState<{id: string, name: string, type: 'pdf' | 'bib', text: string, digest?: string}[]>([]);
+  const [activeTab, setActiveTabLocal] = useState<'chat' | 'suggestions' | 'history' | 'sources' | 'outline'>('chat');
+  const [sources, setSources] = useState<ManuscriptSource[]>([]);
+  // Pending PDF match confirmations: sourceId → { results, matchIndex }
+  const [pendingPdfMatches, setPendingPdfMatches] = useState<Record<string, { results: SemanticSearchResult[]; matchIndex: number }>>({});
+  // API source cards: which tab is active ('summary' default) + which are currently being digested
+  const [sourceActiveTabs, setSourceActiveTabs] = useState<Record<string, 'summary' | 'abstract'>>({});
+  const [digestingApiIds, setDigestingApiIds] = useState<Set<string>>(new Set());
   const [isDragging, setIsDragging] = useState(false);
   const [isParsing, setIsParsing] = useState(false);
   const [parsingFileName, setParsingFileName] = useState<string | null>(null);
   const [digestingId, setDigestingId] = useState<string | null>(null);
   const [analyzingSourceId, setAnalyzingSourceId] = useState<string | null>(null);
+  const [pdfManualSearch, setPdfManualSearch] = useState<Record<string, string>>({});
+  const [pdfSearching, setPdfSearching] = useState<Set<string>>(new Set());
+  const [globalSearchQuery, setGlobalSearchQuery] = useState('');
+  const [globalSearchResults, setGlobalSearchResults] = useState<SemanticSearchResult[]>([]);
+  const [isGlobalSearching, setIsGlobalSearching] = useState(false);
   const fileUploadRef = useRef<HTMLInputElement>(null);
+
+  // Citation management state
+  const [citationAnalyses, setCitationAnalyses] = useState<Record<string, CitationAnalysis>>({});
+  const [checkingCitationsId, setCheckingCitationsId] = useState<string | null>(null);
+  const [bibStyle, setBibStyle] = useState<BibStyle>('apa');
+  const [insertingBib, setInsertingBib] = useState(false);
 
   useEffect(() => {
     localforage.getItem('manuscript-sources').then((saved: any) => {
@@ -132,6 +171,7 @@ export default function Sidebar({
 
   useEffect(() => {
     localforage.setItem('manuscript-sources', sources).catch(console.error);
+    onSourcesChange?.(sources);
   }, [sources]);
 
   const extractTextFromPDF = async (file: File): Promise<string> => {
@@ -161,7 +201,7 @@ export default function Sidebar({
         if (file.name.endsWith('.pdf')) {
           const text = await extractTextFromPDF(file);
           const id = Date.now().toString() + Math.random();
-          newSources.push({ id, name: file.name, type: 'pdf' as const, text });
+          newSources.push({ id, name: file.name, type: 'pdf' as const, text, queryText: undefined });
         } else if (file.name.endsWith('.bib')) {
           const text = await file.text();
           new Cite(text);
@@ -174,7 +214,7 @@ export default function Sidebar({
     setParsingFileName(null);
 
     if (newSources.length > 0) {
-      setSources(prev => [...prev, ...newSources]);
+      setSources(prev => [...newSources, ...prev]);
       // Auto-digest PDFs in relation to manuscript
       if (aiSettings) {
         for (const src of newSources) {
@@ -182,8 +222,20 @@ export default function Sidebar({
             setDigestingId(src.id);
             setParsingFileName(`Digesting ${src.name}...`);
             try {
-              const digest = await digestSourceForManuscript(src.text, src.name, manuscriptContent, aiSettings);
+              const digest = await digestApiSource(src.text, src.name, aiSettings);
               setSources(prev => prev.map(s => s.id === src.id ? { ...s, digest } : s));
+              // Search using digest text only — cleaner signal than raw PDF content
+              if (digest && digest.length > 30) {
+                const digestQuery = digest.replace(/\*\*[^*]+\*\*:?/g, '').replace(/\s+/g, ' ').trim().slice(0, 700);
+                const srcId = src.id;
+                searchSimilarManuscripts(digestQuery, 10)
+                  .then(results => {
+                    if (results.length > 0) {
+                      setPendingPdfMatches(prev => ({ ...prev, [srcId]: { results: results.slice(0, 10), matchIndex: 0 } }));
+                    }
+                  })
+                  .catch(() => {});
+              }
             } catch (_) {}
             setDigestingId(null);
             setParsingFileName(null);
@@ -220,6 +272,66 @@ export default function Sidebar({
     }
   };
 
+  const handleCheckCitations = (source: { id: string; text: string }) => {
+    setCheckingCitationsId(source.id);
+    try {
+      const analysis = detectOrphanedCitations(source.text, manuscriptContent);
+      setCitationAnalyses(prev => ({ ...prev, [source.id]: analysis }));
+    } catch (e) {
+      console.error('Citation check failed:', e);
+    } finally {
+      setCheckingCitationsId(null);
+    }
+  };
+
+  // Merge API sources delivered by App.tsx and auto-generate AI summaries
+  useEffect(() => {
+    if (!externalApiSources?.length) return;
+
+    // Deduplicate by DOI
+    setSources(prev => {
+      const existingDois = new Set(prev.map(s => s.apiMeta?.doi).filter(Boolean));
+      const toAdd = externalApiSources.filter(s => !s.apiMeta?.doi || !existingDois.has(s.apiMeta.doi));
+      return toAdd.length ? [...toAdd, ...prev] : prev;
+    });
+    onExternalSourcesMerged?.();
+
+    // Fire-and-forget digest for each new source
+    if (aiSettings) {
+      for (const src of externalApiSources) {
+        setDigestingApiIds(prev => new Set([...prev, src.id]));
+        digestApiSource(src.text, src.name, aiSettings)
+          .then(digest => {
+            setSources(prev => prev.map(s => s.id === src.id ? { ...s, digest } : s));
+          })
+          .catch(() => {})
+          .finally(() => {
+            setDigestingApiIds(prev => { const next = new Set(prev); next.delete(src.id); return next; });
+          });
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [externalApiSources]);
+
+  // Clear all sources when a new manuscript is started
+  useEffect(() => {
+    if (!clearSourcesTrigger) return; // 0 = initial mount, skip
+    setSources([]);
+    setPendingPdfMatches({});
+  }, [clearSourcesTrigger]);
+
+  const handleInsertBibliography = (bibSourceText: string, onInsert: (html: string) => void) => {
+    setInsertingBib(true);
+    try {
+      const html = formatBibliography(bibSourceText, bibStyle);
+      onInsert(html);
+    } catch (e) {
+      console.error('Bibliography format failed:', e);
+    } finally {
+      setInsertingBib(false);
+    }
+  };
+
   // Sync tab from parent override
   useEffect(() => {
     if (!showSourcePicker) return;
@@ -236,7 +348,7 @@ export default function Sidebar({
     if (activeTabOverride) setActiveTabLocal(activeTabOverride);
   }, [activeTabOverride]);
 
-  const setActiveTab = (tab: 'chat' | 'suggestions' | 'history' | 'sources') => {
+  const setActiveTab = (tab: 'chat' | 'suggestions' | 'history' | 'sources' | 'outline') => {
     setActiveTabLocal(tab);
     onTabChange?.(tab);
   };
@@ -272,7 +384,7 @@ export default function Sidebar({
   }, [messages, activeTab]);
 
   const agents = Object.entries(AGENT_INFO)
-    .filter(([id]) => id !== 'manuscript-ai' && id !== 'literature-reviewer')
+    .filter(([id]) => id !== 'manuscript-ai' && id !== 'literature-reviewer' && id !== 'citation-checker')
     .map(([id, info]) => ({ id: id as AgentType, ...info }));
 
   const filteredSuggestions = useMemo(() => {
@@ -287,6 +399,32 @@ export default function Sidebar({
     });
     return counts;
   }, [suggestions]);
+
+  // Parse headings from manuscript HTML for the Outline tab
+  const outline = useMemo(() => {
+    if (!manuscriptHtml) return [];
+    const re = /<h([23])[^>]*>(.*?)<\/h[23]>/gi;
+    return [...manuscriptHtml.matchAll(re)].map(m => ({
+      level: parseInt(m[1]),
+      text: m[2].replace(/<[^>]*>/g, '').trim(),
+    }));
+  }, [manuscriptHtml]);
+
+  // Word count per H2 section
+  const h2WordCounts = useMemo(() => {
+    if (!manuscriptHtml) return {} as Record<string, number>;
+    const h2Re = /<h2[^>]*>(.*?)<\/h2>/gi;
+    const h2Matches = [...manuscriptHtml.matchAll(h2Re)];
+    const counts: Record<string, number> = {};
+    h2Matches.forEach((m, i) => {
+      const title = m[1].replace(/<[^>]*>/g, '').trim();
+      const start = (m.index ?? 0) + m[0].length;
+      const end = i + 1 < h2Matches.length ? (h2Matches[i + 1].index ?? manuscriptHtml.length) : manuscriptHtml.length;
+      const text = manuscriptHtml.slice(start, end).replace(/<[^>]*>/g, ' ');
+      counts[title] = text.split(/\s+/).filter(w => w.length > 0).length;
+    });
+    return counts;
+  }, [manuscriptHtml]);
 
   const handleSend = () => {
     if (!input.trim()) return;
@@ -313,6 +451,7 @@ export default function Sidebar({
           { key: 'suggestions' as const, icon: <Sparkles size={14} />, label: 'Review' },
           { key: 'history' as const, icon: <Clock size={14} />, label: 'History' },
           { key: 'sources' as const, icon: <BookOpen size={14} />, label: 'Sources' },
+          { key: 'outline' as const, icon: <List size={14} />, label: 'Outline' },
         ]).map(tab => (
           <button
             key={tab.key}
@@ -724,27 +863,29 @@ export default function Sidebar({
             )}
           </div>
         ) : activeTab === 'sources' ? (
-          <div className="space-y-4 relative"
+          <div className="space-y-4"
             onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
             onDragLeave={(e) => { e.preventDefault(); setIsDragging(false); }}
             onDrop={handleFileDrop}
           >
-            {(isParsing || digestingId) && (
-              <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/70 backdrop-blur-sm rounded-xl">
-                <div className="flex flex-col items-center gap-2">
-                  <Sparkles className="animate-spin text-blue-500" size={24} />
-                  <span className="text-xs font-semibold">{digestingId ? 'Digesting with AI...' : 'Parsing files...'}</span>
-                  {parsingFileName && <p className="text-[10px] text-stone-500 text-center max-w-[180px] truncate">{parsingFileName}</p>}
-                  {digestingId && !parsingFileName && <p className="text-[10px] text-stone-500 text-center max-w-[180px]">Summarizing relevant content in context of your manuscript</p>}
+            {(isParsing || digestingId || digestingApiIds.size > 0) && (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-lg border" style={{ background: 'var(--surface-1)', borderColor: 'var(--border)' }}>
+                <Sparkles className="animate-spin text-blue-500 shrink-0" size={14} />
+                <div className="min-w-0">
+                  <span className="text-[11px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+                    {isParsing ? 'Parsing files...' : 'Generating AI summary...'}
+                  </span>
+                  {parsingFileName && <p className="text-[10px] truncate" style={{ color: 'var(--text-muted)' }}>{parsingFileName}</p>}
+                  {(digestingId || digestingApiIds.size > 0) && !parsingFileName && <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Summarizing in context of your manuscript</p>}
                 </div>
               </div>
             )}
             {analyzingSourceId && (
-              <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/70 backdrop-blur-sm rounded-xl">
-                <div className="flex flex-col items-center gap-2">
-                  <Sparkles className="animate-spin text-violet-500" size={24} />
-                  <span className="text-xs font-semibold">Comparing manuscripts...</span>
-                  <p className="text-[10px] text-stone-500 text-center max-w-[200px]">Literature Reviewer is analyzing support &amp; contradictions</p>
+              <div className="flex items-center gap-2 px-3 py-2 rounded-lg border" style={{ background: 'var(--surface-1)', borderColor: 'var(--border)' }}>
+                <Sparkles className="animate-spin text-violet-500 shrink-0" size={14} />
+                <div className="min-w-0">
+                  <span className="text-[11px] font-semibold" style={{ color: 'var(--text-primary)' }}>Comparing manuscripts...</span>
+                  <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Literature Reviewer is analyzing support &amp; contradictions</p>
                 </div>
               </div>
             )}
@@ -775,29 +916,550 @@ export default function Sidebar({
               onChange={handleFileInput}
             />
 
+            {/* Manual manuscript search */}
+            <div className="border rounded-xl overflow-hidden" style={{ borderColor: 'var(--border)' }}>
+              <div className="flex items-center gap-2 px-3 py-2 border-b" style={{ borderColor: 'var(--border)', background: 'var(--surface-1)' }}>
+                <Search size={12} style={{ color: 'var(--text-muted)' }} />
+                <span className="text-[11px] font-bold" style={{ color: 'var(--text-primary)' }}>Find Manuscripts</span>
+              </div>
+              <div className="p-3 space-y-2">
+                <div className="flex gap-1.5">
+                  <input
+                    value={globalSearchQuery}
+                    onChange={e => setGlobalSearchQuery(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' && globalSearchQuery.trim().length >= 3) {
+                        setIsGlobalSearching(true);
+                        setGlobalSearchResults([]);
+                        searchSimilarManuscripts(globalSearchQuery.trim(), 10)
+                          .then(r => setGlobalSearchResults(r))
+                          .catch(() => {})
+                          .finally(() => setIsGlobalSearching(false));
+                      }
+                    }}
+                    placeholder="Title, keywords, or paste abstract…"
+                    className="flex-1 text-[11px] px-2.5 py-1.5 border rounded-lg focus:outline-none"
+                    style={{ borderColor: 'var(--border)', background: 'var(--surface-0)', color: 'var(--text-primary)' }}
+                  />
+                  <button
+                    disabled={isGlobalSearching || globalSearchQuery.trim().length < 3}
+                    onClick={() => {
+                      setIsGlobalSearching(true);
+                      setGlobalSearchResults([]);
+                      searchSimilarManuscripts(globalSearchQuery.trim(), 10)
+                        .then(r => setGlobalSearchResults(r))
+                        .catch(() => {})
+                        .finally(() => setIsGlobalSearching(false));
+                    }}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors disabled:opacity-40"
+                    style={{ background: 'var(--accent-blue)', color: '#fff' }}
+                  >
+                    {isGlobalSearching ? <Sparkles size={11} className="animate-spin" /> : <Search size={11} />}
+                    {isGlobalSearching ? '' : 'Search'}
+                  </button>
+                </div>
+
+                {/* Results */}
+                {globalSearchResults.length > 0 && (
+                  <div className="space-y-1.5 max-h-72 overflow-y-auto pr-0.5">
+                    {globalSearchResults.map((r, i) => {
+                      const alreadyAdded = sources.some(s => s.apiMeta?.doi && s.apiMeta.doi === r.doi);
+                      return (
+                        <div key={i} className="border rounded-lg p-2 space-y-0.5" style={{ borderColor: 'var(--border)', background: 'var(--surface-0)' }}>
+                          <div className="flex items-start justify-between gap-2">
+                            <p className="text-[11px] font-semibold leading-tight flex-1" style={{ color: 'var(--text-primary)' }}>{r.title}</p>
+                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded shrink-0" style={{ background: 'var(--surface-2)', color: 'var(--text-muted)' }}>
+                              {Math.round(r.score * 100)}%
+                            </span>
+                          </div>
+                          <p className="text-[10px] truncate" style={{ color: 'var(--text-secondary)' }}>{r.authors}</p>
+                          <p className="text-[10px] italic" style={{ color: 'var(--text-muted)' }}>
+                            {r.journal}{r.year ? `, ${r.year}` : ''}
+                          </p>
+                          <div className="flex items-center gap-1.5 pt-0.5">
+                            <button
+                              disabled={alreadyAdded}
+                              onClick={() => {
+                                if (alreadyAdded) return;
+                                const src: ManuscriptSource = {
+                                  id: `api-${Date.now()}-${Math.random()}`,
+                                  name: r.title,
+                                  type: 'api',
+                                  text: r.abstract,
+                                  apiMeta: r,
+                                  queryText: globalSearchQuery.trim(),
+                                };
+                                setSources(prev => [src, ...prev]);
+                                // Fire-and-forget digest
+                                if (aiSettings) {
+                                  setDigestingApiIds(prev => new Set([...prev, src.id]));
+                                  digestApiSource(src.text, src.name, aiSettings)
+                                    .then(digest => setSources(prev => prev.map(s => s.id === src.id ? { ...s, digest } : s)))
+                                    .catch(() => {})
+                                    .finally(() => setDigestingApiIds(prev => { const n = new Set(prev); n.delete(src.id); return n; }));
+                                }
+                              }}
+                              className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-semibold transition-colors disabled:opacity-40"
+                              style={{ background: alreadyAdded ? 'var(--surface-2)' : 'var(--accent-blue)', color: alreadyAdded ? 'var(--text-muted)' : '#fff' }}
+                            >
+                              <Plus size={9} />
+                              {alreadyAdded ? 'Added' : 'Add source'}
+                            </button>
+                            {r.doi && (
+                              <a href={doiToUrl(r.doi)} target="_blank" rel="noreferrer"
+                                className="flex items-center gap-1 text-[10px] hover:underline"
+                                style={{ color: 'var(--accent-blue)' }}>
+                                <ExternalLink size={9} /> DOI
+                              </a>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {!isGlobalSearching && globalSearchQuery.trim().length >= 3 && globalSearchResults.length === 0 && (
+                  <p className="text-[10px] text-center py-2" style={{ color: 'var(--text-muted)' }}>No results — try different keywords</p>
+                )}
+              </div>
+            </div>
+
+            {/* Bibliography Formatter — shown when at least one .bib source is loaded */}
+            {sources.some(s => s.type === 'bib') && (
+              <div className="border rounded-xl p-3 space-y-2" style={{ borderColor: 'var(--border)', background: 'var(--surface-1)' }}>
+                <div className="flex items-center gap-2">
+                  <Library size={13} style={{ color: 'var(--text-muted)' }} />
+                  <span className="text-[11px] font-bold" style={{ color: 'var(--text-primary)' }}>Auto-format Bibliography</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <select
+                    value={bibStyle}
+                    onChange={e => setBibStyle(e.target.value as BibStyle)}
+                    className="flex-1 text-[11px] rounded-lg px-2 py-1.5 border focus:outline-none"
+                    style={{ borderColor: 'var(--border)', background: 'var(--surface-0)', color: 'var(--text-secondary)' }}
+                  >
+                    {(Object.entries(BIB_STYLE_LABELS) as [BibStyle, string][]).map(([key, label]) => (
+                      <option key={key} value={key}>{label}</option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => {
+                      const bibSource = sources.find(s => s.type === 'bib');
+                      if (!bibSource) return;
+                      handleInsertBibliography(bibSource.text, (html) => {
+                        // Notify parent to append bibliography HTML to the editor
+                        onAnalyzeSection?.(`<h2>References</h2>${html}`, '__bibliography__');
+                      });
+                    }}
+                    disabled={insertingBib}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold transition-colors disabled:opacity-50"
+                    style={{ background: 'var(--surface-2)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+                  >
+                    <Library size={11} />
+                    {insertingBib ? 'Formatting...' : 'Insert'}
+                  </button>
+                </div>
+                <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                  Appends a formatted bibliography to the end of your manuscript.
+                </p>
+              </div>
+            )}
+
+            {/* Reference Manager */}
+            {citationRegistry && Object.keys(citationRegistry).length > 0 && (
+              <div className="border rounded-xl overflow-hidden" style={{ borderColor: 'var(--border)' }}>
+                {/* Header */}
+                <div className="flex items-center justify-between px-3 py-2 border-b" style={{ borderColor: 'var(--border)', background: 'var(--surface-1)' }}>
+                  <div className="flex items-center gap-2">
+                    <BookMarked size={13} style={{ color: 'var(--text-muted)' }} />
+                    <span className="text-[11px] font-bold" style={{ color: 'var(--text-primary)' }}>
+                      Reference Manager
+                    </span>
+                    <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full" style={{ background: 'var(--surface-2)', color: 'var(--text-muted)' }}>
+                      {Object.keys(citationRegistry).length}
+                    </span>
+                  </div>
+                  <button
+                    onClick={onRenumberCitations}
+                    title="Renumber citations in document order"
+                    className="flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-semibold transition-colors hover:bg-stone-100"
+                    style={{ color: 'var(--text-muted)', border: '1px solid var(--border)' }}
+                  >
+                    <RefreshCw size={9} />
+                    Sync order
+                  </button>
+                </div>
+
+                {/* Citation list */}
+                <div className="divide-y" style={{ borderColor: 'var(--border)' }}>
+                  {Object.entries(citationRegistry)
+                    .sort((a, b) => a[1] - b[1])
+                    .map(([id, num]) => {
+                      const src = sources.find(s => s.id === id);
+                      const label = src?.apiMeta
+                        ? `${src.apiMeta.authors?.split(/[,;]/)[0]?.trim() ?? ''}${src.apiMeta.year ? ` (${src.apiMeta.year})` : ''}`
+                        : src?.name.replace(/\.pdf$/i, '') ?? '(removed source)';
+                      const title = src?.apiMeta?.title ?? src?.name ?? '';
+                      return (
+                        <div key={id} className="flex items-start gap-2 px-3 py-2" style={{ background: 'var(--surface-0)' }}>
+                          <span className="text-[10px] font-bold tabular-nums shrink-0 mt-0.5 w-5 text-center rounded py-0.5" style={{ background: 'var(--surface-2)', color: 'var(--text-secondary)' }}>
+                            {num}
+                          </span>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[11px] font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{label}</p>
+                            {title && label !== title && (
+                              <p className="text-[10px] truncate" style={{ color: 'var(--text-muted)' }}>{title}</p>
+                            )}
+                            {src?.apiMeta?.doi && (
+                              <a href={doiToUrl(src.apiMeta.doi)} target="_blank" rel="noreferrer"
+                                className="text-[9px] hover:underline truncate block" style={{ color: 'var(--accent-blue)' }}>
+                                {src.apiMeta.doi}
+                              </a>
+                            )}
+                          </div>
+                          <button
+                            onClick={() => onRemoveCitation?.(id)}
+                            title="Remove citation"
+                            className="shrink-0 p-1 rounded hover:bg-red-50 transition-colors"
+                            style={{ color: 'var(--text-muted)' }}
+                          >
+                            <X size={10} />
+                          </button>
+                        </div>
+                      );
+                    })}
+                </div>
+
+                {/* Actions */}
+                <div className="flex gap-1.5 px-3 py-2 border-t" style={{ borderColor: 'var(--border)', background: 'var(--surface-1)' }}>
+                  <button
+                    onClick={() => {
+                      const entries = Object.entries(citationRegistry).sort((a, b) => a[1] - b[1]);
+                      const lines = entries.map(([id, num]) => {
+                        const src = sources.find(s => s.id === id);
+                        if (!src) return `<li>[${num}] (source not found)</li>`;
+                        if (src.apiMeta) {
+                          const m = src.apiMeta;
+                          const doiPart = m.doi ? ` doi:${m.doi}` : '';
+                          return `<li>[${num}] ${m.authors}${m.year ? ` (${m.year})` : ''}. ${m.title}. <em>${m.journal}</em>.${doiPart}</li>`;
+                        }
+                        return `<li>[${num}] ${src.name.replace(/\.pdf$/i, '')}</li>`;
+                      });
+                      onAnalyzeSection?.(`<h2>References</h2><ol>${lines.join('')}</ol>`, '__bibliography__');
+                    }}
+                    className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors"
+                    style={{ background: 'var(--surface-2)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+                  >
+                    <BookMarked size={11} />
+                    Insert reference list
+                  </button>
+                </div>
+              </div>
+            )}
+
             {sources.length > 0 && (
               <div className="space-y-2">
-                <h3 className="text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>Uploaded Sources ({sources.length})</h3>
+                <h3 className="text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
+                  Sources ({sources.length})
+                  {sources.some(s => s.type === 'api') && (
+                    <span className="ml-1.5 normal-case font-medium" style={{ color: 'var(--accent-blue)' }}>
+                      · {sources.filter(s => s.type === 'api').length} from search
+                    </span>
+                  )}
+                </h3>
                 {sources.map((source) => (
-                  <div key={source.id} className="border rounded-xl shadow-sm overflow-hidden" style={{ borderColor: 'var(--border)', background: 'var(--surface-1)' }}>
+                  <div key={source.id} className="border rounded-xl shadow-sm overflow-hidden" style={{ borderColor: source.type === 'api' ? 'rgba(139,92,246,0.25)' : 'var(--border)', background: source.type === 'api' ? 'rgba(245,243,255,0.5)' : 'var(--surface-1)' }}>
                     <div className="flex items-center justify-between p-3">
                       <div className="flex items-center gap-2 overflow-hidden">
-                        <FileText size={14} style={{ color: 'var(--text-tertiary)' }} className="shrink-0" />
+                        {source.type === 'api' ? <Search size={14} style={{ color: '#7c3aed' }} className="shrink-0" /> : <FileText size={14} style={{ color: 'var(--text-tertiary)' }} className="shrink-0" />}
                         <div className="truncate">
                           <p className="text-xs font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{source.name}</p>
                           <p className="text-[9px]" style={{ color: 'var(--text-tertiary)' }}>
-                            {source.type.toUpperCase()} • {Math.round(source.text.length / 1024)} KB
-                            {source.digest && <span className="ml-1 text-emerald-600 font-semibold">• digested</span>}
+                            {source.type === 'api' ? (
+                              <>
+                                <span className="text-violet-600 font-semibold">{source.apiMeta?.source}</span>
+                                {source.apiMeta?.year && <span> · {source.apiMeta.year}</span>}
+                                {source.apiMeta && (
+                                  <span className={`ml-1 font-semibold ${source.apiMeta.score >= 0.8 ? 'text-emerald-600' : source.apiMeta.score >= 0.7 ? 'text-amber-600' : 'text-stone-500'}`}>
+                                    · {(source.apiMeta.score * 100).toFixed(0)}% match
+                                  </span>
+                                )}
+                              </>
+                            ) : (
+                              <>
+                                {source.type.toUpperCase()} • {Math.round(source.text.length / 1024)} KB
+                                {source.digest && <span className="ml-1 text-emerald-600 font-semibold">• digested</span>}
+                              </>
+                            )}
                           </p>
                         </div>
                       </div>
                       <button
                         className="p-1.5 rounded-lg hover:bg-stone-100 transition-colors shrink-0" style={{ color: 'var(--text-muted)' }}
-                        onClick={() => setSources(s => s.filter(src => src.id !== source.id))}
+                        onClick={() => {
+                          setSources(s => s.filter(src => src.id !== source.id));
+                          setPendingPdfMatches(prev => { const { [source.id]: _, ...rest } = prev; return rest; });
+                        }}
                       >
                         <Trash2 size={12} />
                       </button>
                     </div>
+
+                    {/* PDF match confirmation UI */}
+                    {source.type === 'pdf' && (() => {
+                      const hasPending = !!pendingPdfMatches[source.id];
+                      const isSearching = pdfSearching.has(source.id);
+                      const manualQuery = pdfManualSearch[source.id] ?? '';
+
+                      const runManualSearch = () => {
+                        const q = manualQuery.trim();
+                        if (q.length < 3) return;
+                        setPdfSearching(prev => new Set([...prev, source.id]));
+                        const srcId = source.id;
+                        searchSimilarManuscripts(q, 10)
+                          .then(results => {
+                            if (results.length > 0) {
+                              setPendingPdfMatches(prev => ({ ...prev, [srcId]: { results: results.slice(0, 10), matchIndex: 0 } }));
+                            }
+                          })
+                          .catch(() => {})
+                          .finally(() => setPdfSearching(prev => { const s = new Set(prev); s.delete(srcId); return s; }));
+                      };
+
+                      return (
+                        <div className="px-3 pb-3 space-y-2">
+                          {/* Manual search row */}
+                          <div className="flex gap-1.5">
+                            <input
+                              value={manualQuery}
+                              onChange={e => setPdfManualSearch(prev => ({ ...prev, [source.id]: e.target.value }))}
+                              onKeyDown={e => { if (e.key === 'Enter') runManualSearch(); }}
+                              placeholder="Search paper title or keywords…"
+                              className="flex-1 text-[10px] px-2 py-1.5 border rounded-lg focus:outline-none"
+                              style={{ borderColor: 'var(--border)', background: 'var(--surface-0)', color: 'var(--text-primary)' }}
+                            />
+                            <button
+                              onClick={runManualSearch}
+                              disabled={isSearching || manualQuery.trim().length < 3}
+                              className="flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-semibold transition-colors disabled:opacity-40"
+                              style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+                            >
+                              <Search size={10} />
+                              {isSearching ? '…' : 'Search'}
+                            </button>
+                          </div>
+
+                          {hasPending && (() => {
+                            const match = pendingPdfMatches[source.id];
+                            const result = match.results[match.matchIndex];
+                            if (!result) return null;
+                            return (
+                              <div className="p-2.5 rounded-lg border space-y-1.5" style={{ background: '#fffbeb', borderColor: '#fde68a' }}>
+                                <p className="text-[10px] font-bold text-amber-700 flex items-center gap-1">
+                                  <Zap size={10} />
+                                  Is this your paper? ({match.matchIndex + 1}/{match.results.length})
+                                </p>
+                                <p className="text-[11px] font-semibold leading-tight" style={{ color: 'var(--text-primary)' }}>
+                                  {result.title}
+                                </p>
+                                <p className="text-[10px] truncate" style={{ color: 'var(--text-secondary)' }} title={result.authors}>
+                                  {result.authors}
+                                </p>
+                                <p className="text-[10px] italic" style={{ color: 'var(--text-tertiary)' }}>
+                                  {result.journal}{result.year ? `, ${result.year}` : ''}
+                                </p>
+                                <div className="flex gap-1.5 pt-0.5">
+                                  <button
+                                    onClick={() => {
+                                      setSources(prev => prev.map(s => s.id === source.id
+                                        ? { ...s, name: result.title, apiMeta: result }
+                                        : s
+                                      ));
+                                      setPendingPdfMatches(prev => { const { [source.id]: _, ...rest } = prev; return rest; });
+                                    }}
+                                    className="flex-1 py-1 rounded text-[10px] font-semibold text-white bg-emerald-600 hover:bg-emerald-500 transition-colors"
+                                  >
+                                    Yes, this is it
+                                  </button>
+                                  {match.matchIndex + 1 < match.results.length && (
+                                    <button
+                                      onClick={() => setPendingPdfMatches(prev => ({
+                                        ...prev,
+                                        [source.id]: { ...prev[source.id], matchIndex: prev[source.id].matchIndex + 1 }
+                                      }))}
+                                      className="flex-1 py-1 border rounded text-[10px] font-semibold transition-colors hover:bg-stone-50"
+                                      style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
+                                    >
+                                      Try next
+                                    </button>
+                                  )}
+                                  <button
+                                    onClick={() => setPendingPdfMatches(prev => { const { [source.id]: _, ...rest } = prev; return rest; })}
+                                    className="px-2 py-1 border rounded text-[10px] transition-colors hover:bg-stone-50"
+                                    style={{ borderColor: 'var(--border)', color: 'var(--text-muted)' }}
+                                  >
+                                    Dismiss
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      );
+                    })()}
+
+                    {/* API source metadata + tabbed Summary / Abstract */}
+                    {source.type === 'api' && source.apiMeta && (() => {
+                      const m = source.apiMeta;
+                      const doiUrl = m.doi ? doiToUrl(m.doi) : null;
+                      const activeTab = sourceActiveTabs[source.id] ?? 'summary';
+                      const isDigesting = digestingApiIds.has(source.id);
+
+                      return (
+                        <div className="space-y-0">
+                          {/* Meta row: authors, journal, DOI, query */}
+                          <div className="px-3 pb-2 space-y-1">
+                            {source.queryText && (
+                              <p className="text-[9px] italic truncate" style={{ color: 'var(--text-muted)' }} title={`Query: ${source.queryText}`}>
+                                Query: "{source.queryText.slice(0, 60)}{source.queryText.length > 60 ? '…' : ''}"
+                              </p>
+                            )}
+                            <p className="text-[10px] truncate" style={{ color: 'var(--text-secondary)' }} title={m.authors}>
+                              {m.authors}
+                            </p>
+                            <p className="text-[10px] italic" style={{ color: 'var(--text-tertiary)' }}>
+                              {m.journal}
+                            </p>
+                            {doiUrl && (
+                              <a
+                                href={doiUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex items-center gap-1 text-[10px] text-blue-600 hover:text-blue-800 hover:underline truncate"
+                              >
+                                <ExternalLink size={10} className="shrink-0" />
+                                <span className="truncate">{m.doi}</span>
+                              </a>
+                            )}
+                          </div>
+
+                          {/* Tabs */}
+                          <div className="flex border-b mx-3" style={{ borderColor: 'var(--border)' }}>
+                            {(['summary', 'abstract'] as const).map(tab => (
+                              <button
+                                key={tab}
+                                onClick={() => setSourceActiveTabs(prev => ({ ...prev, [source.id]: tab }))}
+                                className={`px-3 py-1 text-[10px] font-semibold capitalize transition-colors ${
+                                  activeTab === tab
+                                    ? 'border-b-2 -mb-px border-violet-500 text-violet-700'
+                                    : 'text-stone-400 hover:text-stone-600'
+                                }`}
+                              >
+                                {tab}
+                              </button>
+                            ))}
+                          </div>
+
+                          {/* Tab content */}
+                          <div className="px-3 pt-2 pb-3">
+                            {activeTab === 'summary' ? (
+                              isDigesting ? (
+                                <div className="flex items-center gap-2 p-2 rounded-lg text-[10px]" style={{ background: 'rgba(139,92,246,0.06)', color: 'var(--text-muted)' }}>
+                                  <Sparkles size={11} className="animate-spin text-violet-400 shrink-0" />
+                                  Generating summary…
+                                </div>
+                              ) : source.digest ? (
+                                <div className="text-[11px] leading-relaxed p-2 rounded-lg" style={{ background: 'var(--surface-2)', color: 'var(--text-secondary)' }}>
+                                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+                                    ul: ({...props}) => <ul className="list-disc pl-4 space-y-0.5" {...props} />,
+                                    li: ({...props}) => <li {...props} />,
+                                    p: ({...props}) => <p className="mb-1 last:mb-0" {...props} />,
+                                  }}>
+                                    {source.digest}
+                                  </ReactMarkdown>
+                                </div>
+                              ) : (
+                                <p className="text-[10px] italic" style={{ color: 'var(--text-muted)' }}>
+                                  {aiSettings ? 'Summary not available.' : 'Configure an AI provider in Settings to generate summaries.'}
+                                </p>
+                              )
+                            ) : (
+                              /* Abstract tab */
+                              <div className="text-[10px] leading-relaxed p-2 rounded-lg" style={{ background: 'rgba(139,92,246,0.06)', color: 'var(--text-secondary)', border: '1px solid rgba(139,92,246,0.12)' }}>
+                                {m.abstract}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Action buttons */}
+                          <div className="px-3 pb-3 flex gap-1.5">
+                            <button
+                              onClick={() => navigator.clipboard.writeText(resultToBibtex(m))}
+                              className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded-lg text-[10px] font-semibold transition-colors"
+                              style={{ background: 'var(--surface-2)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
+                              title="Copy BibTeX entry to clipboard"
+                            >
+                              <Copy size={10} /> BibTeX
+                            </button>
+                            {aiSettings && (
+                              <button
+                                disabled={!!analyzingSourceId}
+                                onClick={() => handleAnalyzeSource(source)}
+                                className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded-lg text-[10px] font-semibold transition-colors disabled:opacity-50"
+                                style={{ background: 'rgba(109,40,217,0.08)', color: '#6d28d9', border: '1px solid rgba(109,40,217,0.2)' }}
+                              >
+                                <BookMarked size={10} />
+                                {analyzingSourceId === source.id ? 'Analyzing…' : 'Compare'}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {source.type === 'bib' && (
+                      <div className="px-3 pb-3 space-y-2">
+                        <button
+                          onClick={() => handleCheckCitations(source)}
+                          disabled={checkingCitationsId === source.id}
+                          className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg text-[11px] font-semibold transition-colors disabled:opacity-50"
+                          style={{ background: 'var(--teal-soft, #f0fdfa)', color: 'var(--teal-700, #0f766e)', border: '1px solid var(--teal-200, #99f6e4)' }}
+                        >
+                          <CheckCircle2 size={12} />
+                          {checkingCitationsId === source.id ? 'Checking...' : 'Check Citations'}
+                        </button>
+                        {citationAnalyses[source.id] && (() => {
+                          const a = citationAnalyses[source.id];
+                          return (
+                            <div className="space-y-2 text-[11px]">
+                              <div className="flex items-center gap-2 font-semibold" style={{ color: 'var(--text-secondary)' }}>
+                                <CheckCircle2 size={11} className="text-emerald-500" />
+                                {a.citedInText.length} cited · {a.unusedInBib.length} unused · {a.orphanedInText.length} unmatched
+                              </div>
+                              {a.orphanedInText.length > 0 && (
+                                <div className="p-2 rounded-lg" style={{ background: 'var(--rose-soft, #fff1f2)', border: '1px solid #fecdd3' }}>
+                                  <div className="flex items-center gap-1 text-[10px] font-bold text-rose-600 mb-1"><AlertTriangle size={10} /> Not in .bib file</div>
+                                  {a.orphanedInText.map(c => <div key={c} className="text-rose-700 font-mono text-[10px]">{c}</div>)}
+                                </div>
+                              )}
+                              {a.unusedInBib.length > 0 && (
+                                <div className="p-2 rounded-lg" style={{ background: 'var(--amber-soft, #fffbeb)', border: '1px solid #fde68a' }}>
+                                  <div className="flex items-center gap-1 text-[10px] font-bold text-amber-600 mb-1"><AlertTriangle size={10} /> Unused .bib entries</div>
+                                  {a.unusedInBib.slice(0, 5).map(e => <div key={e.key} className="text-amber-700 text-[10px] truncate" title={e.title}>{e.authorYear} — {e.title}</div>)}
+                                  {a.unusedInBib.length > 5 && <div className="text-amber-600 text-[10px]">+{a.unusedInBib.length - 5} more</div>}
+                                </div>
+                              )}
+                              {a.numericCitations.length > 0 && (
+                                <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                                  {a.numericCitations.length} numeric citation(s) found — cross-check manually
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    )}
                     {source.type === 'pdf' && aiSettings && (
                       <div className="px-3 pb-3 flex gap-2">
                         <button
@@ -831,9 +1493,26 @@ export default function Sidebar({
                         </button>
                       </div>
                     )}
-                    {source.digest && (
+                    {source.type !== 'api' && source.apiMeta && (
+                      <div className="px-3 pb-2 space-y-0.5">
+                        <p className="text-[11px] font-semibold leading-snug" style={{ color: 'var(--text-primary)' }}>{source.apiMeta.title}</p>
+                        <p className="text-[10px] truncate" style={{ color: 'var(--text-secondary)' }} title={source.apiMeta.authors}>{source.apiMeta.authors}</p>
+                        <p className="text-[10px] italic" style={{ color: 'var(--text-muted)' }}>
+                          {source.apiMeta.journal}{source.apiMeta.year ? `, ${source.apiMeta.year}` : ''}
+                        </p>
+                        {source.apiMeta.doi && (
+                          <a href={doiToUrl(source.apiMeta.doi)} target="_blank" rel="noreferrer"
+                            className="text-[10px] hover:underline flex items-center gap-1"
+                            style={{ color: 'var(--accent-blue)' }}>
+                            <ExternalLink size={9} />
+                            {source.apiMeta.doi}
+                          </a>
+                        )}
+                      </div>
+                    )}
+                    {source.digest && source.type !== 'api' && (
                       <div className="px-3 pb-3">
-                        <div className="text-[10px] font-bold uppercase tracking-widest mb-1" style={{ color: 'var(--text-muted)' }}>AI Summary (relevant to manuscript)</div>
+                        <div className="text-[10px] font-bold uppercase tracking-widest mb-1" style={{ color: 'var(--text-muted)' }}>AI Summary</div>
                         <div className="text-[11px] leading-relaxed p-2 rounded-lg" style={{ background: 'var(--surface-2)', color: 'var(--text-secondary)' }}>
                           <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
                             ul: ({...props}) => <ul className="list-disc pl-4 space-y-0.5" {...props} />,
@@ -845,6 +1524,55 @@ export default function Sidebar({
                         </div>
                       </div>
                     )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : activeTab === 'outline' ? (
+          <div className="space-y-1">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>Document Outline</span>
+              <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{outline.filter(h => h.level === 2).length} sections</span>
+            </div>
+            {outline.length === 0 ? (
+              <div className="text-center py-12" style={{ color: 'var(--text-muted)' }}>
+                <List size={28} className="mx-auto mb-3 opacity-30" />
+                <p className="text-xs font-medium">No headings found</p>
+                <p className="text-[10px] mt-1 opacity-70">Use H2 headings to structure your manuscript sections</p>
+              </div>
+            ) : (
+              <div className="space-y-0.5">
+                {outline.map((heading, i) => (
+                  <div
+                    key={i}
+                    className={`group flex items-center justify-between rounded-lg transition-colors cursor-pointer hover:bg-stone-100 ${heading.level === 2 ? 'px-2 py-2' : 'pl-5 pr-2 py-1.5'}`}
+                    onClick={() => onScrollToSection?.(heading.text)}
+                    style={{ color: heading.level === 2 ? 'var(--text-primary)' : 'var(--text-secondary)' }}
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      {heading.level === 2
+                        ? <span className="w-1.5 h-1.5 rounded-full bg-stone-400 shrink-0" />
+                        : <span className="w-1 h-1 rounded-full bg-stone-300 shrink-0" />}
+                      <span className={`truncate ${heading.level === 2 ? 'text-[12px] font-semibold' : 'text-[11px]'}`}>
+                        {heading.text}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0 ml-2">
+                      {heading.level === 2 && h2WordCounts[heading.text] !== undefined && (
+                        <span className="text-[9px] font-medium opacity-50">{h2WordCounts[heading.text]}w</span>
+                      )}
+                      {heading.level === 2 && onAnalyzeSection && (
+                        <button
+                          onClick={e => { e.stopPropagation(); onAnalyzeSection('', heading.text); }}
+                          className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-stone-200"
+                          title={`Analyze "${heading.text}" section`}
+                          style={{ color: 'var(--text-muted)' }}
+                        >
+                          <Sparkles size={10} />
+                        </button>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -968,7 +1696,7 @@ export default function Sidebar({
                       <span className="font-medium">Current Manuscript</span>
                       <span className="text-[9px] ml-auto" style={{ color: 'var(--text-muted)' }}>default</span>
                     </button>
-                    {sources.filter(s => s.type === 'pdf').map(src => (
+                    {sources.filter(s => s.type === 'pdf' || s.type === 'api').map(src => (
                       <button
                         key={src.id}
                         className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-[11px] hover:bg-stone-50 transition-colors"
@@ -978,12 +1706,15 @@ export default function Sidebar({
                         <span className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${attachedSourceIds.has(src.id) ? 'bg-stone-800 border-stone-800' : ''}`} style={{ borderColor: 'var(--border)' }}>
                           {attachedSourceIds.has(src.id) && <Check size={9} className="text-white" />}
                         </span>
-                        <BookOpen size={11} style={{ color: 'var(--accent-blue)' }} />
+                        {src.type === 'api'
+                          ? <Search size={11} style={{ color: '#7c3aed' }} />
+                          : <BookOpen size={11} style={{ color: 'var(--accent-blue)' }} />}
                         <span className="truncate font-medium">{src.name}</span>
+                        {src.type === 'api' && <span className="text-[8px] ml-auto shrink-0" style={{ color: 'var(--text-muted)' }}>abstract</span>}
                       </button>
                     ))}
-                    {sources.filter(s => s.type === 'pdf').length === 0 && (
-                      <p className="text-[10px] px-2 py-1" style={{ color: 'var(--text-muted)' }}>Upload PDFs in Sources tab to attach them</p>
+                    {sources.filter(s => s.type === 'pdf' || s.type === 'api').length === 0 && (
+                      <p className="text-[10px] px-2 py-1" style={{ color: 'var(--text-muted)' }}>Upload PDFs or search for papers in Sources tab</p>
                     )}
                   </div>
                 )}

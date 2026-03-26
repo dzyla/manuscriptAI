@@ -1,7 +1,7 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import OpenAI from "openai";
 import { AgentType, Suggestion, AISettings } from "../types";
-import { Clipboard, PenLine, FlaskConical, Beaker, BookMarked, MessageCircle } from 'lucide-react';
+import { Clipboard, PenLine, FlaskConical, Beaker, BookMarked, MessageCircle, Quote } from 'lucide-react';
 
 export const AGENT_INFO: Record<AgentType, { label: string; color: string; bgSoft: string; description: string; iconName: string }> = {
   manager: {
@@ -45,7 +45,14 @@ export const AGENT_INFO: Record<AgentType, { label: string; color: string; bgSof
     bgSoft: 'bg-emerald-50',
     iconName: 'message-circle',
     description: 'Your scholarly research assistant. Discusses, critiques, and answers questions about your manuscript or attached sources — in plain conversation, no suggestion cards.'
-  }
+  },
+  'citation-checker': {
+    label: 'Citation Checker',
+    color: 'bg-teal-700',
+    bgSoft: 'bg-teal-50',
+    iconName: 'quote',
+    description: 'Scans for factual claims, statistics, and definitive statements that lack citations. Flags text that likely requires a reference.',
+  },
 };
 
 export const AGENT_ICONS: Record<string, any> = {
@@ -55,6 +62,7 @@ export const AGENT_ICONS: Record<string, any> = {
   'beaker': Beaker,
   'book-marked': BookMarked,
   'message-circle': MessageCircle,
+  'quote': Quote,
 };
 
 // Manuscript AI: conversational, scholarly, no suggestion cards
@@ -183,6 +191,25 @@ Structure your response with these section headings:
 Write in clear, direct scientific prose. Quote specific passages from both documents where relevant. Note that differences in findings often reflect methodological or population differences rather than errors.
 ${SCIENTIFIC_WRITING_RULES}`,
   'manuscript-ai': MANUSCRIPT_AI_SYSTEM_PROMPT,
+
+  'citation-checker': `You are a CITATION INTEGRITY SPECIALIST. Your sole task is to find claims that require a citation but have none.
+
+Scan the manuscript for:
+- Quantitative statements without a reference: "X% of patients...", "studies show that...", "the rate is..."
+- Definitive scientific claims stated as fact: "X causes Y", "Z is the gold standard"
+- Comparisons or prevalence data that require a source
+- Any sentence beginning with "Research has shown", "It is known", "It has been established"
+- Statements attributing findings to unnamed prior work: "previous studies indicate..."
+
+DO NOT flag:
+- Statements in the Methods describing the authors' own work
+- Claims immediately followed by an existing citation
+- Common knowledge that genuinely requires no citation
+
+For each instance, quote the EXACT text needing a citation and in suggestedText append "[CITATION NEEDED]" to the end of the quoted sentence. Use severity "major" for quantitative claims and "minor" for qualitative assertions. Category is always "citation".
+
+CRITICAL: originalText must be an exact character-for-character copy from the manuscript.
+${SCIENTIFIC_WRITING_RULES}`,
 };
 
 function truncateText(text: string, maxLen: number): string {
@@ -283,7 +310,12 @@ async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: 
 
       if (response.ok) {
         const data = await response.json();
-        if (data.choices?.[0]?.message?.content) return data.choices[0].message.content;
+        // content may be empty on reasoning models (e.g. nemotron, deepseek-r1) when the
+        // thinking chain exhausts the token budget — fall back to reasoning_content in that case
+        const msgContent: string = data.choices?.[0]?.message?.content || '';
+        const reasoningContent: string = data.choices?.[0]?.message?.reasoning_content || '';
+        if (msgContent) return msgContent;
+        if (reasoningContent) return reasoningContent;
         if (data.output && Array.isArray(data.output)) {
           const messageNode = data.output.find((o: any) => o.type === 'message') || data.output[data.output.length - 1];
           if (messageNode?.content) return messageNode.content;
@@ -400,6 +432,25 @@ function getGeminiClient(settings: AISettings) {
   return new GoogleGenAI({ apiKey: settings.geminiApiKey || process.env.GEMINI_API_KEY || "" });
 }
 
+/**
+ * Parse H2-based sections directly from TipTap HTML output.
+ * Returns sections in document order, each containing the heading title
+ * and the plain-text body that follows until the next H2.
+ */
+export function detectH2Sections(html: string): { section: string; text: string }[] {
+  const h2Re = /<h2[^>]*>(.*?)<\/h2>/gi;
+  const matches = [...html.matchAll(h2Re)];
+  if (matches.length === 0) return [];
+
+  return matches.map((m, i) => {
+    const title = m[1].replace(/<[^>]*>/g, '').trim();
+    const start = (m.index ?? 0) + m[0].length;
+    const end = i + 1 < matches.length ? (matches[i + 1].index ?? html.length) : html.length;
+    const bodyText = html.slice(start, end).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+    return { section: title, text: `${title}\n\n${bodyText}` };
+  });
+}
+
 function detectSections(text: string): { section: string; text: string }[] {
   const sectionPatterns = [
     { name: 'Abstract', pattern: /(?:^|\n)\s*(?:abstract)\s*[:\n]/i },
@@ -430,8 +481,10 @@ function detectSections(text: string): { section: string; text: string }[] {
   return sections;
 }
 
-function chunkTextForLocal(text: string, maxChunkChars: number = 2000): string[] {
-  const sections = detectSections(text);
+function chunkTextForLocal(text: string, maxChunkChars: number = 2000, htmlContent?: string): string[] {
+  const sections = htmlContent
+    ? (detectH2Sections(htmlContent).length > 0 ? detectH2Sections(htmlContent) : detectSections(text))
+    : detectSections(text);
   
   if (sections.length > 1) {
     const chunks: string[] = [];
@@ -604,16 +657,16 @@ ${text}
 """
 ${existingContext}
 
-Return ONLY this JSON format:
-{"suggestions":[{"originalText":"exact quote from text","suggestedText":"improved version","explanation":"brief reason","severity":"critical","category":"grammar"}]}
+Example of the EXACT JSON format to return (copy this structure precisely):
+{"suggestions":[{"originalText":"It was observed by us that the cells died.","suggestedText":"We observed cell death.","explanation":"Converted passive to active voice for clarity.","severity":"minor","category":"grammar"},{"originalText":"The results were very significant and important.","suggestedText":"The results were statistically significant (p < 0.05).","explanation":"Replaced vague intensifiers with specific quantitative detail.","severity":"major","category":"clarity"}]}
 
 Rules:
-- originalText MUST be copied CHARACTER-FOR-CHARACTER from the manuscript
-- Provide 5-10 specific, high-impact suggestions covering the ENTIRE manuscript (not just the beginning)
+- Return ONLY the JSON object — no markdown, no preamble, no explanation outside the JSON
+- originalText MUST be copied CHARACTER-FOR-CHARACTER from the manuscript above
+- Provide 5-10 specific, high-impact suggestions covering the ENTIRE manuscript
 - Cover different sections: introduction, methods, results, discussion
 - severity: "critical", "major", "minor", or "style"
-- category: "grammar", "flow", "research", "clarity", or "structure"
-- Return ONLY JSON, no other text`;
+- category: "grammar", "flow", "research", "clarity", or "structure"`;
 }
 
 function buildLocalPrompt(agentRole: string, textChunk: string, existingContext: string): string {
@@ -627,20 +680,35 @@ ${textChunk}
 """
 ${existingContext}
 
-Return ONLY this JSON format:
-{"suggestions":[{"originalText":"exact quote from text","suggestedText":"improved version","explanation":"brief reason","severity":"critical","category":"grammar"}]}
+Example of the EXACT JSON format to return:
+{"suggestions":[{"originalText":"It was observed by us that the cells died.","suggestedText":"We observed cell death.","explanation":"Converted passive to active voice.","severity":"minor","category":"grammar"}]}
 
 Rules:
+- Return ONLY the JSON object — no markdown, no explanation outside the JSON
 - originalText MUST be copied exactly from the text above
 - Provide 3-6 specific suggestions
 - severity: "critical", "major", "minor", or "style"
-- category: "grammar", "flow", "research", "clarity", or "structure"
-- Return ONLY JSON, no other text`;
+- category: "grammar", "flow", "research", "clarity", or "structure"`;
 }
 
-export async function analyzeText(text: string, agent: AgentType, settings: AISettings, existingSuggestions: Suggestion[] = [], onProgress?: (msg: string) => void): Promise<{ suggestions: Suggestion[], status: 'ok' | 'no_suggestions' | 'parsing_failed' }> {
+/**
+ * Attempt to repair malformed JSON by asking the LLM to fix syntax errors only.
+ * Used as a last-resort fallback when parseJSONRobust fails.
+ */
+async function repairJSONWithLLM(rawText: string, settings: AISettings): Promise<string> {
+  const maxLen = 3000;
+  const truncated = rawText.length > maxLen ? rawText.substring(0, maxLen) + '...' : rawText;
+  const prompt = `The following text is supposed to be a JSON object but contains syntax errors (missing quotes, trailing commas, unescaped characters, truncated content, etc.). Fix ONLY the JSON syntax and return only the corrected, valid JSON. Do not change any values.\n\n${truncated}`;
+  try {
+    return await callLLM(prompt, settings, 'You fix broken JSON. Return ONLY the corrected JSON object, nothing else.');
+  } catch {
+    return rawText;
+  }
+}
+
+export async function analyzeText(text: string, agent: AgentType, settings: AISettings, existingSuggestions: Suggestion[] = [], onProgress?: (msg: string) => void, htmlContent?: string): Promise<{ suggestions: Suggestion[], status: 'ok' | 'no_suggestions' | 'parsing_failed' }> {
   const activePrompt = settings.customPrompts?.[agent] || DEFAULT_AGENT_PROMPTS[agent];
-  
+
   let existingContext = '';
   if (existingSuggestions.length > 0) {
     const existingTexts = existingSuggestions.map(s => s.originalText).slice(0, 10);
@@ -651,7 +719,7 @@ export async function analyzeText(text: string, agent: AgentType, settings: AISe
     // localChunkSize === 0 means no chunking — send full manuscript in one request
     const chunkSize = settings.localChunkSize;
     const useFullText = chunkSize === 0;
-    const chunks = useFullText ? [text] : chunkTextForLocal(text, chunkSize ?? 2000);
+    const chunks = useFullText ? [text] : chunkTextForLocal(text, chunkSize ?? 2000, htmlContent);
     const allSuggestions: Suggestion[] = [];
     let parsingFailed = false;
     let rawResponses: string[] = [];
@@ -690,9 +758,31 @@ export async function analyzeText(text: string, agent: AgentType, settings: AISe
               existingContext += '\n' + JSON.stringify(chunkSuggestions.map((s: any) => s.originalText).slice(0, 5));
             }
           } catch (parseErr) {
-            console.error(`Chunk ${i + 1} parse error:`, parseErr);
-            console.log('Raw response:', textResponse.substring(0, 300));
-            parsingFailed = true;
+            // Auto-repair: send broken JSON back to the LLM to fix syntax errors
+            try {
+              onProgress?.(`Chunk ${i + 1}/${chunks.length} — repairing JSON...`);
+              const repaired = await repairJSONWithLLM(textResponse, settings);
+              const parsedRepaired = parseJSONRobust(repaired);
+              const arr = Array.isArray(parsedRepaired) ? parsedRepaired : (parsedRepaired.suggestions || parsedRepaired.fixes || []);
+              const repairSugs = arr
+                .filter((s: any) => s.originalText && s.suggestedText)
+                .map((s: any, index: number) => ({
+                  ...s,
+                  id: `suggestion-${Date.now()}-${i}-r${index}`,
+                  agent,
+                  startIndex: text.indexOf(s.originalText),
+                  endIndex: text.indexOf(s.originalText) + (s.originalText?.length || 0),
+                  severity: ['critical', 'major', 'minor', 'style'].includes(s.severity) ? s.severity : 'minor',
+                  category: ['grammar', 'flow', 'research', 'clarity', 'structure', 'citation'].includes(s.category) ? s.category : 'grammar',
+                  section: s.section || 'General',
+                }))
+                .filter((s: any) => s.startIndex !== -1);
+              allSuggestions.push(...repairSugs);
+              if (repairSugs.length === 0) parsingFailed = true;
+            } catch {
+              console.error(`Chunk ${i + 1} parse+repair error. Raw:`, textResponse.substring(0, 300));
+              parsingFailed = true;
+            }
           }
         }
       } catch (e) {
@@ -762,8 +852,30 @@ Provide 8-15 highly specific suggestions. Each originalText MUST be an exact quo
       status: result.length > 0 ? 'ok' : 'no_suggestions' 
     };
   } catch (e) {
-    console.error(`Failed to parse suggestions for ${agent}:`, e);
-    return { suggestions: [], status: 'parsing_failed' };
+    // Last-resort: try repairing via LLM before declaring total failure
+    try {
+      const textResponse = await callLLM(prompt, settings, activePrompt, true);
+      const repaired = await repairJSONWithLLM(textResponse, settings);
+      const parsed = parseJSONRobust(repaired);
+      const arr = Array.isArray(parsed) ? parsed : (parsed.suggestions || []);
+      const result = arr
+        .filter((s: any) => s.originalText && s.suggestedText)
+        .map((s: any, index: number) => ({
+          ...s,
+          id: `suggestion-${Date.now()}-repair-${index}`,
+          agent,
+          startIndex: text.indexOf(s.originalText),
+          endIndex: text.indexOf(s.originalText) + (s.originalText?.length || 0),
+          severity: ['critical', 'major', 'minor', 'style'].includes(s.severity) ? s.severity : 'minor',
+          category: ['grammar', 'flow', 'research', 'clarity', 'structure', 'citation'].includes(s.category) ? s.category : 'grammar',
+          section: s.section || 'General',
+        }))
+        .filter((s: any) => s.startIndex !== -1);
+      return { suggestions: result, status: result.length > 0 ? 'ok' : 'no_suggestions' };
+    } catch {
+      console.error(`Failed to parse suggestions for ${agent}:`, e);
+      return { suggestions: [], status: 'parsing_failed' };
+    }
   }
 }
 
@@ -1013,10 +1125,9 @@ export async function digestSourceForManuscript(sourceText: string, sourceName: 
   const truncatedSource = truncateText(sourceText, isLocal ? 3000 : 8000);
   const truncatedManuscript = truncateText(manuscriptText, isLocal ? 1000 : 2000);
 
-  const systemPrompt = `You are a research assistant helping to digest reference materials for a manuscript author.
-Given a source document and the current manuscript, extract and summarize the most relevant information from the source.
-Focus on: key findings, methods, data, or arguments that relate to the manuscript's topic.
-Be concise (max 300 words). Use bullet points for key facts.`;
+  const systemPrompt = `You are a research assistant helping a scientist evaluate reference materials for their manuscript.
+Given a source document and the current manuscript, produce a structured digest that helps the author decide how to cite or build upon this work.
+Be concise (max 350 words total). Use the exact section headers below.`;
 
   const prompt = `Manuscript (for context):
 """
@@ -1028,7 +1139,40 @@ Source document "${sourceName}":
 ${truncatedSource}
 """
 
-Summarize what in this source is most relevant to the manuscript above. Focus on facts, findings, and methods the author could cite or build upon.`;
+Provide a structured digest with these sections:
+**Research Objective:** (1–2 sentences) What question or problem does this work address?
+**Key Findings:** (2–4 bullet points) Main results, discoveries, or conclusions.
+**Methods/Approach:** (1–2 sentences) How was it done (study design, model, technique)?
+**Relevance to Your Manuscript:** (2–3 bullet points) Specific ways this source supports, extends, or contrasts with the current manuscript — cite what the author could use.`;
+
+  try {
+    const response = await callLLM(prompt, settings, systemPrompt, false);
+    return response || sourceText.substring(0, 500) + '...';
+  } catch (_) {
+    return sourceText.substring(0, 500) + '...';
+  }
+}
+
+/** Digest an API/abstract source without manuscript context — avoids the LLM over-focusing on the current manuscript. */
+export async function digestApiSource(sourceText: string, sourceName: string, settings: AISettings): Promise<string> {
+  const isLocal = settings.provider === 'local';
+  const truncatedSource = truncateText(sourceText, isLocal ? 3000 : 6000);
+
+  const systemPrompt = `You are a research assistant producing structured digests of scientific papers.
+Given an abstract or paper excerpt, extract the key information in a concise, structured format.
+Be factual and specific. Max 300 words total.`;
+
+  const prompt = `Paper: "${sourceName}"
+
+"""
+${truncatedSource}
+"""
+
+Provide a structured digest:
+**Research Objective:** (1–2 sentences) What question or problem does this work address?
+**Key Findings:** (2–4 bullet points) Main results, discoveries, or conclusions.
+**Methods/Approach:** (1 sentence) Study design, model organism, or technique used.
+**Significance:** (1–2 sentences) Why this finding matters or what it advances in the field.`;
 
   try {
     const response = await callLLM(prompt, settings, systemPrompt, false);
@@ -1143,6 +1287,50 @@ Analyze the scientific relationship between these two manuscripts. Focus on how 
     return response || 'No analysis generated. Check your LLM connection.';
   } catch (error) {
     throw new Error(`Literature analysis failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+}
+
+/**
+ * Lightweight RAG: ask the LLM whether uploaded reference sources support a highlighted claim.
+ * Prefers AI-digested summaries over raw full-text to keep prompts short.
+ */
+export async function verifyClaimAgainstSources(
+  claim: string,
+  sources: Array<{ name: string; text: string; digest?: string }>,
+  settings: AISettings
+): Promise<string> {
+  const isLocal = settings.provider === 'local';
+  const maxChars = isLocal ? 5000 : 30000;
+
+  const sourceContext = sources.length > 0
+    ? sources.map((s) => {
+        const content = s.digest
+          ? truncateText(s.digest, Math.floor(maxChars / sources.length))
+          : truncateText(s.text, Math.floor(maxChars / sources.length));
+        return `=== ${s.name} ===\n${content}`;
+      }).join('\n\n')
+    : 'No reference sources uploaded.';
+
+  const systemPrompt = `You are a scientific fact-checker. Assess whether uploaded reference sources support, contradict, or fail to address a specific manuscript claim. Be precise, quote relevant evidence, and keep your response under 250 words.`;
+
+  const prompt = `Claim from manuscript:
+"${claim}"
+
+Reference sources:
+"""
+${truncateText(sourceContext, maxChars)}
+"""
+
+Does the evidence in these sources SUPPORT, CONTRADICT, or remain SILENT on this claim?
+1. State your verdict clearly in the first sentence.
+2. Quote the most relevant passage from the sources.
+3. Note any important caveats, methodological differences, or scope limitations.
+If no sources are provided, say so and suggest the author consult the relevant literature.`;
+
+  try {
+    return await callLLM(prompt, settings, systemPrompt);
+  } catch (e) {
+    throw new Error(`Claim verification failed: ${e instanceof Error ? e.message : 'Unknown'}`);
   }
 }
 

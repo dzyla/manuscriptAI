@@ -6,13 +6,13 @@ import Highlight from '@tiptap/extension-highlight';
 import Underline from '@tiptap/extension-underline';
 import TextAlign from '@tiptap/extension-text-align';
 import Link from '@tiptap/extension-link';
-import { forwardRef, useImperativeHandle, useEffect, useState, useRef, useCallback } from 'react';
-import { AgentType, Suggestion } from '../types';
+import { forwardRef, useImperativeHandle, useEffect, useState, useRef, useCallback, useMemo } from 'react';
+import { AgentType, Suggestion, ManuscriptSource } from '../types';
 import { GrammarChecker } from '../extensions/GrammarChecker';
 import {
   Bold, Italic, Underline as UnderlineIcon, List, ListOrdered,
   AlignLeft, AlignCenter, AlignRight, AlignJustify, Quote, Heading2,
-  Heading3, Undo, Redo, Clock, Sparkles, PenLine, FlaskConical, Beaker, Send, MessageSquare, BookOpen, RefreshCw
+  Heading3, Undo, Redo, Clock, Sparkles, PenLine, FlaskConical, Beaker, Send, MessageSquare, BookOpen, RefreshCw, FileSearch, Search
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { getThesaurus } from '../services/ai';
@@ -26,6 +26,12 @@ interface EditorProps {
   onSelectionQuery?: (selectedText: string, instruction: string, agent: AgentType) => void;
   onRewriteSection?: (selectedText: string) => void;
   onTransformSelection?: (selectedText: string, instruction: string, agent: AgentType) => void;
+  onAnalyzeSection?: (sectionText: string, sectionTitle: string) => void;
+  onVerifyClaim?: (selectedText: string) => void;
+  onSearchSimilar?: (selectedText: string) => void;
+  sources?: ManuscriptSource[];
+  citationRegistry?: Record<string, number>;
+  onInsertCitation?: (sourceId: string) => number;
   isDistractionFree?: boolean;
   editorZoom?: number;
   editorWidth?: 'normal' | 'wide' | 'full';
@@ -40,6 +46,8 @@ export interface EditorRef {
   getHTML: () => string;
   setContent: (html: string) => void;
   getSelectedText: () => string;
+  getCurrentSection: () => string | null;
+  scrollToHeading: (headingText: string) => void;
 }
 
 const findTextPosition = (doc: any, searchText: string): { from: number; to: number } | null => {
@@ -130,7 +138,7 @@ const BUBBLE_ACTIONS: { label: string; instruction: string; agent: AgentType; ic
   },
 ];
 
-const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggestions, onSuggestionClick, onSelectionQuery, onTransformSelection, onRewriteSection, isDistractionFree, editorZoom = 100, editorWidth = 'normal', aiSettings }, ref) => {
+const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggestions, onSuggestionClick, onSelectionQuery, onTransformSelection, onRewriteSection, onAnalyzeSection, onVerifyClaim, onSearchSimilar, sources, citationRegistry, onInsertCitation, isDistractionFree, editorZoom = 100, editorWidth = 'normal', aiSettings }, ref) => {
   const [isMounted, setIsMounted] = useState(false);
   const [showSelectionBar, setShowSelectionBar] = useState(false);
   const [selectionInstruction, setSelectionInstruction] = useState('');
@@ -138,9 +146,15 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
   const [thesaurusWord, setThesaurusWord] = useState<string | null>(null);
   const [thesaurusSynonyms, setThesaurusSynonyms] = useState<string[]>([]);
   const [thesaurusLoading, setThesaurusLoading] = useState(false);
+  const [currentSectionTitle, setCurrentSectionTitle] = useState<string | null>(null);
   const isExternalUpdate = useRef(false);
   const lastExternalContent = useRef(content);
   const instructionInputRef = useRef<HTMLInputElement>(null);
+  const [citationPicker, setCitationPicker] = useState<{ x: number; y: number } | null>(null);
+  const [citationFilter, setCitationFilter] = useState('');
+  const atInsertPos = useRef(-1);
+  const showCitationPickerRef = useRef(false);
+  showCitationPickerRef.current = !!citationPicker;
 
   useEffect(() => { setIsMounted(true); }, []);
 
@@ -169,6 +183,15 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
         setThesaurusWord(null);
         setThesaurusSynonyms([]);
       }
+      // Track which H2 section the cursor is in
+      let section: string | null = null;
+      editor.state.doc.nodesBetween(0, from, (node) => {
+        if (node.type.name === 'heading' && node.attrs.level === 2) {
+          section = node.textContent;
+        }
+        return true;
+      });
+      setCurrentSectionTitle(section);
     },
     editorProps: {
       attributes: { class: 'prose max-w-none focus:outline-none min-h-[500px]' },
@@ -199,6 +222,47 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
     editorEl.addEventListener('click', handleDomClick);
     return () => editorEl.removeEventListener('click', handleDomClick);
   }, [editor, suggestions, onSuggestionClick]);
+
+  // @ citation trigger
+  useEffect(() => {
+    if (!editor) return;
+    const editorEl = editor.view.dom;
+
+    const handleAtKey = (e: KeyboardEvent) => {
+      if (showCitationPickerRef.current) {
+        if (e.key === 'Escape') { setCitationPicker(null); setCitationFilter(''); }
+        return;
+      }
+      if (e.key === '@') {
+        const pos = editor.state.selection.from;
+        // Delay so the '@' character is inserted first, then we know its position
+        setTimeout(() => {
+          atInsertPos.current = pos; // '@' lands at this doc position
+          try {
+            const coords = editor.view.coordsAtPos(pos + 1);
+            setCitationFilter('');
+            setCitationPicker({ x: coords.left, y: coords.bottom + 6 });
+          } catch (_) {}
+        }, 0);
+      }
+    };
+
+    editorEl.addEventListener('keydown', handleAtKey);
+    return () => editorEl.removeEventListener('keydown', handleAtKey);
+  }, [editor]);
+
+  // While citation picker is open, track filter text from what was typed after '@'
+  useEffect(() => {
+    if (!citationPicker || !editor) return;
+    const curPos = editor.state.selection.from;
+    const from = atInsertPos.current; // position before '@'
+    if (curPos > from) {
+      const typed = editor.state.doc.textBetween(from, Math.min(curPos, from + 40), '');
+      // typed starts with '@', strip it
+      setCitationFilter(typed.replace(/^@/, '').toLowerCase());
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor?.state.selection.from, citationPicker]);
 
   // Sync content from parent
   useEffect(() => {
@@ -247,6 +311,28 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
     setShowSelectionBar(false);
   };
 
+  const handleInsertCitation = (source: ManuscriptSource) => {
+    if (!editor || !onInsertCitation) return;
+    const num = onInsertCitation(source.id);
+    const atPos = atInsertPos.current;
+    const curPos = editor.state.selection.from;
+    // Delete from atPos (the '@') to current cursor position, then insert [N]
+    editor.chain().focus()
+      .deleteRange({ from: atPos, to: curPos })
+      .insertContent(`[${num}]`)
+      .run();
+    setCitationPicker(null);
+    setCitationFilter('');
+  };
+
+  const filteredCitationSources = useMemo(() => {
+    if (!sources) return [];
+    const f = citationFilter.trim();
+    return sources.filter(s => s.type !== 'bib' && (
+      !f || s.name.toLowerCase().includes(f) || s.apiMeta?.authors?.toLowerCase().includes(f) || s.apiMeta?.title?.toLowerCase().includes(f)
+    ));
+  }, [sources, citationFilter]);
+
   const handleThesaurus = useCallback(async () => {
     const text = getSelectedText().trim();
     const isSingleWord = text && !text.includes(' ') && text.length > 1;
@@ -269,6 +355,25 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
     setThesaurusWord(null);
     setThesaurusSynonyms([]);
     onChange(editor.getHTML());
+  };
+
+  // Extract plain text for the H2 section that contains `sectionTitle`
+  const getSectionText = (sectionTitle: string): string => {
+    if (!editor) return sectionTitle;
+    let inSection = false;
+    let stopped = false;
+    const parts: string[] = [sectionTitle];
+    editor.state.doc.descendants((node) => {
+      if (stopped) return false;
+      if (node.type.name === 'heading' && node.attrs.level === 2) {
+        if (inSection) { stopped = true; return false; }
+        if (node.textContent === sectionTitle) inSection = true;
+      } else if (inSection && node.isBlock && node.textContent.trim()) {
+        parts.push(node.textContent);
+      }
+      return true;
+    });
+    return parts.join('\n\n');
   };
 
   useImperativeHandle(ref, () => ({
@@ -380,6 +485,33 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
       setTimeout(() => { isExternalUpdate.current = false; }, 0);
     },
     getSelectedText,
+    getCurrentSection: () => currentSectionTitle,
+    scrollToHeading: (headingText: string) => {
+      if (!editor) return;
+      let targetPos: number | null = null;
+      editor.state.doc.descendants((node, pos) => {
+        if (targetPos !== null) return false;
+        if (node.type.name === 'heading' && node.textContent === headingText) {
+          targetPos = pos;
+          return false;
+        }
+        return true;
+      });
+      if (targetPos !== null) {
+        editor.chain().focus().setTextSelection(targetPos + 1).scrollIntoView().run();
+        setTimeout(() => {
+          const coords = editor.view.coordsAtPos(targetPos! + 1);
+          if (coords) {
+            const scrollParent = editor.view.dom.closest('.overflow-y-auto') || editor.view.dom.parentElement?.closest('.overflow-y-auto');
+            if (scrollParent) {
+              const rect = scrollParent.getBoundingClientRect();
+              const targetY = coords.top - rect.top + scrollParent.scrollTop - 80;
+              scrollParent.scrollTo({ top: Math.max(0, targetY), behavior: 'smooth' });
+            }
+          }
+        }, 50);
+      }
+    },
   }));
 
   if (!editor) return null;
@@ -449,7 +581,24 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
             <span className="hidden sm:inline">{stats.characters} chars</span>
             <span className="hidden md:inline">{stats.paragraphs} paragraphs</span>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
+            {currentSectionTitle && (
+              <span className="flex items-center gap-1.5 max-w-[160px] truncate" title={`In section: ${currentSectionTitle}`}>
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
+                <span className="truncate">{currentSectionTitle}</span>
+              </span>
+            )}
+            {currentSectionTitle && onAnalyzeSection && (
+              <button
+                onClick={() => onAnalyzeSection(getSectionText(currentSectionTitle), currentSectionTitle)}
+                className="flex items-center gap-1 px-2 py-0.5 rounded bg-stone-100 hover:bg-stone-200 transition-colors text-[10px] font-semibold"
+                style={{ color: 'var(--text-secondary)' }}
+                title={`Analyze "${currentSectionTitle}" section only`}
+              >
+                <Sparkles size={10} />
+                Analyze Section
+              </button>
+            )}
             <span className="flex items-center gap-1.5"><Clock size={12} />{stats.readingTime} min read</span>
           </div>
         </div>
@@ -491,6 +640,22 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
             >
               <RefreshCw size={11} />
               Rewrite
+            </button>
+            <button
+              onClick={() => { const text = getSelectedText(); if (text && onVerifyClaim) onVerifyClaim(text); }}
+              className="px-2 py-1.5 rounded hover:bg-stone-800 text-[10px] font-medium flex items-center gap-1 whitespace-nowrap text-cyan-400"
+              title="Verify this claim against uploaded PDF sources"
+            >
+              <FileSearch size={11} />
+              Verify
+            </button>
+            <button
+              onClick={() => { const text = getSelectedText(); if (text && onSearchSimilar) onSearchSimilar(text); }}
+              className="px-2 py-1.5 rounded hover:bg-stone-800 text-[10px] font-medium flex items-center gap-1 whitespace-nowrap text-violet-400"
+              title="Find similar published manuscripts for this selection"
+            >
+              <Search size={11} />
+              Find Similar
             </button>
             {(() => {
               const sel = getSelectedText().trim();
@@ -571,6 +736,53 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
           )}
         </div>
       </BubbleMenu>
+
+      {/* @ Citation picker */}
+      {citationPicker && isMounted && createPortal(
+        <div
+          className="fixed z-[9999] bg-white border rounded-xl shadow-xl overflow-hidden"
+          style={{ left: Math.min(citationPicker.x, window.innerWidth - 280), top: citationPicker.y, width: 260, borderColor: 'var(--border)' }}
+          onMouseDown={e => e.preventDefault()} // prevent blur
+        >
+          <div className="px-3 py-2 border-b" style={{ borderColor: 'var(--border)', background: 'var(--surface-1)' }}>
+            <p className="text-[10px] font-bold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Insert Citation</p>
+          </div>
+          {filteredCitationSources.length === 0 ? (
+            <p className="px-3 py-3 text-[11px]" style={{ color: 'var(--text-muted)' }}>No sources — upload PDFs or find similar papers first.</p>
+          ) : (
+            <div className="max-h-64 overflow-y-auto">
+              {filteredCitationSources.map(src => {
+                const num = citationRegistry?.[src.id];
+                const label = src.type === 'api'
+                  ? (src.apiMeta?.authors?.split(/[,;]/)[0]?.trim() ?? src.name) + (src.apiMeta?.year ? `, ${src.apiMeta.year}` : '')
+                  : src.name.replace(/\.pdf$/i, '');
+                return (
+                  <button
+                    key={src.id}
+                    className="w-full text-left px-3 py-2 hover:bg-stone-50 transition-colors border-b last:border-0"
+                    style={{ borderColor: 'var(--border)' }}
+                    onMouseDown={e => { e.preventDefault(); handleInsertCitation(src); }}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-bold tabular-nums shrink-0 w-5 text-center rounded" style={{ background: 'var(--surface-2)', color: 'var(--text-muted)' }}>
+                        {num ?? '?'}
+                      </span>
+                      <span className="text-[11px] font-medium truncate" style={{ color: 'var(--text-primary)' }}>{label}</span>
+                    </div>
+                    {src.type === 'api' && src.apiMeta?.title && (
+                      <p className="text-[10px] truncate pl-7" style={{ color: 'var(--text-muted)' }}>{src.apiMeta.title}</p>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          <div className="px-3 py-1.5 border-t" style={{ borderColor: 'var(--border)', background: 'var(--surface-1)' }}>
+            <p className="text-[9px]" style={{ color: 'var(--text-muted)' }}>Press Esc to close</p>
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   );
 });

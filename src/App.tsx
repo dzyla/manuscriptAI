@@ -3,8 +3,9 @@ import Editor, { EditorRef } from './components/Editor';
 import Sidebar from './components/Sidebar';
 import SettingsModal from './components/SettingsModal';
 import PostDraftingView from './components/PostDraftingView';
-import { AgentType, Message, Suggestion, HistoryItem, AISettings } from './types';
-import { analyzeText, chatWithAgent, chatWithManuscript, resolveConflicts, runJudgeAgent, rebutSuggestion, manuscriptSummary, rewriteSection, transformWithInstruction, analyzeSourceAgainstManuscript, AGENT_INFO, AGENT_ICONS, estimateTokens } from './services/ai';
+import { AgentType, Message, Suggestion, HistoryItem, AISettings, ManuscriptSource } from './types';
+import { searchSimilarManuscripts } from './services/manuscriptSearch';
+import { analyzeText, chatWithAgent, chatWithManuscript, resolveConflicts, runJudgeAgent, rebutSuggestion, manuscriptSummary, rewriteSection, transformWithInstruction, analyzeSourceAgainstManuscript, verifyClaimAgainstSources, AGENT_INFO, AGENT_ICONS, estimateTokens } from './services/ai';
 import { Sparkles, FileText, Settings, Download, Keyboard, Eye, Moon, Sun, ChevronDown, FilePlus, Coins, BookOpen, Github } from 'lucide-react';
 import { saveAs } from 'file-saver';
 import * as mammoth from 'mammoth';
@@ -25,6 +26,12 @@ function AgentIcon({ agent, size = 12 }: { agent: AgentType; size?: number }) {
 export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const editorRef = useRef<EditorRef>(null);
+  const sourcesRef = useRef<ManuscriptSource[]>([]);
+  const [pendingApiSources, setPendingApiSources] = useState<ManuscriptSource[]>([]);
+  const [clearSourcesTrigger, setClearSourcesTrigger] = useState(0);
+  const [citationRegistry, setCitationRegistry] = useState<Record<string, number>>({});
+  const citationCounter = useRef(0);
+  const [sidebarSources, setSidebarSources] = useState<ManuscriptSource[]>([]);
   const [title, setTitle] = useState('Untitled Manuscript');
   const [content, setContent] = useState('<p>Start writing your manuscript here, or click "New Manuscript" to begin with an IMRAD template.</p>');
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
@@ -56,7 +63,7 @@ export default function App() {
   const [darkMode, setDarkMode] = useState(false);
   const [showAnalyzeMenu, setShowAnalyzeMenu] = useState(false);
   const analyzeMenuRef = useRef<HTMLDivElement>(null);
-  const [sidebarTab, setSidebarTab] = useState<'chat' | 'suggestions' | 'history' | 'sources'>('chat');
+  const [sidebarTab, setSidebarTab] = useState<'chat' | 'suggestions' | 'history' | 'sources' | 'outline'>('chat');
   const [sidebarWidth, setSidebarWidth] = useState(400);
   const [zoom, setZoom] = useState(100);
   const [editorWidth, setEditorWidth] = useState<'normal' | 'wide' | 'full'>('normal');
@@ -121,8 +128,12 @@ export default function App() {
   useEffect(() => {
     const interval = setInterval(() => {
       const workspace = { title, content, suggestions, history, messages, aiSettings };
-      localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(workspace));
-      if (saveState === 'Draft') setSaveState('Auto-saved');
+      try {
+        localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(workspace));
+        if (saveState === 'Draft') setSaveState('Auto-saved');
+      } catch (e) {
+        showToast('Auto-save failed: document too large. Use "Save Workspace" to download a file instead.', 'error');
+      }
     }, 30000);
     return () => clearInterval(interval);
   }, [title, content, suggestions, history, messages, aiSettings, saveState]);
@@ -187,14 +198,19 @@ export default function App() {
       { id: Date.now().toString(), role: 'assistant', content: 'New manuscript started with IMRAD template! Begin writing in each section, then click "Analyze All" for AI feedback.', agent: 'manager' }
     ]);
     setSaveState('Draft');
-    
+    setPendingApiSources([]);
+    setClearSourcesTrigger(n => n + 1);
+    setCitationRegistry({});
+    citationCounter.current = 0;
+    setSidebarSources([]);
+
     // Clear autosave so old content doesn't reload
     localStorage.removeItem(AUTOSAVE_KEY);
     await localforage.removeItem('manuscript-sources');
-    
+
     // Force editor content reset
     editorRef.current?.setContent(newContent);
-    
+
     showToast('New manuscript created', 'success');
   };
 
@@ -203,19 +219,20 @@ export default function App() {
     setShowAnalyzeMenu(false);
     try {
       // Get the latest text directly from the editor
-      const plainText = stripHtml(editorRef.current?.getHTML() || content);
+      const htmlContent = editorRef.current?.getHTML() || content;
+      const plainText = stripHtml(htmlContent);
 
       if (plainText.length < 20) {
         showToast('Write some text first before analyzing.', 'info');
         setIsAnalyzing(false);
         return;
       }
-      
+
       if (specificAgent) {
         setAnalysisProgress({ agent: AGENT_INFO[specificAgent].label, total: 1, done: 0 });
         const result = await analyzeText(plainText, specificAgent, aiSettings, suggestions, (msg) => {
           setAnalysisProgress(prev => prev ? { ...prev, agent: `${AGENT_INFO[specificAgent].label} — ${msg}` } : null);
-        });
+        }, htmlContent);
         
         if (result.status === 'parsing_failed') {
           showToast(`⚠ ${AGENT_INFO[specificAgent].label}: Response wasn't valid JSON. Try a larger model or cloud API.`, 'error');
@@ -234,7 +251,7 @@ export default function App() {
         setAnalysisProgress({ agent: 'Running all agents in parallel...', total: agentsToRun.length, done: 0 });
         
         const results = await Promise.all(
-          agentsToRun.map(agent => analyzeText(plainText, agent, aiSettings, suggestions))
+          agentsToRun.map(agent => analyzeText(plainText, agent, aiSettings, suggestions, undefined, htmlContent))
         );
         
         let totalNew = 0;
@@ -290,12 +307,19 @@ export default function App() {
     const userMsg: Message = { id: Date.now().toString(), role: 'user', content: text };
     setMessages(prev => [...prev, userMsg]);
 
+    // Prepend current section context so the LLM knows where the user is working
+    const currentSection = editorRef.current?.getCurrentSection();
+    const sourcesWithContext = attachedSources ? [...attachedSources] : [];
+    if (currentSection) {
+      sourcesWithContext.unshift({ name: 'Editor Context', text: `The user is currently editing the "${currentSection}" section of the manuscript.` });
+    }
+
     setIsAnalyzing(true);
     try {
       const plainText = stripHtml(editorRef.current?.getHTML() || content);
       const result = agent === 'manuscript-ai'
-        ? await chatWithManuscript(text, plainText, aiSettings, attachedSources)
-        : await chatWithAgent(text, plainText, agent, aiSettings, attachedSources);
+        ? await chatWithManuscript(text, plainText, aiSettings, sourcesWithContext.length > 0 ? sourcesWithContext : undefined)
+        : await chatWithAgent(text, plainText, agent, aiSettings, sourcesWithContext.length > 0 ? sourcesWithContext : undefined);
       const suggestions: Suggestion[] | undefined = 'suggestions' in result ? (result as any).suggestions : undefined;
       const assistantMsg: Message = {
         id: (Date.now() + 1).toString(),
@@ -317,6 +341,175 @@ export default function App() {
         content: `Error: ${error instanceof Error ? error.message : 'Failed to reach LLM'}`,
         agent
       }]);
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  const handleAnalyzeSection = async (sectionText: string, sectionTitle: string) => {
+    // Special sentinel: bibliography insertion from the Sources tab
+    if (sectionTitle === '__bibliography__') {
+      const currentHtml = editorRef.current?.getHTML() || content;
+      editorRef.current?.setContent(currentHtml + sectionText);
+      setContent(currentHtml + sectionText);
+      showToast('Bibliography appended to manuscript', 'success');
+      return;
+    }
+    setSidebarTab('chat');
+    // If called from the Outline tab (no text), extract text from the editor
+    const textToAnalyze = sectionText || (() => {
+      const html = editorRef.current?.getHTML() || content;
+      const h2Re = /<h2[^>]*>(.*?)<\/h2>/gi;
+      const matches = [...html.matchAll(h2Re)];
+      const idx = matches.findIndex(m => m[1].replace(/<[^>]*>/g, '').trim() === sectionTitle);
+      if (idx === -1) return stripHtml(html);
+      const start = (matches[idx].index ?? 0) + matches[idx][0].length;
+      const end = idx + 1 < matches.length ? (matches[idx + 1].index ?? html.length) : html.length;
+      return html.slice(start, end).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+    })();
+
+    const userMsg: Message = {
+      id: Date.now().toString(), role: 'user',
+      content: `Analyze the "${sectionTitle}" section for clarity, scientific rigor, and flow.`,
+    };
+    setMessages(prev => [...prev, userMsg]);
+    setIsAnalyzing(true);
+    try {
+      const result = await chatWithManuscript(
+        `Analyze the "${sectionTitle}" section in detail. Focus on: clarity, scientific rigor, logical flow, and any specific weaknesses. Be concrete and actionable.`,
+        `[Section: ${sectionTitle}]\n\n${textToAnalyze}`,
+        aiSettings,
+      );
+      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), role: 'assistant', content: result.text, agent: 'manuscript-ai' as AgentType }]);
+    } catch (err) {
+      console.error('Section analysis failed', err);
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  const handleInsertCitation = (sourceId: string): number => {
+    if (citationRegistry[sourceId]) return citationRegistry[sourceId];
+    const num = ++citationCounter.current;
+    setCitationRegistry(prev => ({ ...prev, [sourceId]: num }));
+    // Auto-renumber after editor has committed the inserted text
+    setTimeout(() => renumberCitations(), 150);
+    return num;
+  };
+
+  const renumberCitations = useCallback(() => {
+    const html = editorRef.current?.getHTML();
+    if (!html) return;
+    setCitationRegistry(prev => {
+      if (Object.keys(prev).length === 0) return prev;
+      // Build inverted map: current number → sourceId
+      const numToId: Record<number, string> = {};
+      for (const [id, num] of Object.entries(prev)) numToId[num] = id;
+      // Scan HTML for [N] in document order, collect unique sourceIds
+      const seenIds: string[] = [];
+      const seenNums = new Set<number>();
+      const pat = /\[(\d+)\]/g;
+      let m;
+      while ((m = pat.exec(html)) !== null) {
+        const n = parseInt(m[1]);
+        if (numToId[n] && !seenNums.has(n)) { seenNums.add(n); seenIds.push(numToId[n]); }
+      }
+      // Include sources in registry that weren't found in the document (orphaned)
+      for (const [id] of Object.entries(prev)) {
+        if (!seenIds.includes(id)) seenIds.push(id);
+      }
+      // Build new numbering
+      const newReg: Record<string, number> = {};
+      seenIds.forEach((id, i) => { newReg[id] = i + 1; });
+      // Replace [N] in editor HTML with renumbered values
+      const newHtml = html.replace(/\[(\d+)\]/g, (_, n) => {
+        const id = numToId[parseInt(n)];
+        return id && newReg[id] ? `[${newReg[id]}]` : `[${n}]`;
+      });
+      editorRef.current?.setContent(newHtml);
+      setContent(newHtml);
+      citationCounter.current = seenIds.length;
+      return newReg;
+    });
+  }, []);  // stable — only uses refs + setters
+
+  const removeCitation = useCallback((sourceId: string) => {
+    setCitationRegistry(prev => {
+      const { [sourceId]: removed, ...rest } = prev;
+      if (!removed) return prev;
+      // Remove all occurrences of [N] from editor content
+      const html = editorRef.current?.getHTML() || '';
+      const cleaned = html.replace(new RegExp(`\\[${removed}\\]`, 'g'), '');
+      editorRef.current?.setContent(cleaned);
+      setContent(cleaned);
+      // Renumber remaining entries
+      const sorted = Object.entries(rest).sort((a, b) => a[1] - b[1]);
+      const newReg: Record<string, number> = {};
+      sorted.forEach(([id], i) => { newReg[id] = i + 1; });
+      // Update [N] values in cleaned HTML
+      const numToId: Record<number, string> = {};
+      for (const [id, num] of Object.entries(rest)) numToId[num] = id;
+      const renumbered = cleaned.replace(/\[(\d+)\]/g, (_, n) => {
+        const id = numToId[parseInt(n)];
+        return id && newReg[id] ? `[${newReg[id]}]` : `[${n}]`;
+      });
+      editorRef.current?.setContent(renumbered);
+      setContent(renumbered);
+      citationCounter.current = sorted.length;
+      return newReg;
+    });
+  }, []);
+
+  const handleSearchSimilar = (text: string) => {
+    const query = text.trim();
+    if (query.length < 3) {
+      showToast('Select at least a few words to search for similar manuscripts.', 'info');
+      return;
+    }
+    setSidebarTab('sources');
+    showToast('Searching for similar manuscripts…', 'info');
+    searchSimilarManuscripts(query, 5)
+      .then(results => {
+        if (results.length === 0) {
+          showToast('No similar manuscripts found for this selection.', 'info');
+          return;
+        }
+        const sources: ManuscriptSource[] = results.map(r => ({
+          id: `api-${Date.now()}-${Math.random()}`,
+          name: r.title,
+          type: 'api' as const,
+          text: r.abstract,
+          digest: r.abstract,
+          apiMeta: r,
+          queryText: query,
+        }));
+        setPendingApiSources(sources);
+        showToast(`Found ${results.length} similar manuscripts`, 'success');
+      })
+      .catch(err => showToast(
+        `Search failed: ${err instanceof Error ? err.message : 'unknown error'}`,
+        'error'
+      ));
+  };
+
+  const handleVerifyClaim = async (selectedText: string) => {
+    const digestedSources = sourcesRef.current.filter(
+      s => (s.type === 'pdf' && s.digest) || s.type === 'api'
+    );
+    if (digestedSources.length === 0) {
+      showToast('Upload and digest PDF sources first to verify claims against literature.', 'info');
+      setSidebarTab('sources');
+      return;
+    }
+    setSidebarTab('chat');
+    const userMsg: Message = { id: Date.now().toString(), role: 'user', content: `Verify this claim against uploaded sources:\n"${selectedText}"` };
+    setMessages(prev => [...prev, userMsg]);
+    setIsAnalyzing(true);
+    try {
+      const result = await verifyClaimAgainstSources(selectedText, digestedSources, aiSettings);
+      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), role: 'assistant', content: result, agent: 'literature-reviewer' as AgentType }]);
+    } catch (err) {
+      showToast(`Verification failed: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error');
     } finally {
       setIsAnalyzing(false);
     }
@@ -616,7 +809,9 @@ export default function App() {
       }
     } else {
       const sources = await localforage.getItem('manuscript-sources').catch(() => []);
-      const workspace = { title, content: currentContent, suggestions, history, messages, aiSettings, sources };
+      // Strip API keys before export — never serialize credentials into a shareable file
+      const { geminiApiKey: _g, openaiApiKey: _o, anthropicApiKey: _a, localApiKey: _l, ...safeSettings } = aiSettings;
+      const workspace = { title, content: currentContent, suggestions, history, messages, aiSettings: safeSettings, sources };
       saveAs(new Blob([JSON.stringify(workspace, null, 2)], { type: 'application/json' }), 'workspace.json');
       setSaveState('Saved');
     }
@@ -825,7 +1020,7 @@ export default function App() {
                     Run Single Agent
                   </div>
                   {(Object.entries(AGENT_INFO) as [AgentType, typeof AGENT_INFO[AgentType]][])
-                    .filter(([agentId]) => agentId !== 'literature-reviewer')
+                    .filter(([agentId]) => agentId !== 'literature-reviewer' && agentId !== 'manuscript-ai')
                     .map(([agentId, info]) => (
                       <button
                         key={agentId}
@@ -866,6 +1061,12 @@ export default function App() {
             onSelectionQuery={handleSelectionQuery}
             onRewriteSection={handleRewriteSection}
             onTransformSelection={handleTransformSelection}
+            onAnalyzeSection={handleAnalyzeSection}
+            onVerifyClaim={handleVerifyClaim}
+            onSearchSimilar={handleSearchSimilar}
+            sources={sidebarSources}
+            citationRegistry={citationRegistry}
+            onInsertCitation={handleInsertCitation}
             isDistractionFree={isDistractionFree}
             editorZoom={zoom}
             editorWidth={editorWidth}
@@ -920,9 +1121,19 @@ export default function App() {
             onTabChange={setSidebarTab}
             onAgentChange={setCurrentAgent}
             manuscriptContent={stripHtml(content)}
+            manuscriptHtml={content}
+            onScrollToSection={(heading) => editorRef.current?.scrollToHeading(heading)}
+            onAnalyzeSection={handleAnalyzeSection}
+            onSourcesChange={(sources) => { sourcesRef.current = sources; setSidebarSources(sources); }}
             aiSettings={aiSettings}
             onAnalyzeSource={handleAnalyzeSource}
             contentZoom={zoom}
+            externalApiSources={pendingApiSources.length ? pendingApiSources : undefined}
+            onExternalSourcesMerged={() => setPendingApiSources([])}
+            clearSourcesTrigger={clearSourcesTrigger}
+            citationRegistry={citationRegistry}
+            onRenumberCitations={renumberCitations}
+            onRemoveCitation={removeCitation}
           />
         </div>
       )}

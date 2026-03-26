@@ -1,4 +1,25 @@
-export type AgentType = 'manager' | 'editor' | 'reviewer-2' | 'researcher' | 'literature-reviewer' | 'manuscript-ai';
+export type AgentType = 'manager' | 'editor' | 'reviewer-2' | 'researcher' | 'literature-reviewer' | 'manuscript-ai' | 'citation-checker';
+
+export interface SemanticSearchResult {
+  title: string;
+  authors: string;
+  journal: string;
+  doi: string;
+  abstract: string;
+  year: number | null;
+  score: number;
+  source: string; // 'PubMed' | 'BioRxiv' | 'MedRxiv' | 'arXiv'
+}
+
+export interface ManuscriptSource {
+  id: string;
+  name: string;
+  type: 'pdf' | 'bib' | 'api';
+  text: string;
+  digest?: string;
+  apiMeta?: SemanticSearchResult;
+  queryText?: string;
+}
 
 export type AIProvider = 'gemini' | 'openai' | 'anthropic' | 'local';
 
