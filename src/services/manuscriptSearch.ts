@@ -1,6 +1,6 @@
 import { SemanticSearchResult } from '../types';
 
-const SEARCH_API_URL = 'http://152.53.80.217:8080/search';
+const SEARCH_API_URL = 'https://manuscript-search.org/search';
 const SEARCH_API_KEY = 'myapp_kZnDpemyN9z43CqNrOYEE-LhAH9_UsxhWTavLkWv22Y';
 
 /**
@@ -22,23 +22,11 @@ async function netPost(
     return electronAPI.netPost(url, headers, body);
   }
 
-  // Browser path — upgrade HTTP → HTTPS when the page itself is served over HTTPS
-  // to avoid "mixed active content" blocking.
-  let fetchUrl = url;
-  if (
-    typeof window !== 'undefined' &&
-    window.location.protocol === 'https:' &&
-    url.startsWith('http://')
-  ) {
-    fetchUrl = url.replace('http://', 'https://');
-  }
-
+  // Browser fallback
   try {
-    const response = await fetch(fetchUrl, { method: 'POST', headers, body });
+    const response = await fetch(url, { method: 'POST', headers, body });
     return { ok: response.ok, status: response.status, text: await response.text() };
   } catch (err) {
-    // Network error (e.g. server has no TLS cert) — return a detectable failure
-    // so callers can degrade gracefully instead of crashing.
     return { ok: false, status: 0, text: String(err) };
   }
 }
