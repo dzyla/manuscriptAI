@@ -1691,40 +1691,62 @@ export default function Sidebar({
                   <Plus size={14} />
                 </button>
                 {showSourcePicker && (
-                  <div className="absolute bottom-full right-0 mb-1 border rounded-xl shadow-xl z-50 p-2 min-w-[220px]" style={{ background: 'var(--surface-1)', borderColor: 'var(--border)' }}>
-                    <p className="text-[9px] font-bold uppercase tracking-widest px-2 pb-1.5" style={{ color: 'var(--text-muted)' }}>Context to send</p>
-                    <button
-                      className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-[11px] hover:bg-stone-50 transition-colors"
-                      style={{ color: 'var(--text-primary)' }}
-                      onClick={() => setAttachedSourceIds(prev => { const next = new Set(prev); if (next.has('__manuscript__')) next.delete('__manuscript__'); else next.add('__manuscript__'); return next; })}
-                    >
-                      <span className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${attachedSourceIds.has('__manuscript__') ? 'bg-stone-800 border-stone-800' : ''}`} style={{ borderColor: 'var(--border)' }}>
-                        {attachedSourceIds.has('__manuscript__') && <Check size={9} className="text-white" />}
-                      </span>
-                      <FileText size={11} style={{ color: 'var(--text-muted)' }} />
-                      <span className="font-medium">Current Manuscript</span>
-                      <span className="text-[9px] ml-auto" style={{ color: 'var(--text-muted)' }}>default</span>
-                    </button>
-                    {sources.filter(s => s.type === 'pdf' || s.type === 'api').map(src => (
+                  <div className="absolute bottom-full right-0 mb-1 border rounded-xl shadow-xl z-50 overflow-hidden w-64" style={{ background: 'var(--surface-1)', borderColor: 'var(--border)' }}>
+                    <p className="text-[9px] font-bold uppercase tracking-widest px-3 py-2 border-b" style={{ color: 'var(--text-muted)', borderColor: 'var(--border)' }}>Attach context</p>
+                    <div className="max-h-64 overflow-y-auto p-1">
+                      {/* Current manuscript */}
                       <button
-                        key={src.id}
-                        className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-[11px] hover:bg-stone-50 transition-colors"
-                        style={{ color: 'var(--text-primary)' }}
-                        onClick={() => setAttachedSourceIds(prev => { const next = new Set(prev); if (next.has(src.id)) next.delete(src.id); else next.add(src.id); return next; })}
+                        className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-stone-100 transition-colors"
+                        onClick={() => setAttachedSourceIds(prev => { const next = new Set(prev); if (next.has('__manuscript__')) next.delete('__manuscript__'); else next.add('__manuscript__'); return next; })}
                       >
-                        <span className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${attachedSourceIds.has(src.id) ? 'bg-stone-800 border-stone-800' : ''}`} style={{ borderColor: 'var(--border)' }}>
-                          {attachedSourceIds.has(src.id) && <Check size={9} className="text-white" />}
+                        <span className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${attachedSourceIds.has('__manuscript__') ? 'bg-stone-800 border-stone-800' : ''}`} style={{ borderColor: 'var(--border)' }}>
+                          {attachedSourceIds.has('__manuscript__') && <Check size={9} className="text-white" />}
                         </span>
-                        {src.type === 'api'
-                          ? <Search size={11} style={{ color: '#7c3aed' }} />
-                          : <BookOpen size={11} style={{ color: 'var(--accent-blue)' }} />}
-                        <span className="truncate font-medium">{src.name}</span>
-                        {src.type === 'api' && <span className="text-[8px] ml-auto shrink-0" style={{ color: 'var(--text-muted)' }}>abstract</span>}
+                        <FileText size={11} className="shrink-0" style={{ color: 'var(--text-muted)' }} />
+                        <div className="flex-1 min-w-0 text-left">
+                          <p className="text-[11px] font-medium truncate" style={{ color: 'var(--text-primary)' }}>Current Manuscript</p>
+                        </div>
+                        <span className="text-[9px] shrink-0 px-1.5 py-0.5 rounded" style={{ background: 'var(--surface-2)', color: 'var(--text-muted)' }}>default</span>
                       </button>
-                    ))}
-                    {sources.filter(s => s.type === 'pdf' || s.type === 'api').length === 0 && (
-                      <p className="text-[10px] px-2 py-1" style={{ color: 'var(--text-muted)' }}>Upload PDFs or search for papers in Sources tab</p>
-                    )}
+
+                      {/* PDF and API sources */}
+                      {sources.filter(s => s.type === 'pdf' || s.type === 'api').map(src => {
+                        const isPdf = src.type === 'pdf';
+                        // Primary label: matched title > stripped filename > raw name
+                        const label = src.apiMeta?.title
+                          ?? src.name.replace(/\.pdf$/i, '').replace(/[-_]/g, ' ')
+                          .replace(/\s+/g, ' ').trim();
+                        // Secondary label: author+year for matched/api sources
+                        const sub = src.apiMeta
+                          ? `${src.apiMeta.authors?.split(/[,;]/)[0]?.trim() ?? ''}${src.apiMeta.year ? `, ${src.apiMeta.year}` : ''}`
+                          : null;
+                        return (
+                          <button
+                            key={src.id}
+                            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-stone-100 transition-colors"
+                            onClick={() => setAttachedSourceIds(prev => { const next = new Set(prev); if (next.has(src.id)) next.delete(src.id); else next.add(src.id); return next; })}
+                          >
+                            <span className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${attachedSourceIds.has(src.id) ? 'bg-stone-800 border-stone-800' : ''}`} style={{ borderColor: 'var(--border)' }}>
+                              {attachedSourceIds.has(src.id) && <Check size={9} className="text-white" />}
+                            </span>
+                            {isPdf
+                              ? <BookOpen size={11} className="shrink-0" style={{ color: 'var(--accent-blue)' }} />
+                              : <Search size={11} className="shrink-0" style={{ color: '#7c3aed' }} />}
+                            <div className="flex-1 min-w-0 text-left">
+                              <p className="text-[11px] font-medium truncate leading-tight" style={{ color: 'var(--text-primary)' }}>{label}</p>
+                              {sub && <p className="text-[9px] truncate leading-tight" style={{ color: 'var(--text-muted)' }}>{sub}</p>}
+                            </div>
+                            <span className="text-[8px] shrink-0 px-1 py-0.5 rounded" style={{ background: 'var(--surface-2)', color: 'var(--text-muted)' }}>
+                              {isPdf ? 'PDF' : 'paper'}
+                            </span>
+                          </button>
+                        );
+                      })}
+
+                      {sources.filter(s => s.type === 'pdf' || s.type === 'api').length === 0 && (
+                        <p className="text-[10px] px-2 py-2 text-center" style={{ color: 'var(--text-muted)' }}>Upload PDFs or search for papers<br/>in the Sources tab</p>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
