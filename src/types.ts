@@ -14,7 +14,7 @@ export interface SemanticSearchResult {
 export interface ManuscriptSource {
   id: string;
   name: string;
-  type: 'pdf' | 'bib' | 'api';
+  type: 'pdf' | 'bib' | 'api' | 'text';
   text: string;
   digest?: string;
   apiMeta?: SemanticSearchResult;

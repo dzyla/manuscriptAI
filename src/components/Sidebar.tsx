@@ -194,6 +194,27 @@ export default function Sidebar({
     onSourcesChange?.(sources);
   }, [sources]);
 
+  const cleanPdfText = (raw: string): string => {
+    return raw
+      .replace(/\r\n/g, '\n')
+      // Fix hyphenated line-breaks: "word-\nword" → "wordword"
+      .replace(/(\w)-\n(\w)/g, '$1$2')
+      // Remove pure page-number lines and "Page N [of M]" lines
+      .replace(/^[ \t]*(\d{1,4}|[Pp]age\s+\d+(\s+of\s+\d+)?)[ \t]*$/gm, '')
+      // Remove "Downloaded from …" noise
+      .replace(/^.*[Dd]ownloaded\s+from\s+.*$/gm, '')
+      // Remove copyright / rights-reserved lines
+      .replace(/^.*©\s*\d{4}.*$/gm, '')
+      .replace(/^.*[Aa]ll\s+rights\s+reserved.*$/gm, '')
+      // Remove standalone DOI lines (often footer noise)
+      .replace(/^[ \t]*[Dd][Oo][Ii]:\s*10\.\S+[ \t]*$/gm, '')
+      // Remove lines ≤ 3 chars (stray letters / bullets)
+      .replace(/^.{0,3}$/gm, '')
+      // Collapse 3+ blank lines → 2
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  };
+
   const extractTextFromPDF = async (file: File): Promise<string> => {
     const arrayBuffer = await file.arrayBuffer();
     const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
@@ -205,11 +226,12 @@ export default function Sidebar({
       const pageText = content.items.map((item: any) => item.str).join(' ');
       text += pageText + '\n\n';
     }
-    return text;
+    return cleanPdfText(text);
   };
 
   const processFiles = async (files: File[]) => {
-    const filtered = files.filter(f => f.name.endsWith('.pdf') || f.name.endsWith('.bib'));
+    const supported = ['.pdf', '.bib', '.txt', '.md', '.docx'];
+    const filtered = files.filter(f => supported.some(ext => f.name.toLowerCase().endsWith(ext)));
     if (filtered.length === 0) return;
 
     setIsParsing(true);
@@ -217,15 +239,24 @@ export default function Sidebar({
 
     for (const file of filtered) {
       setParsingFileName(file.name);
+      const nameLower = file.name.toLowerCase();
       try {
-        if (file.name.endsWith('.pdf')) {
+        if (nameLower.endsWith('.pdf')) {
           const text = await extractTextFromPDF(file);
           const id = Date.now().toString() + Math.random();
           newSources.push({ id, name: file.name, type: 'pdf' as const, text, queryText: undefined });
-        } else if (file.name.endsWith('.bib')) {
+        } else if (nameLower.endsWith('.bib')) {
           const text = await file.text();
           new Cite(text);
           newSources.push({ id: Date.now().toString() + Math.random(), name: file.name, type: 'bib' as const, text });
+        } else if (nameLower.endsWith('.docx')) {
+          const mammoth = await import('mammoth');
+          const arrayBuffer = await file.arrayBuffer();
+          const result = await mammoth.extractRawText({ arrayBuffer });
+          newSources.push({ id: Date.now().toString() + Math.random(), name: file.name, type: 'text' as const, text: result.value });
+        } else if (nameLower.endsWith('.txt') || nameLower.endsWith('.md')) {
+          const text = await file.text();
+          newSources.push({ id: Date.now().toString() + Math.random(), name: file.name, type: 'text' as const, text });
         }
       } catch (err) {
         console.error('Failed to parse file:', file.name, err);
@@ -235,10 +266,10 @@ export default function Sidebar({
 
     if (newSources.length > 0) {
       setSources(prev => [...newSources, ...prev]);
-      // Auto-digest PDFs in relation to manuscript
+      // Auto-digest PDFs and text documents
       if (aiSettings) {
         for (const src of newSources) {
-          if (src.type === 'pdf') {
+          if (src.type === 'pdf' || src.type === 'text') {
             setDigestingId(src.id);
             setParsingFileName(`Digesting ${src.name}...`);
             try {
@@ -915,8 +946,8 @@ export default function Sidebar({
               onClick={() => fileUploadRef.current?.click()}
             >
               <UploadCloud size={24} className="mx-auto mb-2 opacity-50" style={{ color: 'var(--text-muted)' }} />
-              <p className="text-xs font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>Drop or click to upload PDFs & .bib files</p>
-              <p className="text-[10px]" style={{ color: 'var(--text-secondary)' }}>PDFs are AI-digested in context of your manuscript</p>
+              <p className="text-xs font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>Drop or click to upload sources</p>
+              <p className="text-[10px]" style={{ color: 'var(--text-secondary)' }}>PDF, .bib, .docx, .txt, .md — AI-digested automatically</p>
               <div className="mt-2 flex items-center justify-center gap-1.5">
                 <button
                   className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[10px] font-semibold border transition-colors hover:bg-stone-100"
@@ -930,7 +961,7 @@ export default function Sidebar({
             <input
               ref={fileUploadRef}
               type="file"
-              accept=".pdf,.bib"
+              accept=".pdf,.bib,.txt,.md,.docx"
               multiple
               className="hidden"
               onChange={handleFileInput}
@@ -1108,7 +1139,7 @@ export default function Sidebar({
                       const src = sources.find(s => s.id === id);
                       const label = src?.apiMeta
                         ? `${src.apiMeta.authors?.split(/[,;]/)[0]?.trim() ?? ''}${src.apiMeta.year ? ` (${src.apiMeta.year})` : ''}`
-                        : src?.name.replace(/\.pdf$/i, '') ?? '(removed source)';
+                        : src?.name.replace(/\.(pdf|txt|md|docx)$/i, '') ?? '(removed source)';
                       const title = src?.apiMeta?.title ?? src?.name ?? '';
                       return (
                         <div key={id} className="flex items-start gap-2 px-3 py-2" style={{ background: 'var(--surface-0)' }}>
@@ -1153,7 +1184,7 @@ export default function Sidebar({
                           const doiPart = m.doi ? ` doi:${m.doi}` : '';
                           return `<li>[${num}] ${m.authors}${m.year ? ` (${m.year})` : ''}. ${m.title}. <em>${m.journal}</em>.${doiPart}</li>`;
                         }
-                        return `<li>[${num}] ${src.name.replace(/\.pdf$/i, '')}</li>`;
+                        return `<li>[${num}] ${src.name.replace(/\.(pdf|txt|md|docx)$/i, '')}</li>`;
                       });
                       onAnalyzeSection?.(`<h2>References</h2><ol>${lines.join('')}</ol>`, '__bibliography__');
                     }}
@@ -1469,7 +1500,7 @@ export default function Sidebar({
                         })()}
                       </div>
                     )}
-                    {source.type === 'pdf' && aiSettings && (
+                    {(source.type === 'pdf' || source.type === 'text') && aiSettings && (
                       <div className="px-3 pb-3 flex gap-2">
                         <button
                           disabled={!!analyzingSourceId}
@@ -1719,23 +1750,25 @@ export default function Sidebar({
                           <p className="text-[9px]" style={{ color: 'var(--text-muted)' }}>Only the section at the cursor</p>
                         </div>
                       </button>
-                      {sources.filter(s => s.type === 'pdf' || s.type === 'api').length > 0 && (
+                      {sources.filter(s => s.type === 'pdf' || s.type === 'api' || s.type === 'text').length > 0 && (
                         <div className="px-2 pt-2 pb-0.5 border-t mt-1" style={{ borderColor: 'var(--border)' }}>
                           <p className="text-[9px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>Additional sources</p>
                         </div>
                       )}
 
-                      {/* PDF and API sources */}
-                      {sources.filter(s => s.type === 'pdf' || s.type === 'api').map(src => {
+                      {/* PDF, text and API sources */}
+                      {sources.filter(s => s.type === 'pdf' || s.type === 'api' || s.type === 'text').map(src => {
                         const isPdf = src.type === 'pdf';
+                        const isText = src.type === 'text';
                         // Primary label: matched title > stripped filename > raw name
                         const label = src.apiMeta?.title
-                          ?? src.name.replace(/\.pdf$/i, '').replace(/[-_]/g, ' ')
+                          ?? src.name.replace(/\.(pdf|txt|md|docx)$/i, '').replace(/[-_]/g, ' ')
                           .replace(/\s+/g, ' ').trim();
                         // Secondary label: author+year for matched/api sources
                         const sub = src.apiMeta
                           ? `${src.apiMeta.authors?.split(/[,;]/)[0]?.trim() ?? ''}${src.apiMeta.year ? `, ${src.apiMeta.year}` : ''}`
                           : null;
+                        const ext = src.name.split('.').pop()?.toUpperCase() ?? '';
                         return (
                           <button
                             key={src.id}
@@ -1747,19 +1780,21 @@ export default function Sidebar({
                             </span>
                             {isPdf
                               ? <BookOpen size={11} className="shrink-0" style={{ color: 'var(--accent-blue)' }} />
-                              : <Search size={11} className="shrink-0" style={{ color: '#7c3aed' }} />}
+                              : isText
+                                ? <FileText size={11} className="shrink-0" style={{ color: '#16a34a' }} />
+                                : <Search size={11} className="shrink-0" style={{ color: '#7c3aed' }} />}
                             <div className="flex-1 min-w-0 text-left">
                               <p className="text-[11px] font-medium truncate leading-tight" style={{ color: 'var(--text-primary)' }}>{label}</p>
                               {sub && <p className="text-[9px] truncate leading-tight" style={{ color: 'var(--text-muted)' }}>{sub}</p>}
                             </div>
                             <span className="text-[8px] shrink-0 px-1 py-0.5 rounded" style={{ background: 'var(--surface-2)', color: 'var(--text-muted)' }}>
-                              {isPdf ? 'PDF' : 'paper'}
+                              {isPdf ? 'PDF' : isText ? ext : 'paper'}
                             </span>
                           </button>
                         );
                       })}
 
-                      {sources.filter(s => s.type === 'pdf' || s.type === 'api').length === 0 && (
+                      {sources.filter(s => s.type === 'pdf' || s.type === 'api' || s.type === 'text').length === 0 && (
                         <p className="text-[10px] px-2 py-2 text-center" style={{ color: 'var(--text-muted)' }}>Upload PDFs or search for papers<br/>in the Sources tab</p>
                       )}
                     </div>
