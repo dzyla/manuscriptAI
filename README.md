@@ -2,122 +2,221 @@
 
 An AI-powered writing assistant for scientific manuscripts, built as a desktop app (Electron) and web app (React + TipTap).
 
-VC by [Dawid Zyla](https://github.com/dzyla/manuscriptAI) — github.com/dzyla/manuscriptAI
+By [Dawid Zyla](https://github.com/dzyla/manuscriptAI) — github.com/dzyla/manuscriptAI
 
 ![License](https://img.shields.io/badge/license-MIT-blue) ![TypeScript](https://img.shields.io/badge/TypeScript-5.8-blue) ![React](https://img.shields.io/badge/React-19-blue)
 
 ---
 
-## How the Agent Pipeline Works
+## Overview
 
-Understanding the full workflow helps you get the most out of the editor.
+Manuscript AI Editor is a full-featured scientific writing environment that combines a rich-text editor with a multi-agent AI review pipeline, a literature source manager, and a numeric citation system. It runs locally as an Electron desktop app or in any browser (e.g., GitHub Pages), and works with any OpenAI-compatible API — local LLMs (Ollama, LM Studio), Google Gemini, OpenAI, or Anthropic Claude.
 
-### Step 1 — Write your manuscript
+---
 
-Use the TipTap rich-text editor. Paste an existing draft or start from the IMRAD template (New Manuscript). The editor supports headings, lists, bold/italic, and text alignment.
+## How the Editor Works
 
-### Step 2 — Analyze All (parallel agents)
+### Writing
 
-Click **Analyze All** to run 3 specialized agents simultaneously against your entire manuscript:
+The editor is built on [TipTap](https://tiptap.dev/) and supports full rich-text formatting: headings, bold/italic/underline, lists, text alignment, and undo history. Start from an IMRAD template (**New Manuscript**) or paste an existing draft.
+
+The left rail shows an **outline** of your document headings. Clicking any heading scrolls to it instantly.
+
+### Agent Analysis Pipeline
+
+Click **Analyze All** to run specialized AI agents against your manuscript simultaneously:
 
 ```
 Your Manuscript
       │
-      ├──► Structure Architect  ─►  Structure & logic suggestions
-      ├──► Language Surgeon     ─►  Grammar & clarity suggestions
-      └──► Devil's Advocate     ─►  Scientific rigor suggestions
+      ├──► Structure Architect  ──► IMRAD structure, logic gaps, section flow
+      ├──► Language Surgeon     ──► Grammar, concision, passive voice, tense
+      ├──► Reviewer 2           ──► Scientific rigor, unsupported claims
+      └──► Clarity & Impact     ──► Buried findings, weak topic sentences
                                           │
                                           ▼
                                     Judge Agent (background)
-                                    Removes overlapping suggestions,
-                                    keeps highest-impact ones
+                                    Deduplicates overlapping suggestions
                                           │
                                           ▼
                                   Suggestions Panel
 ```
 
-Each agent has a distinct job and is explicitly forbidden from duplicating the others' work:
+Each agent has a distinct, non-overlapping scope. After suggestions arrive, a **Judge Agent** runs automatically: it groups suggestions that target the same passage, asks the LLM which is highest-impact, and removes the rest. The final list stays focused and actionable.
 
-| Agent | Role | Focuses on |
-|-------|------|------------|
-| **Structure Architect** | Document architecture | IMRAD structure, section flow, logic gaps, abstract accuracy |
-| **Language Surgeon** | Sentence-level writing | Passive voice, wordiness, grammar, ambiguous pronouns |
-| **Devil's Advocate** | Scientific rigor | Unsupported claims, over-stated conclusions, missing methodology |
-| **Clarity & Impact** | Reader persuasion | Buried findings, excessive hedging, weak topic sentences |
+**Analyze Section** runs the same pipeline on only the section your cursor is in.
 
-For **local LLMs** (Ollama, LM Studio), the manuscript is chunked by section before sending to stay within context limits. For cloud APIs, the full manuscript is sent in one request.
+For **local LLMs**, the manuscript is split by section before sending (configurable chunk size) to respect context limits. For cloud APIs, the full text is sent in one request.
 
-### Step 3 — Review suggestions
+### Suggestions Panel
 
-The **Suggestions** tab in the sidebar shows all proposed changes sorted by position. Each card shows:
-- The original text (with diff highlighting)
-- The suggested replacement
-- Severity (critical / major / minor / style)
-- Category (grammar, flow, evidence, clarity, etc.)
+Each suggestion card shows:
+- The original text and proposed replacement (with diff highlighting)
+- Severity: `critical` / `major` / `minor` / `style`
+- Category: grammar, flow, evidence, clarity, structure, etc.
+- The agent that produced it
 
-Click **Accept** to apply the change to your manuscript. Click anywhere in a highlighted passage in the editor to jump directly to that suggestion card.
+Click **Accept** to apply the change directly to the document. Click **Reject** to dismiss it. You can also add a **rebuttal** (a note explaining why you disagree) — the agent will respond. Click anywhere in a highlighted passage in the editor to jump to that suggestion card in the sidebar.
 
-### Step 4 — Chat with agents
+**Accept All / Reject All** process all pending suggestions in one click.
 
-Use the **Chat** tab to ask questions or request targeted feedback. Type a message and select an agent to reply. The agent uses your full manuscript as context.
+### Bubble Menu (Selected Text)
 
-Chat generates inline suggestions **only when you explicitly ask** to edit or rewrite text (e.g., "rewrite this paragraph" or "fix this sentence"). General questions get plain conversational replies.
-
-### Step 5 — Bubble menu actions (selected text)
-
-Select any text in the editor to open the **floating bubble menu**. Six task-specific actions are available, each hardwired to the right agent regardless of which agent is selected in the chat box:
+Select any text to open a floating action menu:
 
 | Action | Agent | What it does |
 |--------|-------|-------------|
 | Polish | Language Surgeon | Grammar + tightening |
 | Shorten | Language Surgeon | Cut for concision |
-| Critique | Devil's Advocate | Find weaknesses |
-| Strengthen | Devil's Advocate | Better evidence/argument |
+| Critique | Reviewer 2 | Find weaknesses |
+| Strengthen | Reviewer 2 | Better evidence/argument |
 | Sharpen | Clarity & Impact | Stronger topic sentence |
 | Explain | Clarity & Impact | Clearer exposition |
 
-Each bubble action produces an **accept/reject suggestion** — not a chat message.
+**Rewrite** fully rewrites the selected passage. **Thesaurus** (single word) shows synonyms from the LLM. All bubble actions produce accept/reject suggestion cards, not chat messages.
 
-**Rewrite** (toolbar button): Rewrites the selected passage entirely. Also produces an accept/reject suggestion.
+---
 
-**Thesaurus** (single word selected): Shows synonyms from the LLM.
+## Chat
 
-### Step 6 — Reference paper analysis (PDF sources)
+The **Chat** tab gives direct conversational access to the AI agents. Two scope modes control how much manuscript context is sent:
 
-Upload reference PDFs via the **Sources** tab:
+| Mode | What is sent |
+|------|-------------|
+| **Full Manuscript** | The entire document text |
+| **Current Section** | Only the section your cursor is in |
+
+Toggle scope using the manuscript/section buttons in the chat input area.
+
+You can also attach individual **sources** from your library to the chat — PDFs, papers from search, or uploaded documents. Only the sources you explicitly tick are included in the prompt.
+
+### Chat Agents
+
+| Agent | Best for |
+|-------|---------|
+| **Manuscript AI** | Open-ended scholarly discussion, questions about the draft, general feedback |
+| **Reviewer 2** | Anticipating peer review objections |
+| **Literature Reviewer** | Discussing a specific uploaded source in relation to your manuscript |
+| **Citation Checker** | Finding claims that likely need a reference |
+
+The **Agents** mode (toggle in the chat toolbar) adds access to the full structured agent pipeline from the chat interface.
+
+---
+
+## Sources
+
+The **Sources** tab manages reference material. All uploaded content is persisted via `localforage` (IndexedDB) and survives page reloads.
+
+### Uploading Files
+
+Drag files onto the drop zone or click Browse. Accepted formats:
+
+| Format | How it is parsed |
+|--------|-----------------|
+| `.pdf` | PDF.js extracts text; heuristic cleaning removes page numbers, download notices, copyright lines, and artifact fragments |
+| `.docx` | Mammoth extracts plain text from the Word document body |
+| `.txt` / `.md` | Read directly as plain text |
+| `.bib` | Parsed as a BibTeX library via citation-js |
+
+After upload, PDF and text sources are automatically **AI-digested**: the LLM reads the source and produces a structured summary (Research Objective, Key Findings, Methods/Approach, Significance) without referencing your current manuscript. This digest is what you see in the source card and what is sent to agents when you attach the source to chat.
+
+### Semantic Literature Search
+
+Below the upload zone, a **Find Manuscripts** search box connects to the `manuscript-search.org` API — a semantic search index covering PubMed, bioRxiv, medRxiv, and arXiv. Type any query (title keywords, abstract-style text, a research question) and get ranked results with title, authors, journal, year, and relevance score.
+
+Each result can be:
+- **Added as a source** — the abstract is stored as a source in your library
+- **BibTeX copied** — one-click copy of a formatted `.bib` entry
+
+### PDF-to-Database Matching
+
+When a PDF is uploaded, the app uses the AI digest (not the raw extracted text) to search the literature database. If a match is found above threshold, the source card shows a confirmation prompt listing up to 10 candidates. You can:
+- Accept a match → the card gains the full metadata (title, authors, journal, DOI) above the AI summary
+- Reject all candidates and search manually using the per-source search box
+
+This matching flow works because the digest is a clean semantic signal; raw PDF text tends to be noisy (page numbers, footers, column artifacts).
+
+### How References Are Fetched
 
 ```
-Upload PDF  ──►  PDF.js extracts text  ──►  LLM digests in context of your manuscript
-                                                      │
-                  ┌───────────────────────────────────┘
-                  ▼
-          "Compare against manuscript"
-                  │
-                  ▼
-          Literature Reviewer agent
-          Sends: reference text + your manuscript
-          Returns: Supported Claims / Contradicted Claims / Should Be Cited / Summary
-                  │
-                  ▼
-          Chat tab (with loading indicator)
+Upload PDF / .docx / .txt / .md
+          │
+          ▼
+    Text extracted locally
+    (PDF.js for PDFs, Mammoth for .docx)
+          │
+          ▼
+    Heuristic cleaning (PDFs)
+    — page numbers, copyright lines,
+      download notices, short artifacts
+          │
+          ▼
+    AI Digest (no manuscript context)
+    — Research Objective
+    — Key Findings
+    — Methods/Approach
+    — Significance
+          │
+          ├──► Stored as source card (digest shown to user)
+          │
+          └──► Digest text used as search query
+                    │
+                    ▼
+              manuscript-search.org API
+              (HTTPS, semantic vector search)
+                    │
+                    ▼
+              Top 10 database matches
+              — confirm or skip match
+                    │
+                    ▼
+              If matched: title / authors /
+              journal / DOI populated
+              on source card
 ```
 
-Multiple PDFs are processed sequentially with per-file progress. Drag-and-drop or click to upload. `.bib` files (BibTeX) are also supported for reference management.
+The search API call goes through Electron's main-process `net` module when running as a desktop app (bypassing CORS), and directly via `fetch` in the browser.
 
-### Step 7 — Post-drafting (Rebuttal & Cover Letter)
+### BibTeX Library
 
-Click the **Book** icon in the left rail (or the Download menu) to open the **Post-Drafting Assistant**. This module generates:
-- A **rebuttal letter** responding to reviewer comments
-- A **cover letter** tailored to a target journal
+Upload a `.bib` file to unlock:
+- **Citation health check**: cross-references in-text author-year citations against the `.bib` entries and flags orphaned citations (cited in text but not in `.bib`) and unused entries (in `.bib` but never cited)
+- **Bibliography formatter**: renders the full reference list in APA 7th, Vancouver, Harvard, IEEE, or Nature style and inserts it into your manuscript
 
-### Judge Agent (background)
+### Reference Manager
 
-After "Analyze All" completes and initial suggestions are shown, a **Judge Agent** runs automatically in the background. It:
-1. Detects overlapping suggestions (where one passage is flagged by multiple agents)
-2. For each conflict group, asks the LLM which suggestion is most impactful
-3. Removes lower-priority duplicates and shows a notification ("X overlapping removed")
+The **Reference Manager** panel appears when numeric citations `[1]`, `[2]`, etc. are present in the document. It shows a numbered list of all cited sources, with title, author, DOI link, and a remove button for each.
 
-This keeps the suggestions list focused and actionable.
+**Sync order** renumbers all `[N]` markers in the document in the order they first appear — useful after inserting new citations in the middle of the text.
+
+**Insert reference list** appends a formatted `References` section to the end of the manuscript using the matched metadata (or filename as fallback).
+
+### Numeric Citation Picker
+
+In the editor, type `@` to open a floating citation picker. Start typing to filter sources by title or filename. Select a source to insert `[N]` at the cursor, where N is the next available citation number. The reference is registered in the Reference Manager immediately.
+
+```
+Type @  ──► floating picker appears
+            │
+            filter by title/filename
+            │
+            select source
+            │
+            ▼
+        [N] inserted at cursor
+        source registered in Reference Manager
+```
+
+If you insert a citation before existing ones (e.g., insert `[1]` in the introduction when the conclusion already has `[1]` and `[2]`), **Sync order** renumbers everything correctly.
+
+---
+
+## Post-Drafting Tools
+
+Click the **Book** icon in the left rail to open the **Post-Drafting Assistant**:
+
+- **Rebuttal Letter**: paste reviewer comments and generate a structured, professional point-by-point rebuttal
+- **Cover Letter**: generate a journal-submission cover letter tailored to your manuscript and a specified target journal
 
 ---
 
@@ -127,9 +226,9 @@ This keeps the suggestions list focused and actionable.
 
 - [Node.js](https://nodejs.org/) 18+
 - npm
-- (Optional) A local LLM server: [LM Studio](https://lmstudio.ai/) or [Ollama](https://ollama.com/)
+- An AI API key — or a local LLM server ([LM Studio](https://lmstudio.ai/) / [Ollama](https://ollama.com/))
 
-### Install & Run (web)
+### Web App
 
 ```bash
 git clone https://github.com/dzyla/manuscriptAI
@@ -146,40 +245,45 @@ Open [http://localhost:3000](http://localhost:3000).
 npm run build:electron
 ```
 
-Produces an AppImage for Linux in `release/`. Configure `electron-builder` in `package.json` for Windows/macOS.
+Produces an AppImage for Linux in `release/`. Configure `electron-builder` in `package.json` for Windows/macOS targets.
 
 ---
 
 ## Configure AI Provider
 
-Click **⚙ Settings** (bottom-left) to configure:
+Click **Settings** (gear icon, bottom-left) to configure your provider:
 
-| Provider | Setup |
-|----------|-------|
-| **Local LLM** (default) | LM Studio / Ollama endpoint, e.g. `http://localhost:1234/v1/chat/completions` |
-| **Google Gemini** | [Gemini API key](https://makersuite.google.com/app/apikey) |
-| **OpenAI** | [OpenAI API key](https://platform.openai.com/api-keys) |
-| **Anthropic Claude** | [Anthropic API key](https://console.anthropic.com/settings/keys) |
+| Provider | What to set |
+|----------|------------|
+| **Local LLM** (default) | Base URL, e.g. `http://localhost:1234/v1/chat/completions`; model name |
+| **Google Gemini** | [Gemini API key](https://makersuite.google.com/app/apikey); model name |
+| **OpenAI** | [OpenAI API key](https://platform.openai.com/api-keys); model name |
+| **Anthropic Claude** | [Anthropic API key](https://console.anthropic.com/settings/keys); model name |
+
+All API keys are stored in browser `localStorage` and never leave your machine.
 
 ### Local LLM Tips
 
 - Use **8B+ parameter** models for reliable JSON output (Llama 3.1 8B, Mistral Nemo, Qwen 2.5 7B)
-- Smaller models (3-4B) work but may produce malformed JSON → "JSON parse failed" toast
-- The app auto-chunks long manuscripts by IMRAD section for local models
-- All API keys are stored in browser `localStorage` — never sent to any backend
+- Smaller models (3–4B) may produce malformed JSON → "JSON parse failed" toast
+- Set **Chunk size** in Settings to control how many characters per section are sent to local models (0 = send full manuscript, not recommended for small context windows)
+
+### Customizing Agent Prompts
+
+Each agent's system prompt can be replaced entirely in **Settings → Agent Prompts**. This lets you tune the review focus for your field (e.g., make Reviewer 2 focus on clinical trial reporting standards).
 
 ---
 
 ## Workspace Save & Load
 
-**Save Workspace** (Download menu or `Ctrl+S`) exports a `.json` file containing:
+**Save Workspace** (`Ctrl+S` or Download menu) exports a `.json` file with:
 - Manuscript content (HTML)
 - All suggestions (pending and applied)
 - Chat history
 - AI settings
-- Uploaded PDF sources (text + AI digest)
+- All uploaded sources (text + AI digest + matched metadata)
 
-**Load Workspace** restores everything including PDF sources.
+**Load Workspace** restores everything, including sources, in one step.
 
 ---
 
@@ -187,18 +291,20 @@ Click **⚙ Settings** (bottom-left) to configure:
 
 ```
 src/
-├── App.tsx                     # Layout, state, analysis orchestration
+├── App.tsx                     # Root layout, state, analysis orchestration, citation registry
 ├── components/
-│   ├── Editor.tsx              # TipTap editor, bubble menu, highlight click
-│   ├── Sidebar.tsx             # Chat, suggestions, history, PDF sources
+│   ├── Editor.tsx              # TipTap editor, bubble menu, @ citation picker, section navigation
+│   ├── Sidebar.tsx             # Chat, suggestions, history, sources, reference manager
 │   ├── PostDraftingView.tsx    # Rebuttal & cover letter generator
-│   └── SettingsModal.tsx       # Provider & agent prompt customization
+│   └── SettingsModal.tsx       # Provider config & agent prompt customization
 ├── services/
-│   └── ai.ts                   # All LLM calls, agent prompts, judge agent
-├── extensions/
-│   └── GrammarChecker.ts       # TipTap extension for grammar underlines
-├── types.ts                    # TypeScript interfaces
-└── index.css                   # Design system (light/dark, editor styles)
+│   ├── ai.ts                   # All LLM calls, agent prompts, judge agent, digest functions
+│   ├── manuscriptSearch.ts     # manuscript-search.org API client (semantic search)
+│   └── citations.ts            # BibTeX parsing, citation cross-check, bibliography formatter
+├── types.ts                    # TypeScript interfaces (ManuscriptSource, AISettings, Suggestion…)
+└── index.css                   # Design system (CSS variables, light/dark, editor styles)
+electron/
+└── main.ts                     # Electron main process, IPC handlers, CORS-free net requests
 ```
 
 ---
@@ -209,8 +315,25 @@ src/
 |----------|--------|
 | `Ctrl+S` | Save workspace |
 | `Ctrl+Shift+A` | Analyze with all agents |
-| `Ctrl+?` | Show shortcuts |
-| `Ctrl+B/I/U` | Bold / Italic / Underline |
+| `Ctrl+?` | Show keyboard shortcuts |
+| `Ctrl+B` / `I` / `U` | Bold / Italic / Underline |
+| `@` (in editor) | Open citation picker |
+
+---
+
+## Architecture Notes
+
+### CORS in the Browser Build
+
+The semantic search API is called over HTTPS (`manuscript-search.org`). In the Electron desktop build, requests go through the main process `net` module which bypasses CORS entirely. In the browser build, standard `fetch` is used — the server must send appropriate CORS headers.
+
+### Citation Renumbering
+
+`[N]` markers are plain text nodes in the TipTap document. On insert or renumber, the app scans the full editor HTML in document order, collects all `[N]` patterns, builds an ordered mapping (first occurrence = 1, second = 2, …), rewrites the HTML, and updates the citation registry. This is done synchronously with an `isRenumbering` guard to prevent re-entrant updates.
+
+### Source Digest vs. Manuscript Context
+
+The `digestApiSource()` function generates source summaries **without** including your current manuscript in the prompt. This is deliberate — early testing showed that when both the manuscript and a noisy PDF were sent together, the LLM defaulted to summarizing the cleaner manuscript text instead of the reference. The digest is a standalone scholarly summary of the uploaded source only.
 
 ---
 
