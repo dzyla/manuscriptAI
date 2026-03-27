@@ -307,19 +307,30 @@ export default function App() {
     const userMsg: Message = { id: Date.now().toString(), role: 'user', content: text };
     setMessages(prev => [...prev, userMsg]);
 
-    // Prepend current section context so the LLM knows where the user is working
-    const currentSection = editorRef.current?.getCurrentSection();
-    const sourcesWithContext = attachedSources ? [...attachedSources] : [];
-    if (currentSection) {
-      sourcesWithContext.unshift({ name: 'Editor Context', text: `The user is currently editing the "${currentSection}" section of the manuscript.` });
+    // Resolve manuscript scope: __full__ sends full text, __section__ sends current section only
+    const fullText = stripHtml(editorRef.current?.getHTML() || content);
+    const extraSources = (attachedSources || []).filter(s => s.name !== '__full__' && s.name !== '__section__');
+
+    const hasFullScope   = attachedSources?.some(s => s.name === '__full__');
+    const hasSectionScope = attachedSources?.some(s => s.name === '__section__');
+    const sectionText = hasSectionScope ? editorRef.current?.getCurrentSectionText() : null;
+    const sectionTitle = hasSectionScope ? editorRef.current?.getCurrentSection() : null;
+
+    // Build the manuscript context to pass as the primary text argument
+    let manuscriptArg = fullText; // default: always send full (for agent context)
+    const sourcesWithContext: Array<{ name: string; text: string }> = [...extraSources];
+
+    if (hasSectionScope && sectionText) {
+      sourcesWithContext.unshift({ name: `Section: ${sectionTitle ?? 'Current'}`, text: sectionText });
+    } else if (hasFullScope || (!hasFullScope && !hasSectionScope)) {
+      sourcesWithContext.unshift({ name: 'Full Manuscript', text: fullText });
     }
 
     setIsAnalyzing(true);
     try {
-      const plainText = stripHtml(editorRef.current?.getHTML() || content);
       const result = agent === 'manuscript-ai'
-        ? await chatWithManuscript(text, plainText, aiSettings, sourcesWithContext.length > 0 ? sourcesWithContext : undefined)
-        : await chatWithAgent(text, plainText, agent, aiSettings, sourcesWithContext.length > 0 ? sourcesWithContext : undefined);
+        ? await chatWithManuscript(text, manuscriptArg, aiSettings, sourcesWithContext.length > 0 ? sourcesWithContext : undefined)
+        : await chatWithAgent(text, manuscriptArg, agent, aiSettings, sourcesWithContext.length > 0 ? sourcesWithContext : undefined);
       const suggestions: Suggestion[] | undefined = 'suggestions' in result ? (result as any).suggestions : undefined;
       const assistantMsg: Message = {
         id: (Date.now() + 1).toString(),

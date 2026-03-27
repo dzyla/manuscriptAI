@@ -47,6 +47,7 @@ export interface EditorRef {
   setContent: (html: string) => void;
   getSelectedText: () => string;
   getCurrentSection: () => string | null;
+  getCurrentSectionText: () => string | null;
   scrollToHeading: (headingText: string) => void;
 }
 
@@ -486,6 +487,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
     },
     getSelectedText,
     getCurrentSection: () => currentSectionTitle,
+    getCurrentSectionText: () => currentSectionTitle ? getSectionText(currentSectionTitle) : null,
     scrollToHeading: (headingText: string) => {
       if (!editor) return;
       let targetPos: number | null = null;

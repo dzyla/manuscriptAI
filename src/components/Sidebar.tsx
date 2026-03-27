@@ -136,7 +136,7 @@ export default function Sidebar({
   const [input, setInput] = useState('');
   const [rebuttalTexts, setRebuttalTexts] = useState<Record<string, string>>({});
   const [showSourcePicker, setShowSourcePicker] = useState(false);
-  const [attachedSourceIds, setAttachedSourceIds] = useState<Set<string>>(new Set(['__manuscript__']));
+  const [attachedSourceIds, setAttachedSourceIds] = useState<Set<string>>(new Set(['__full__']));
   const sourcePickerRef = useRef<HTMLDivElement>(null);
   const [activeTab, setActiveTabLocal] = useState<'chat' | 'suggestions' | 'history' | 'sources' | 'outline'>('chat');
   const [sources, setSources] = useState<ManuscriptSource[]>([]);
@@ -449,9 +449,9 @@ export default function Sidebar({
   const handleSend = () => {
     if (!input.trim()) return;
     const attached: Array<{ name: string; text: string }> = [];
-    if (attachedSourceIds.has('__manuscript__') && manuscriptContent) {
-      attached.push({ name: 'Current Manuscript', text: manuscriptContent });
-    }
+    // Scope sentinels — resolved to actual text by App.tsx handleSendMessage
+    if (attachedSourceIds.has('__full__'))    attached.push({ name: '__full__',    text: '' });
+    if (attachedSourceIds.has('__section__')) attached.push({ name: '__section__', text: '' });
     sources.forEach(src => {
       if (attachedSourceIds.has(src.id)) {
         attached.push({ name: src.name, text: src.text });
@@ -1641,20 +1641,15 @@ export default function Sidebar({
           {activeTab === 'chat' && (
             <div className="flex items-center gap-1 flex-wrap">
               <span className="text-[9px] font-bold uppercase tracking-widest shrink-0" style={{ color: 'var(--text-muted)' }}>Context:</span>
-              {attachedSourceIds.has('__manuscript__') && (
-                <span className="text-[9px] px-1.5 py-0.5 rounded-full font-medium border" style={{ background: 'var(--surface-3)', color: 'var(--text-secondary)', borderColor: 'var(--border)' }}>Manuscript</span>
+              {attachedSourceIds.has('__full__') && (
+                <span className="text-[9px] px-1.5 py-0.5 rounded-full font-medium border" style={{ background: 'var(--surface-3)', color: 'var(--text-secondary)', borderColor: 'var(--border)' }}>Full Manuscript</span>
+              )}
+              {attachedSourceIds.has('__section__') && (
+                <span className="text-[9px] px-1.5 py-0.5 rounded-full font-medium border" style={{ background: '#fef9c3', color: '#854d0e', borderColor: '#fde68a' }}>Current Section</span>
               )}
               {sources.filter(s => attachedSourceIds.has(s.id)).map(s => (
                 <span key={s.id} className="text-[9px] px-1.5 py-0.5 rounded-full font-medium truncate max-w-[110px] border" style={{ background: 'var(--accent-blue-soft)', color: 'var(--accent-blue)', borderColor: 'rgba(59,111,212,0.25)' }} title={s.name}>{s.name}</span>
               ))}
-              {!attachedSourceIds.has('__manuscript__') && attachedSourceIds.size > 0 && (
-                <button
-                  className="text-[9px] px-1.5 py-0.5 rounded-full font-medium ml-auto shrink-0"
-                  style={{ background: 'var(--surface-3)', color: 'var(--text-muted)', border: '1px dashed var(--border)' }}
-                  onClick={() => setAttachedSourceIds(prev => { const n = new Set(prev); n.add('__manuscript__'); return n; })}
-                  title="Add manuscript back to context"
-                >+ manuscript</button>
-              )}
               {attachedSourceIds.size === 0 && (
                 <span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>none — use + to attach</span>
               )}
@@ -1685,7 +1680,7 @@ export default function Sidebar({
                 <button
                   onClick={() => setShowSourcePicker(p => !p)}
                   className="p-2 rounded-lg transition-all hover:bg-stone-200"
-                  style={{ color: attachedSourceIds.size > 1 || (attachedSourceIds.size === 1 && !attachedSourceIds.has('__manuscript__')) ? 'var(--accent-blue)' : 'var(--text-muted)' }}
+                  style={{ color: sources.some(s => attachedSourceIds.has(s.id)) ? 'var(--accent-blue)' : 'var(--text-muted)' }}
                   title="Attach context sources"
                 >
                   <Plus size={14} />
@@ -1694,20 +1689,41 @@ export default function Sidebar({
                   <div className="absolute bottom-full right-0 mb-1 border rounded-xl shadow-xl z-50 overflow-hidden w-64" style={{ background: 'var(--surface-1)', borderColor: 'var(--border)' }}>
                     <p className="text-[9px] font-bold uppercase tracking-widest px-3 py-2 border-b" style={{ color: 'var(--text-muted)', borderColor: 'var(--border)' }}>Attach context</p>
                     <div className="max-h-64 overflow-y-auto p-1">
-                      {/* Current manuscript */}
+                      {/* Manuscript scope — mutually exclusive */}
+                      <div className="px-2 pt-1 pb-0.5">
+                        <p className="text-[9px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>Manuscript scope</p>
+                      </div>
                       <button
                         className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-stone-100 transition-colors"
-                        onClick={() => setAttachedSourceIds(prev => { const next = new Set(prev); if (next.has('__manuscript__')) next.delete('__manuscript__'); else next.add('__manuscript__'); return next; })}
+                        onClick={() => setAttachedSourceIds(prev => { const next = new Set(prev); next.delete('__section__'); if (next.has('__full__')) next.delete('__full__'); else next.add('__full__'); return next; })}
                       >
-                        <span className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${attachedSourceIds.has('__manuscript__') ? 'bg-stone-800 border-stone-800' : ''}`} style={{ borderColor: 'var(--border)' }}>
-                          {attachedSourceIds.has('__manuscript__') && <Check size={9} className="text-white" />}
+                        <span className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${attachedSourceIds.has('__full__') ? 'bg-stone-800 border-stone-800' : ''}`} style={{ borderColor: 'var(--border)' }}>
+                          {attachedSourceIds.has('__full__') && <Check size={9} className="text-white" />}
                         </span>
                         <FileText size={11} className="shrink-0" style={{ color: 'var(--text-muted)' }} />
                         <div className="flex-1 min-w-0 text-left">
-                          <p className="text-[11px] font-medium truncate" style={{ color: 'var(--text-primary)' }}>Current Manuscript</p>
+                          <p className="text-[11px] font-medium" style={{ color: 'var(--text-primary)' }}>Full Manuscript</p>
+                          <p className="text-[9px]" style={{ color: 'var(--text-muted)' }}>Send the entire document</p>
                         </div>
-                        <span className="text-[9px] shrink-0 px-1.5 py-0.5 rounded" style={{ background: 'var(--surface-2)', color: 'var(--text-muted)' }}>default</span>
                       </button>
+                      <button
+                        className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-stone-100 transition-colors"
+                        onClick={() => setAttachedSourceIds(prev => { const next = new Set(prev); next.delete('__full__'); if (next.has('__section__')) next.delete('__section__'); else next.add('__section__'); return next; })}
+                      >
+                        <span className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${attachedSourceIds.has('__section__') ? 'bg-stone-800 border-stone-800' : ''}`} style={{ borderColor: 'var(--border)' }}>
+                          {attachedSourceIds.has('__section__') && <Check size={9} className="text-white" />}
+                        </span>
+                        <List size={11} className="shrink-0" style={{ color: '#854d0e' }} />
+                        <div className="flex-1 min-w-0 text-left">
+                          <p className="text-[11px] font-medium" style={{ color: 'var(--text-primary)' }}>Current Section</p>
+                          <p className="text-[9px]" style={{ color: 'var(--text-muted)' }}>Only the section at the cursor</p>
+                        </div>
+                      </button>
+                      {sources.filter(s => s.type === 'pdf' || s.type === 'api').length > 0 && (
+                        <div className="px-2 pt-2 pb-0.5 border-t mt-1" style={{ borderColor: 'var(--border)' }}>
+                          <p className="text-[9px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>Additional sources</p>
+                        </div>
+                      )}
 
                       {/* PDF and API sources */}
                       {sources.filter(s => s.type === 'pdf' || s.type === 'api').map(src => {
