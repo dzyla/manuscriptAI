@@ -6,15 +6,18 @@ import Highlight from '@tiptap/extension-highlight';
 import Underline from '@tiptap/extension-underline';
 import TextAlign from '@tiptap/extension-text-align';
 import Link from '@tiptap/extension-link';
+import { TableKit } from '@tiptap/extension-table';
 import { forwardRef, useImperativeHandle, useEffect, useState, useRef, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { AgentType, Suggestion, ManuscriptSource } from '../types';
 import { GrammarChecker } from '../extensions/GrammarChecker';
+import { ResizableImage } from '../extensions/ResizableImage';
 import {
   Bold, Italic, Underline as UnderlineIcon, List, ListOrdered,
   AlignLeft, AlignCenter, AlignRight, AlignJustify, Quote, Heading2,
-  Heading3, Undo, Redo, Clock, Sparkles, PenLine, FlaskConical, Beaker, Send, MessageSquare, BookOpen, RefreshCw, FileSearch, Search
+  Heading3, Undo, Redo, Clock, Sparkles, PenLine, FlaskConical, Beaker, Send, MessageSquare, BookOpen, RefreshCw, FileSearch, Search,
+  Table as TableIcon, ImagePlus, Menu, X, ScanEye, Trash2, ShieldCheck, Eye as EyeIcon
 } from 'lucide-react';
-import { createPortal } from 'react-dom';
 import { getThesaurus } from '../services/ai';
 import { AISettings } from '../types';
 
@@ -37,6 +40,7 @@ interface EditorProps {
   editorWidth?: 'normal' | 'wide' | 'full';
   currentAgent?: AgentType;
   aiSettings?: AISettings;
+  onAnalyzeImage?: (dataUrl: string, prompt: string, contextText?: string) => void;
 }
 
 export interface EditorRef {
@@ -139,7 +143,7 @@ const BUBBLE_ACTIONS: { label: string; instruction: string; agent: AgentType; ic
   },
 ];
 
-const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggestions, onSuggestionClick, onSelectionQuery, onTransformSelection, onRewriteSection, onAnalyzeSection, onVerifyClaim, onSearchSimilar, sources, citationRegistry, onInsertCitation, isDistractionFree, editorZoom = 100, editorWidth = 'normal', aiSettings }, ref) => {
+const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggestions, onSuggestionClick, onSelectionQuery, onTransformSelection, onRewriteSection, onAnalyzeSection, onVerifyClaim, onSearchSimilar, sources, citationRegistry, onInsertCitation, isDistractionFree, editorZoom = 100, editorWidth = 'normal', aiSettings, onAnalyzeImage }, ref) => {
   const [isMounted, setIsMounted] = useState(false);
   const [showSelectionBar, setShowSelectionBar] = useState(false);
   const [selectionInstruction, setSelectionInstruction] = useState('');
@@ -156,6 +160,17 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
   const atInsertPos = useRef(-1);
   const showCitationPickerRef = useRef(false);
   showCitationPickerRef.current = !!citationPicker;
+  const [showTablePicker, setShowTablePicker] = useState(false);
+  const [tablePickerPos, setTablePickerPos] = useState<{ x: number; y: number } | null>(null);
+  const [tableHover, setTableHover] = useState<{ rows: number; cols: number }>({ rows: 0, cols: 0 });
+  const tableButtonRef = useRef<HTMLButtonElement>(null);
+  const [tableContextMenu, setTableContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const [showToolbar, setShowToolbar] = useState(false);
+  const selectedTextRef = useRef('');
+  const [showAskInput, setShowAskInput] = useState(false);
+  const [askInputValue, setAskInputValue] = useState('');
+  const askInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { setIsMounted(true); }, []);
 
@@ -168,6 +183,8 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
       TextAlign.configure({ types: ['heading', 'paragraph'] }),
       Link.configure({ openOnClick: false }),
       GrammarChecker,
+      TableKit.configure({ table: { resizable: true } }),
+      ResizableImage,
     ],
     content,
     onUpdate: ({ editor }) => {
@@ -180,6 +197,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
       const { from, to } = editor.state.selection;
       const hasSelection = from !== to;
       setShowSelectionBar(hasSelection);
+      selectedTextRef.current = hasSelection ? editor.state.doc.textBetween(from, to, ' ') : '';
       if (!hasSelection) {
         setThesaurusWord(null);
         setThesaurusSynonyms([]);
@@ -264,6 +282,93 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor?.state.selection.from, citationPicker]);
+
+  // Close table picker on click outside
+  useEffect(() => {
+    if (!showTablePicker) return;
+    const handler = (e: MouseEvent) => {
+      const picker = document.getElementById('table-picker-portal');
+      if (picker && !picker.contains(e.target as Node) &&
+          tableButtonRef.current && !tableButtonRef.current.contains(e.target as Node)) {
+        setShowTablePicker(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showTablePicker]);
+
+  // Right-click context menu for table editing
+  useEffect(() => {
+    if (!editor) return;
+    const editorEl = editor.view.dom;
+    const handleContextMenu = (e: MouseEvent) => {
+      if (!editor.isActive('tableCell') && !editor.isActive('tableHeader')) return;
+      e.preventDefault();
+      setTableContextMenu({ x: e.clientX, y: e.clientY });
+    };
+    const handleMouseDown = (e: MouseEvent) => {
+      if (tableContextMenu) {
+        const menu = document.getElementById('table-context-menu');
+        if (menu && !menu.contains(e.target as Node)) setTableContextMenu(null);
+      }
+    };
+    editorEl.addEventListener('contextmenu', handleContextMenu);
+    document.addEventListener('mousedown', handleMouseDown);
+    return () => {
+      editorEl.removeEventListener('contextmenu', handleContextMenu);
+      document.removeEventListener('mousedown', handleMouseDown);
+    };
+  }, [editor, tableContextMenu]);
+
+  const openTablePicker = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (showTablePicker) { setShowTablePicker(false); return; }
+    const rect = tableButtonRef.current?.getBoundingClientRect();
+    if (rect) setTablePickerPos({ x: rect.left, y: rect.bottom + 4 });
+    setShowTablePicker(true);
+  };
+
+  const insertTable = (rows: number, cols: number) => {
+    if (!editor) return;
+    setShowTablePicker(false);
+    setTableHover({ rows: 0, cols: 0 });
+    // Delay to let picker close and allow editor to be ready
+    setTimeout(() => {
+      editor.commands.focus();
+      editor.commands.insertTable({ rows, cols, withHeaderRow: true });
+    }, 50);
+  };
+
+  const insertImageFromFile = async (file: File) => {
+    if (!editor) return;
+    const buffer = await file.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    bytes.forEach(b => { binary += String.fromCharCode(b); });
+    const base64 = btoa(binary);
+    const dataUrl = `data:${file.type};base64,${base64}`;
+    (editor.chain().focus() as any).insertResizableImage({ src: dataUrl, alt: file.name, width: '100%', align: 'center' }).run();
+  };
+
+  /**
+   * Returns context text only when the user has explicitly selected text that
+   * spans the image (e.g. dragged over the figure + its legend).
+   * Never auto-extracts nearby paragraphs — that caused unexpected text in chat.
+   */
+  const getImageContext = (): string => {
+    if (!editor) return '';
+    const { from, to } = editor.state.selection;
+    // Only provide context for a real multi-node selection (not a plain NodeSelection)
+    if (from === to) return '';
+    const parts: string[] = [];
+    editor.state.doc.nodesBetween(from, to, node => {
+      if (node.type.name === 'resizableImage') return false;
+      if (node.isText && node.text) parts.push(node.text);
+      return true;
+    });
+    return parts.join(' ').replace(/\s+/g, ' ').trim();
+  };
 
   // Sync content from parent
   useEffect(() => {
@@ -527,9 +632,19 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
     readingTime: Math.ceil(wordCount / 200),
   };
 
-  const ToolbarButton = ({ onClick, isActive = false, children, title }: any) => (
-    <button onClick={onClick} title={title}
-      className={`p-1.5 rounded transition-colors ${isActive ? 'bg-stone-200 text-stone-900' : 'text-stone-500 hover:bg-stone-100'}`}
+  const ToolbarButton = ({ onClick, onMouseDown, isActive = false, children, title }: any) => (
+    <button
+      onClick={onClick}
+      onMouseDown={onMouseDown}
+      title={title}
+      className="p-1.5 rounded transition-colors shrink-0"
+      style={{
+        background: isActive ? 'var(--surface-3, var(--surface-2))' : 'transparent',
+        color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
+        outline: isActive ? '1px solid var(--border)' : 'none',
+      }}
+      onMouseEnter={e => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = 'var(--surface-2)'; }}
+      onMouseLeave={e => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; }}
     >{children}</button>
   );
 
@@ -539,29 +654,70 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
     <div className={`w-full ${widthClass} mx-auto ${isDistractionFree ? 'focus-mode' : ''}`}>
       <div className="bg-[var(--editor-bg)] min-h-[600px] shadow-[var(--editor-shadow)] rounded-sm border border-[var(--border-subtle)] transition-colors duration-300">
         
-        {/* Floating Toolbar (Portal) */}
-        {isMounted && createPortal(
-          <div className="flex items-center gap-0.5 bg-[var(--surface-1)] border border-[var(--border)] rounded-lg p-1 shadow-sm flex-wrap justify-end">
-            <ToolbarButton onClick={() => editor.chain().focus().toggleBold().run()} isActive={editor.isActive('bold')} title="Bold"><Bold size={15} /></ToolbarButton>
-            <ToolbarButton onClick={() => editor.chain().focus().toggleItalic().run()} isActive={editor.isActive('italic')} title="Italic"><Italic size={15} /></ToolbarButton>
-            <ToolbarButton onClick={() => editor.chain().focus().toggleUnderline().run()} isActive={editor.isActive('underline')} title="Underline"><UnderlineIcon size={15} /></ToolbarButton>
-            <div className="w-px h-4 bg-stone-200 mx-0.5" />
-            <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()} isActive={editor.isActive('heading', { level: 2 })} title="H2"><Heading2 size={15} /></ToolbarButton>
-            <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()} isActive={editor.isActive('heading', { level: 3 })} title="H3"><Heading3 size={15} /></ToolbarButton>
-            <div className="w-px h-4 bg-stone-200 mx-0.5" />
-            <ToolbarButton onClick={() => editor.chain().focus().toggleBulletList().run()} isActive={editor.isActive('bulletList')} title="List"><List size={15} /></ToolbarButton>
-            <ToolbarButton onClick={() => editor.chain().focus().toggleOrderedList().run()} isActive={editor.isActive('orderedList')} title="Numbers"><ListOrdered size={15} /></ToolbarButton>
-            <ToolbarButton onClick={() => editor.chain().focus().toggleBlockquote().run()} isActive={editor.isActive('blockquote')} title="Quote"><Quote size={15} /></ToolbarButton>
-            <div className="w-px h-4 bg-stone-200 mx-0.5" />
-            <ToolbarButton onClick={() => editor.chain().focus().setTextAlign('left').run()} isActive={editor.isActive({ textAlign: 'left' })} title="Left"><AlignLeft size={15} /></ToolbarButton>
-            <ToolbarButton onClick={() => editor.chain().focus().setTextAlign('center').run()} isActive={editor.isActive({ textAlign: 'center' })} title="Center"><AlignCenter size={15} /></ToolbarButton>
-            <ToolbarButton onClick={() => editor.chain().focus().setTextAlign('justify').run()} isActive={editor.isActive({ textAlign: 'justify' })} title="Justify"><AlignJustify size={15} /></ToolbarButton>
-            <div className="w-px h-4 bg-stone-200 mx-0.5" />
-            <ToolbarButton onClick={() => editor.chain().focus().undo().run()} title="Undo"><Undo size={15} /></ToolbarButton>
-            <ToolbarButton onClick={() => editor.chain().focus().redo().run()} title="Redo"><Redo size={15} /></ToolbarButton>
-          </div>,
-          document.getElementById('toolbar-portal') || document.body
-        )}
+        {/* Sticky Toolbar */}
+        <div className="sticky top-0 z-20 flex flex-col" style={{ background: 'var(--surface-1)', borderBottom: '1px solid var(--border)' }}>
+          {/* Mobile toggle row */}
+          <div className="flex sm:hidden items-center justify-between px-2 py-1">
+            <span className="text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>Toolbar</span>
+            <button
+              onMouseDown={e => e.preventDefault()}
+              onClick={() => setShowToolbar(p => !p)}
+              className="p-1.5 rounded hover:bg-stone-100 transition-colors"
+              style={{ color: 'var(--text-secondary)' }}
+            >
+              {showToolbar ? <X size={14} /> : <Menu size={14} />}
+            </button>
+          </div>
+          {/* Toolbar buttons — always visible on sm+, toggled on mobile */}
+          <div className={`${showToolbar ? 'flex' : 'hidden'} sm:flex items-center gap-0.5 px-2 py-1 overflow-x-auto`} style={{ scrollbarWidth: 'none' }}>
+            <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().toggleBold().run(); }} isActive={editor.isActive('bold')} title="Bold"><Bold size={14} /></ToolbarButton>
+            <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().toggleItalic().run(); }} isActive={editor.isActive('italic')} title="Italic"><Italic size={14} /></ToolbarButton>
+            <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().toggleUnderline().run(); }} isActive={editor.isActive('underline')} title="Underline"><UnderlineIcon size={14} /></ToolbarButton>
+            <div className="w-px h-4 mx-0.5 shrink-0" style={{ background: 'var(--border)' }} />
+            <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().toggleHeading({ level: 2 }).run(); }} isActive={editor.isActive('heading', { level: 2 })} title="Heading 2"><Heading2 size={14} /></ToolbarButton>
+            <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().toggleHeading({ level: 3 }).run(); }} isActive={editor.isActive('heading', { level: 3 })} title="Heading 3"><Heading3 size={14} /></ToolbarButton>
+            <div className="w-px h-4 mx-0.5 shrink-0" style={{ background: 'var(--border)' }} />
+            <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().toggleBulletList().run(); }} isActive={editor.isActive('bulletList')} title="Bullet list"><List size={14} /></ToolbarButton>
+            <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().toggleOrderedList().run(); }} isActive={editor.isActive('orderedList')} title="Numbered list"><ListOrdered size={14} /></ToolbarButton>
+            <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().toggleBlockquote().run(); }} isActive={editor.isActive('blockquote')} title="Blockquote"><Quote size={14} /></ToolbarButton>
+            <div className="w-px h-4 mx-0.5 shrink-0" style={{ background: 'var(--border)' }} />
+            <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().setTextAlign('left').run(); }} isActive={editor.isActive({ textAlign: 'left' })} title="Align left"><AlignLeft size={14} /></ToolbarButton>
+            <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().setTextAlign('center').run(); }} isActive={editor.isActive({ textAlign: 'center' })} title="Center"><AlignCenter size={14} /></ToolbarButton>
+            <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().setTextAlign('justify').run(); }} isActive={editor.isActive({ textAlign: 'justify' })} title="Justify"><AlignJustify size={14} /></ToolbarButton>
+            <div className="w-px h-4 mx-0.5 shrink-0" style={{ background: 'var(--border)' }} />
+            {/* Table picker button */}
+            <button
+              ref={tableButtonRef}
+              onMouseDown={openTablePicker}
+              title="Insert table"
+              className="p-1.5 rounded transition-colors shrink-0"
+              style={{
+                background: showTablePicker ? 'var(--surface-2)' : 'transparent',
+                color: showTablePicker ? 'var(--text-primary)' : 'var(--text-secondary)',
+                outline: showTablePicker ? '1px solid var(--border)' : 'none',
+              }}
+            >
+              <TableIcon size={14} />
+            </button>
+            {/* Image insert */}
+            <div className="shrink-0">
+              <input
+                ref={imageInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/gif"
+                className="hidden"
+                onChange={e => {
+                  const file = e.target.files?.[0];
+                  if (file) { insertImageFromFile(file); e.target.value = ''; }
+                }}
+              />
+              <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); imageInputRef.current?.click(); }} title="Insert figure / image"><ImagePlus size={14} /></ToolbarButton>
+            </div>
+            <div className="w-px h-4 mx-0.5 shrink-0" style={{ background: 'var(--border)' }} />
+            <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().undo().run(); }} title="Undo"><Undo size={14} /></ToolbarButton>
+            <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().redo().run(); }} title="Redo"><Redo size={14} /></ToolbarButton>
+          </div>
+        </div>
 
         <div
           className="px-8 sm:px-12 md:px-16 py-12 md:py-20"
@@ -607,24 +763,34 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
       </div>
 
       {/* Enhanced Bubble Menu — formatting + AI actions when text is selected */}
-      <BubbleMenu editor={editor}>
+      <BubbleMenu
+        editor={editor}
+        shouldShow={({ editor: e, from, to }) => {
+          if (e.isActive('resizableImage')) return false;
+          // Suppress text menu if selection spans an image node
+          let hasImg = false;
+          if (from !== to) e.state.doc.nodesBetween(from, to, n => { if (n.type.name === 'resizableImage') { hasImg = true; return false; } return true; });
+          return !hasImg && from !== to;
+        }}
+      >
         <div className="bg-stone-900 text-white rounded-xl shadow-2xl border border-stone-700 overflow-hidden" style={{ maxWidth: '480px' }}>
           {/* Formatting row */}
           <div className="flex items-center gap-0.5 p-1 border-b border-stone-700 flex-wrap">
-            <button onClick={() => editor.chain().focus().toggleBold().run()} className={`p-1.5 rounded hover:bg-stone-800 ${editor.isActive('bold') ? 'text-blue-400' : ''}`}><Bold size={14} /></button>
-            <button onClick={() => editor.chain().focus().toggleItalic().run()} className={`p-1.5 rounded hover:bg-stone-800 ${editor.isActive('italic') ? 'text-blue-400' : ''}`}><Italic size={14} /></button>
-            <button onClick={() => editor.chain().focus().toggleUnderline().run()} className={`p-1.5 rounded hover:bg-stone-800 ${editor.isActive('underline') ? 'text-blue-400' : ''}`}><UnderlineIcon size={14} /></button>
+            <button onMouseDown={e => { e.preventDefault(); editor.chain().focus().toggleBold().run(); }} className={`p-1.5 rounded hover:bg-stone-800 ${editor.isActive('bold') ? 'text-blue-400' : ''}`}><Bold size={14} /></button>
+            <button onMouseDown={e => { e.preventDefault(); editor.chain().focus().toggleItalic().run(); }} className={`p-1.5 rounded hover:bg-stone-800 ${editor.isActive('italic') ? 'text-blue-400' : ''}`}><Italic size={14} /></button>
+            <button onMouseDown={e => { e.preventDefault(); editor.chain().focus().toggleUnderline().run(); }} className={`p-1.5 rounded hover:bg-stone-800 ${editor.isActive('underline') ? 'text-blue-400' : ''}`}><UnderlineIcon size={14} /></button>
             <div className="w-px h-4 bg-stone-700 mx-1" />
             {BUBBLE_ACTIONS.map(action => (
               <button
                 key={action.label}
-                onClick={() => {
-                  const text = getSelectedText();
+                onMouseDown={e => {
+                  e.preventDefault();
+                  const text = selectedTextRef.current || getSelectedText();
                   if (!text) return;
                   if (action.mode === 'transform' && onTransformSelection) {
                     onTransformSelection(text, action.instruction, action.agent);
                   } else {
-                    handleSelectionSend(action.instruction, action.agent);
+                    onSelectionQuery?.(text, action.instruction, action.agent);
                   }
                 }}
                 className="px-2 py-1.5 rounded hover:bg-stone-800 text-[10px] font-medium flex items-center gap-1 whitespace-nowrap"
@@ -636,7 +802,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
             ))}
             <div className="w-px h-4 bg-stone-700 mx-1" />
             <button
-              onClick={() => { const text = getSelectedText(); if (text && onRewriteSection) onRewriteSection(text); }}
+              onMouseDown={e => { e.preventDefault(); const text = selectedTextRef.current || getSelectedText(); if (text && onRewriteSection) onRewriteSection(text); }}
               className="px-2 py-1.5 rounded hover:bg-stone-800 text-[10px] font-medium flex items-center gap-1 whitespace-nowrap text-amber-400"
               title="Rewrite and get accept/reject suggestion"
             >
@@ -644,7 +810,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
               Rewrite
             </button>
             <button
-              onClick={() => { const text = getSelectedText(); if (text && onVerifyClaim) onVerifyClaim(text); }}
+              onMouseDown={e => { e.preventDefault(); const text = selectedTextRef.current || getSelectedText(); if (text && onVerifyClaim) onVerifyClaim(text); }}
               className="px-2 py-1.5 rounded hover:bg-stone-800 text-[10px] font-medium flex items-center gap-1 whitespace-nowrap text-cyan-400"
               title="Verify this claim against uploaded PDF sources"
             >
@@ -652,7 +818,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
               Verify
             </button>
             <button
-              onClick={() => { const text = getSelectedText(); if (text && onSearchSimilar) onSearchSimilar(text); }}
+              onMouseDown={e => { e.preventDefault(); const text = selectedTextRef.current || getSelectedText(); if (text && onSearchSimilar) onSearchSimilar(text); }}
               className="px-2 py-1.5 rounded hover:bg-stone-800 text-[10px] font-medium flex items-center gap-1 whitespace-nowrap text-violet-400"
               title="Find similar published manuscripts for this selection"
             >
@@ -664,7 +830,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
               if (!sel || sel.includes(' ') || sel.length <= 1) return null;
               return (
                 <button
-                  onClick={handleThesaurus}
+                  onMouseDown={e => { e.preventDefault(); handleThesaurus(); }}
                   className="px-2 py-1.5 rounded hover:bg-stone-800 text-[10px] font-medium flex items-center gap-1 whitespace-nowrap text-green-400"
                   title="Find synonyms"
                 >
@@ -674,7 +840,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
               );
             })()}
             <button
-              onClick={() => { setShowSelectionBar(true); setTimeout(() => instructionInputRef.current?.focus(), 100); }}
+              onMouseDown={e => { e.preventDefault(); setShowSelectionBar(true); setTimeout(() => instructionInputRef.current?.focus(), 100); }}
               className="px-2 py-1.5 rounded hover:bg-stone-800 text-[10px] font-medium flex items-center gap-1"
               title="Custom instruction for selected text"
             >
@@ -729,7 +895,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
                 className="flex-1 bg-stone-800 text-white text-[11px] rounded px-2 py-1 border border-stone-600 focus:outline-none focus:border-stone-400 placeholder-stone-500 min-w-[160px]"
               />
               <button
-                onClick={() => handleSelectionSend(selectionInstruction || 'Suggest improvements for this text.', selectionAgent)}
+                onMouseDown={e => { e.preventDefault(); handleSelectionSend(selectionInstruction || 'Suggest improvements for this text.', selectionAgent); }}
                 className="p-1.5 rounded bg-blue-600 hover:bg-blue-500 transition-colors"
               >
                 <Send size={12} />
@@ -739,15 +905,290 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
         </div>
       </BubbleMenu>
 
+      {/* Image / Figure BubbleMenu — shows when image is selected, or when selection spans an image */}
+      <BubbleMenu
+        editor={editor}
+        shouldShow={({ editor: e, from, to }) => {
+          if (e.isActive('resizableImage')) return true;
+          let hasImg = false;
+          e.state.doc.nodesBetween(from, to, n => { if (n.type.name === 'resizableImage') { hasImg = true; return false; } return true; });
+          return hasImg;
+        }}
+        options={{ placement: 'top', offset: 8 }}
+      >
+        <div className="bg-stone-900 text-white rounded-xl shadow-2xl border border-stone-700 overflow-hidden" style={{ maxWidth: '520px' }}>
+          {/* Row 1: layout controls */}
+          <div className="flex items-center gap-0.5 p-1.5 border-b border-stone-700 flex-wrap">
+            <span className="text-[9px] uppercase tracking-widest text-stone-500 px-1">Align</span>
+            {(['left', 'center', 'right'] as const).map(a => (
+              <button
+                key={a}
+                onMouseDown={e => { e.preventDefault(); editor.commands.updateAttributes('resizableImage', { align: a }); }}
+                className={`px-2 py-1 rounded text-[10px] transition-colors ${editor.getAttributes('resizableImage').align === a ? 'bg-stone-600' : 'hover:bg-stone-700'}`}
+                title={`Align ${a}`}
+              >
+                {a === 'left' ? '◧' : a === 'center' ? '▣' : '◨'}
+              </button>
+            ))}
+            <div className="w-px h-4 bg-stone-700 mx-1 shrink-0" />
+            <span className="text-[9px] uppercase tracking-widest text-stone-500 px-1">Size</span>
+            {([['S', '25%'], ['M', '50%'], ['L', '75%'], ['Full', '100%']] as const).map(([label, w]) => (
+              <button
+                key={label}
+                onMouseDown={e => { e.preventDefault(); editor.commands.updateAttributes('resizableImage', { width: w }); }}
+                className="px-2 py-1 rounded text-[10px] hover:bg-stone-700 transition-colors"
+                title={`Set width to ${w}`}
+              >
+                {label}
+              </button>
+            ))}
+            <div className="w-px h-4 bg-stone-700 mx-1 shrink-0" />
+            <button
+              onMouseDown={e => { e.preventDefault(); editor.chain().focus().deleteSelection().run(); }}
+              className="px-2 py-1 rounded text-[10px] hover:bg-rose-700 transition-colors text-rose-400"
+              title="Delete figure"
+            >
+              <Trash2 size={11} />
+            </button>
+          </div>
+          {/* Row 2: AI actions */}
+          <div className="flex items-center gap-0.5 p-1.5 flex-wrap">
+            <span className="text-[9px] uppercase tracking-widest text-stone-500 px-1 shrink-0">Figure AI</span>
+            {/* Visual description — what you literally see */}
+            <button
+              onMouseDown={e => {
+                e.preventDefault();
+                const attrs = editor.getAttributes('resizableImage');
+                if (!attrs.src || !onAnalyzeImage) return;
+                onAnalyzeImage(
+                  attrs.src,
+                  'Describe what you can see in this figure purely visually: shapes, colors, spatial layout, objects, text labels, axes, legends, and any other visible elements. Do not interpret the scientific meaning — focus only on what is visually present.',
+                  getImageContext()
+                );
+              }}
+              className="px-2 py-1 rounded text-[10px] hover:bg-stone-700 transition-colors flex items-center gap-1 text-sky-400"
+              title="Visual description of what is seen in the figure"
+            >
+              <EyeIcon size={11} />
+              Describe
+            </button>
+            {/* Integrity check — quality, spelling, colors, readability */}
+            <button
+              onMouseDown={e => {
+                e.preventDefault();
+                const attrs = editor.getAttributes('resizableImage');
+                if (!attrs.src || !onAnalyzeImage) return;
+                onAnalyzeImage(
+                  attrs.src,
+                  'Review this figure for visual integrity and quality issues. Check: (1) Is the resolution sufficient for publication? (2) Are all text labels, axis titles, and legends readable? (3) Check spelling of any text visible in the figure. (4) Are colors distinguishable (colorblind-friendly)? (5) Are there any visual artifacts, blurriness, or distortions? (6) Are axes properly labeled with units? (7) Is the overall layout clear and uncluttered? List each issue found with a specific recommendation.',
+                  getImageContext()
+                );
+              }}
+              className="px-2 py-1 rounded text-[10px] hover:bg-stone-700 transition-colors flex items-center gap-1 text-emerald-400"
+              title="Check figure quality, spelling, colors, readability"
+            >
+              <ShieldCheck size={11} />
+              Integrity
+            </button>
+            {/* Manuscript review — how well it supports the surrounding text */}
+            <button
+              onMouseDown={e => {
+                e.preventDefault();
+                const attrs = editor.getAttributes('resizableImage');
+                if (!attrs.src || !onAnalyzeImage) return;
+                onAnalyzeImage(
+                  attrs.src,
+                  'Review this figure in the context of the surrounding manuscript text. Does the figure clearly support the claims made in the text? Is it self-explanatory? Would a peer reviewer find it clear and convincing? What improvements would make it more effective for the manuscript?',
+                  getImageContext()
+                );
+              }}
+              className="px-2 py-1 rounded text-[10px] hover:bg-stone-700 transition-colors flex items-center gap-1 text-amber-400"
+              title="Review figure relevance and clarity in context of manuscript"
+            >
+              <FlaskConical size={11} />
+              Review
+            </button>
+            {/* Ask / custom */}
+            <button
+              onMouseDown={e => {
+                e.preventDefault();
+                setShowAskInput(p => !p);
+                setAskInputValue('');
+                setTimeout(() => askInputRef.current?.focus(), 50);
+              }}
+              className={`px-2 py-1 rounded text-[10px] transition-colors flex items-center gap-1 text-violet-400 ${showAskInput ? 'bg-stone-700' : 'hover:bg-stone-700'}`}
+              title="Ask a custom question about this figure"
+            >
+              <MessageSquare size={11} />
+              Ask
+            </button>
+          </div>
+          {/* Inline ask input */}
+          {showAskInput && (
+            <div className="flex items-center gap-1 px-1.5 pb-1.5">
+              <input
+                ref={askInputRef}
+                value={askInputValue}
+                onChange={e => setAskInputValue(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && askInputValue.trim()) {
+                    e.preventDefault();
+                    const attrs = editor.getAttributes('resizableImage');
+                    if (attrs.src && onAnalyzeImage) {
+                      onAnalyzeImage(attrs.src, askInputValue.trim(), getImageContext() || undefined);
+                    }
+                    setShowAskInput(false);
+                    setAskInputValue('');
+                  } else if (e.key === 'Escape') {
+                    setShowAskInput(false);
+                    setAskInputValue('');
+                  }
+                }}
+                placeholder="Ask about this figure… (Enter to send)"
+                className="flex-1 bg-stone-800 text-white text-[11px] rounded px-2 py-1 border border-stone-600 focus:outline-none focus:border-stone-400 placeholder-stone-500 min-w-[200px]"
+              />
+              <button
+                onMouseDown={e => {
+                  e.preventDefault();
+                  if (!askInputValue.trim()) return;
+                  const attrs = editor.getAttributes('resizableImage');
+                  if (attrs.src && onAnalyzeImage) {
+                    onAnalyzeImage(attrs.src, askInputValue.trim(), getImageContext() || undefined);
+                  }
+                  setShowAskInput(false);
+                  setAskInputValue('');
+                }}
+                className="p-1.5 rounded bg-violet-600 hover:bg-violet-500 transition-colors"
+              >
+                <Send size={11} />
+              </button>
+            </div>
+          )}
+          {/* Context hint — only show when text is selected around the figure */}
+          {getImageContext().length > 0 && (
+            <div className="px-2 pb-1.5">
+              <p className="text-[9px] text-stone-500">
+                Context: "{getImageContext().substring(0, 70)}{getImageContext().length > 70 ? '…' : ''}"
+              </p>
+            </div>
+          )}
+        </div>
+      </BubbleMenu>
+
+      {/* Table grid picker — position:fixed escapes overflow clipping */}
+      {showTablePicker && tablePickerPos && (
+        <div
+          id="table-picker-portal"
+          className="rounded-lg shadow-xl p-2.5"
+          style={{
+            position: 'fixed',
+            zIndex: 9999,
+            left: tablePickerPos.x,
+            top: tablePickerPos.y,
+            background: 'var(--surface-1)',
+            border: '1px solid var(--border)',
+          }}
+          onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
+        >
+          <p className="text-[9px] font-bold uppercase tracking-widest mb-2" style={{ color: 'var(--text-muted)' }}>
+            {tableHover.rows > 0 ? `${tableHover.rows} × ${tableHover.cols} table` : 'Insert table'}
+          </p>
+          <div style={{ display: 'grid', gap: '4px', gridTemplateColumns: 'repeat(6, 20px)' }}>
+            {(() => {
+              const cells = [];
+              for (let r = 0; r < 6; r++) {
+                for (let c = 0; c < 6; c++) {
+                  const highlighted = r < tableHover.rows && c < tableHover.cols;
+                  cells.push(
+                    <div
+                      key={`${r}-${c}`}
+                      onMouseEnter={() => setTableHover({ rows: r + 1, cols: c + 1 })}
+                      onMouseLeave={() => setTableHover({ rows: 0, cols: 0 })}
+                      onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); insertTable(r + 1, c + 1); }}
+                      style={{
+                        width: 20,
+                        height: 20,
+                        border: `1px solid ${highlighted ? 'var(--accent-blue)' : 'var(--border)'}`,
+                        background: highlighted ? 'rgba(59,111,212,0.2)' : 'var(--surface-2)',
+                        borderRadius: 2,
+                        cursor: 'pointer',
+                      }}
+                    />
+                  );
+                }
+              }
+              return cells;
+            })()}
+          </div>
+        </div>
+      )}
+
+      {/* Table right-click context menu */}
+      {tableContextMenu && (
+        <div
+          id="table-context-menu"
+          style={{
+            position: 'fixed',
+            zIndex: 9999,
+            left: tableContextMenu.x,
+            top: tableContextMenu.y,
+            background: 'var(--surface-1)',
+            border: '1.5px solid var(--border)',
+            borderRadius: 10,
+            boxShadow: '0 8px 32px rgba(0,0,0,0.18)',
+            minWidth: 160,
+            overflow: 'hidden',
+          }}
+          onMouseDown={e => e.stopPropagation()}
+        >
+          <div className="px-3 py-1.5 border-b" style={{ borderColor: 'var(--border)', background: 'var(--surface-2)' }}>
+            <span className="text-[9px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>Table</span>
+          </div>
+          {[
+            { label: 'Add column before', icon: '←', cmd: () => editor.chain().focus().addColumnBefore().run(), danger: false },
+            { label: 'Add column after',  icon: '→', cmd: () => editor.chain().focus().addColumnAfter().run(), danger: false },
+            { label: 'Add row above',     icon: '↑', cmd: () => editor.chain().focus().addRowBefore().run(), danger: false },
+            { label: 'Add row below',     icon: '↓', cmd: () => editor.chain().focus().addRowAfter().run(), danger: false },
+            null,
+            { label: 'Delete column', icon: '×', cmd: () => editor.chain().focus().deleteColumn().run(), danger: true },
+            { label: 'Delete row',    icon: '×', cmd: () => editor.chain().focus().deleteRow().run(), danger: true },
+            { label: 'Delete table',  icon: '⊠', cmd: () => editor.chain().focus().deleteTable().run(), danger: true },
+          ].map((item, i) => item === null
+            ? <div key={i} className="border-t my-0.5" style={{ borderColor: 'var(--border)' }} />
+            : (
+              <button
+                key={item.label}
+                onMouseDown={e => { e.preventDefault(); item.cmd(); setTableContextMenu(null); }}
+                className="w-full text-left flex items-center gap-2.5 px-3 py-1.5 text-[12px] transition-colors"
+                style={{ color: item.danger ? '#e11d48' : 'var(--text-primary)', background: 'transparent' }}
+                onMouseEnter={e => (e.currentTarget.style.background = item.danger ? 'rgba(225,29,72,0.08)' : 'var(--surface-2)')}
+                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+              >
+                <span className="w-4 text-center font-bold shrink-0" style={{ color: item.danger ? '#e11d48' : 'var(--accent-blue)', fontSize: 13 }}>{item.icon}</span>
+                {item.label}
+              </button>
+            )
+          )}
+        </div>
+      )}
+
       {/* @ Citation picker */}
       {citationPicker && isMounted && createPortal(
         <div
-          className="fixed z-[9999] bg-white border rounded-xl shadow-xl overflow-hidden"
-          style={{ left: Math.min(citationPicker.x, window.innerWidth - 280), top: citationPicker.y, width: 260, borderColor: 'var(--border)' }}
-          onMouseDown={e => e.preventDefault()} // prevent blur
+          className="fixed z-[9999] rounded-xl shadow-2xl overflow-hidden"
+          style={{
+            left: Math.min(citationPicker.x, window.innerWidth - 280),
+            top: citationPicker.y,
+            width: 260,
+            background: 'var(--surface-1)',
+            border: '1.5px solid var(--border)',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.18)',
+          }}
+          onMouseDown={e => e.preventDefault()}
         >
-          <div className="px-3 py-2 border-b" style={{ borderColor: 'var(--border)', background: 'var(--surface-1)' }}>
-            <p className="text-[10px] font-bold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Insert Citation</p>
+          <div className="px-3 py-2 border-b flex items-center gap-1.5" style={{ borderColor: 'var(--border)', background: 'var(--surface-2)' }}>
+            <BookOpen size={10} style={{ color: 'var(--accent-blue)' }} />
+            <p className="text-[10px] font-bold uppercase tracking-wider" style={{ color: 'var(--text-secondary)' }}>Insert Citation</p>
           </div>
           {filteredCitationSources.length === 0 ? (
             <p className="px-3 py-3 text-[11px]" style={{ color: 'var(--text-muted)' }}>No sources — upload PDFs or find similar papers first.</p>
@@ -761,25 +1202,27 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
                 return (
                   <button
                     key={src.id}
-                    className="w-full text-left px-3 py-2 hover:bg-stone-50 transition-colors border-b last:border-0"
-                    style={{ borderColor: 'var(--border)' }}
+                    className="w-full text-left px-3 py-2 border-b last:border-0 transition-colors"
+                    style={{ borderColor: 'var(--border)', background: 'transparent' }}
+                    onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface-2)')}
+                    onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
                     onMouseDown={e => { e.preventDefault(); handleInsertCitation(src); }}
                   >
                     <div className="flex items-center gap-2">
-                      <span className="text-[10px] font-bold tabular-nums shrink-0 w-5 text-center rounded" style={{ background: 'var(--surface-2)', color: 'var(--text-muted)' }}>
+                      <span className="text-[10px] font-bold tabular-nums shrink-0 w-5 h-5 flex items-center justify-center rounded-md" style={{ background: 'var(--accent-blue)', color: '#fff' }}>
                         {num ?? '?'}
                       </span>
                       <span className="text-[11px] font-medium truncate" style={{ color: 'var(--text-primary)' }}>{label}</span>
                     </div>
                     {src.type === 'api' && src.apiMeta?.title && (
-                      <p className="text-[10px] truncate pl-7" style={{ color: 'var(--text-muted)' }}>{src.apiMeta.title}</p>
+                      <p className="text-[10px] truncate pl-7 mt-0.5" style={{ color: 'var(--text-muted)' }}>{src.apiMeta.title}</p>
                     )}
                   </button>
                 );
               })}
             </div>
           )}
-          <div className="px-3 py-1.5 border-t" style={{ borderColor: 'var(--border)', background: 'var(--surface-1)' }}>
+          <div className="px-3 py-1.5 border-t" style={{ borderColor: 'var(--border)', background: 'var(--surface-2)' }}>
             <p className="text-[9px]" style={{ color: 'var(--text-muted)' }}>Press Esc to close</p>
           </div>
         </div>,

@@ -1,6 +1,6 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import OpenAI from "openai";
-import { AgentType, Suggestion, AISettings } from "../types";
+import { AgentType, Suggestion, AISettings, AttachedImage } from "../types";
 import { Clipboard, PenLine, FlaskConical, Beaker, BookMarked, MessageCircle, Quote } from 'lucide-react';
 
 export const AGENT_INFO: Record<AgentType, { label: string; color: string; bgSoft: string; description: string; iconName: string }> = {
@@ -232,15 +232,40 @@ function getAnthropicHeaders(settings: AISettings) {
   };
 }
 
-async function callAnthropicLLM(prompt: string, settings: AISettings, systemPrompt: string = ""): Promise<string> {
+/** Wraps a promise so it rejects with AbortError when the given signal fires. */
+function withSignal<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return p;
+  return Promise.race([
+    p,
+    new Promise<T>((_, reject) => {
+      if (signal.aborted) { reject(new DOMException('Aborted', 'AbortError')); return; }
+      signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+    }),
+  ]);
+}
+
+async function callAnthropicLLM(prompt: string, settings: AISettings, systemPrompt: string = "", images?: AttachedImage[], signal?: AbortSignal): Promise<string> {
+  const userContent: any[] = [];
+
+  if (images && images.length > 0) {
+    for (const img of images) {
+      userContent.push({
+        type: 'image',
+        source: { type: 'base64', media_type: img.mimeType, data: img.base64 },
+      });
+    }
+  }
+  userContent.push({ type: 'text', text: prompt });
+
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: getAnthropicHeaders(settings),
+    signal,
     body: JSON.stringify({
       model: settings.anthropicModel || 'claude-sonnet-4-6',
       max_tokens: 4096,
       system: systemPrompt || undefined,
-      messages: [{ role: 'user', content: prompt }],
+      messages: [{ role: 'user', content: userContent }],
     })
   });
 
@@ -253,7 +278,16 @@ async function callAnthropicLLM(prompt: string, settings: AISettings, systemProm
   return data.content?.[0]?.text || '';
 }
 
-async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: string = ""): Promise<string> {
+/**
+ * Detect whether a local model name suggests it is a VLM (vision-language model).
+ * Used to show a warning when images are attached to a non-vision model.
+ */
+export function localModelSupportsVision(modelName: string): boolean {
+  const lower = modelName.toLowerCase();
+  return /vl\b|vision|visual|llava|clip|multimodal|bakllava|minicpm-v|moondream|qwen.*vl|phi.*vision|internvl|cogvlm|pixtral|molmo|paligemma/.test(lower);
+}
+
+async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: string = "", images?: AttachedImage[], signal?: AbortSignal): Promise<string> {
   let baseUrl = settings.localBaseUrl.trim();
   if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
   
@@ -289,7 +323,18 @@ async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: 
   if (systemPrompt) {
     messages.push({ role: 'system', content: systemPrompt });
   }
-  messages.push({ role: 'user', content: prompt });
+
+  // Build user message — use multimodal content array when images are attached
+  if (images && images.length > 0) {
+    const contentParts: any[] = images.map(img => ({
+      type: 'image_url',
+      image_url: { url: img.dataUrl },
+    }));
+    contentParts.push({ type: 'text', text: prompt });
+    messages.push({ role: 'user', content: contentParts });
+  } else {
+    messages.push({ role: 'user', content: prompt });
+  }
 
   const body = JSON.stringify({
     model: settings.localModel,
@@ -306,7 +351,7 @@ async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: 
   let lastError = '';
   for (const ep of endpoints) {
     try {
-      const response = await fetch(ep, { method: 'POST', headers, body });
+      const response = await fetch(ep, { method: 'POST', headers, body, signal });
 
       if (response.ok) {
         const data = await response.json();
@@ -526,34 +571,47 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
-async function callLLM(prompt: string, settings: AISettings, systemPrompt: string, jsonMode: boolean = false): Promise<string> {
+async function callLLM(prompt: string, settings: AISettings, systemPrompt: string, jsonMode: boolean = false, images?: AttachedImage[], signal?: AbortSignal): Promise<string> {
   if (settings.provider === 'local') {
-    return callLocalLLM(prompt, settings, systemPrompt);
+    return callLocalLLM(prompt, settings, systemPrompt, images, signal);
   } else if (settings.provider === 'anthropic') {
-    return callAnthropicLLM(prompt, settings, systemPrompt);
+    return callAnthropicLLM(prompt, settings, systemPrompt, images, signal);
   } else if (settings.provider === 'openai') {
     const openai = getOpenAIClient(settings);
-    const response = await openai.chat.completions.create({
+    let userContent: any = prompt;
+    if (images && images.length > 0) {
+      userContent = [
+        ...images.map(img => ({ type: 'image_url' as const, image_url: { url: img.dataUrl } })),
+        { type: 'text' as const, text: prompt },
+      ];
+    }
+    return withSignal(openai.chat.completions.create({
       model: settings.openaiModel || 'gpt-5.4-mini',
       messages: [
         ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
-        { role: 'user' as const, content: prompt }
+        { role: 'user' as const, content: userContent }
       ],
       ...(jsonMode ? { response_format: { type: 'json_object' as const } } : {})
-    });
-    return response.choices[0].message.content || '';
+    }).then(r => r.choices[0].message.content || ''), signal);
   } else {
+    // Gemini
     const ai = getGeminiClient(settings);
-    const response = await ai.models.generateContent({
+    if (images && images.length > 0) {
+      const parts: any[] = images.map(img => ({
+        inlineData: { mimeType: img.mimeType, data: img.base64 },
+      }));
+      parts.push({ text: (systemPrompt ? systemPrompt + '\n\n' : '') + prompt });
+      return withSignal(ai.models.generateContent({
+        model: settings.geminiModel || 'gemini-3.1-pro-preview',
+        contents: [{ parts }],
+        ...(jsonMode ? { config: { responseMimeType: 'application/json' } } : {})
+      }).then(r => r.text || ''), signal);
+    }
+    return withSignal(ai.models.generateContent({
       model: settings.geminiModel || 'gemini-3.1-pro-preview',
       contents: (systemPrompt ? systemPrompt + '\n\n' : '') + prompt,
-      ...(jsonMode ? {
-        config: {
-          responseMimeType: "application/json",
-        }
-      } : {})
-    });
-    return response.text || '';
+      ...(jsonMode ? { config: { responseMimeType: 'application/json' } } : {})
+    }).then(r => r.text || ''), signal);
   }
 }
 
@@ -706,7 +764,7 @@ async function repairJSONWithLLM(rawText: string, settings: AISettings): Promise
   }
 }
 
-export async function analyzeText(text: string, agent: AgentType, settings: AISettings, existingSuggestions: Suggestion[] = [], onProgress?: (msg: string) => void, htmlContent?: string): Promise<{ suggestions: Suggestion[], status: 'ok' | 'no_suggestions' | 'parsing_failed' }> {
+export async function analyzeText(text: string, agent: AgentType, settings: AISettings, existingSuggestions: Suggestion[] = [], onProgress?: (msg: string) => void, htmlContent?: string, signal?: AbortSignal): Promise<{ suggestions: Suggestion[], status: 'ok' | 'no_suggestions' | 'parsing_failed' }> {
   const activePrompt = settings.customPrompts?.[agent] || DEFAULT_AGENT_PROMPTS[agent];
 
   let existingContext = '';
@@ -725,14 +783,15 @@ export async function analyzeText(text: string, agent: AgentType, settings: AISe
     let rawResponses: string[] = [];
     
     for (let i = 0; i < chunks.length; i++) {
+      if (signal?.aborted) break;
       onProgress?.(`Chunk ${i + 1}/${chunks.length}`);
       const shortRole = useFullText ? activePrompt : activePrompt.substring(0, 400);
       const prompt = useFullText
         ? buildFullTextPrompt(shortRole, chunks[i], existingContext)
         : buildLocalPrompt(shortRole, chunks[i], existingContext);
-      
+
       try {
-        const textResponse = await callLocalLLM(prompt, settings, "Return only valid JSON. No markdown, no explanations.");
+        const textResponse = await callLocalLLM(prompt, settings, "Return only valid JSON. No markdown, no explanations.", undefined, signal);
         rawResponses.push(textResponse);
         
         if (textResponse) {
@@ -828,7 +887,7 @@ Each suggestion must have:
 Provide 8-15 highly specific suggestions. Each originalText MUST be an exact quote.`;
 
   try {
-    let textResponse = await callLLM(prompt, settings, activePrompt, true);
+    let textResponse = await callLLM(prompt, settings, activePrompt, true, undefined, signal);
     if (!textResponse) return { suggestions: [], status: 'no_suggestions' };
 
     const parsed = parseJSONRobust(textResponse);
@@ -901,7 +960,9 @@ export async function chatWithAgent(
   context: string,
   agent: AgentType,
   settings: AISettings,
-  attachedSources?: Array<{ name: string; text: string }>
+  attachedSources?: Array<{ name: string; text: string }>,
+  images?: AttachedImage[],
+  signal?: AbortSignal
 ): Promise<{ text: string; suggestions?: Suggestion[] }> {
   const activePrompt = settings.customPrompts?.[agent] || DEFAULT_AGENT_PROMPTS[agent];
   const isLocal = settings.provider === 'local';
@@ -957,7 +1018,7 @@ ${intent !== 'info_question' ? `After your response, append any text edit sugges
 ]
 [SUGGESTIONS_END]` : 'Reply in plain text only — no suggestions block needed.'}`;
 
-  let textResponse = await callLLM(prompt, settings, activePrompt);
+  let textResponse = await callLLM(prompt, settings, activePrompt, false, images, signal);
   if (!textResponse) textResponse = '';
 
   const suggestionsMatch = textResponse.match(/\[SUGGESTIONS_START\]([\s\S]*?)\[SUGGESTIONS_END\]/);
@@ -993,7 +1054,9 @@ export async function chatWithManuscript(
   message: string,
   context: string,
   settings: AISettings,
-  attachedSources?: Array<{ name: string; text: string }>
+  attachedSources?: Array<{ name: string; text: string }>,
+  images?: AttachedImage[],
+  signal?: AbortSignal
 ): Promise<{ text: string }> {
   const isLocal = settings.provider === 'local';
   const localLargeContext = isLocal && settings.localChunkSize === 0;
@@ -1018,7 +1081,7 @@ Researcher: "${message}"
 
 Respond as a knowledgeable academic peer. Be specific, critical, and grounded in the text above.`;
 
-  const text = await callLLM(prompt, settings, MANUSCRIPT_AI_SYSTEM_PROMPT);
+  const text = await callLLM(prompt, settings, MANUSCRIPT_AI_SYSTEM_PROMPT, false, images, signal);
   return { text: text || 'No response generated.' };
 }
 

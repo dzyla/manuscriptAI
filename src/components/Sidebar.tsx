@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo, createElement } from 'react';
-import { AgentType, Message, Suggestion, HistoryItem, SuggestionSeverity, AISettings } from '../types';
-import { Send, Sparkles, Check, X, MessageSquare, History as HistoryIcon, Info, Clock, CheckCheck, XCircle, Filter, ChevronDown, ChevronUp, BookOpen, Trash2, FileText, UploadCloud, FolderOpen, BookMarked, Plus, List, AlertTriangle, CheckCircle2, Library, Search, ExternalLink, Copy, Zap, RefreshCw } from 'lucide-react';
+import { AgentType, Message, Suggestion, HistoryItem, SuggestionSeverity, AISettings, AttachedImage } from '../types';
+import { Send, Sparkles, Check, X, MessageSquare, History as HistoryIcon, Info, Clock, CheckCheck, XCircle, Filter, ChevronDown, ChevronUp, BookOpen, Trash2, FileText, UploadCloud, FolderOpen, BookMarked, Plus, List, AlertTriangle, CheckCircle2, Library, Search, ExternalLink, Copy, Zap, RefreshCw, ImagePlus, Square } from 'lucide-react';
 import { SemanticSearchResult, ManuscriptSource } from '../types';
 import { searchSimilarManuscripts, resultToBibtex, doiToUrl } from '../services/manuscriptSearch';
 import { motion, AnimatePresence } from 'motion/react';
@@ -10,7 +10,7 @@ import * as pdfjsLib from 'pdfjs-dist';
 import { Cite } from '@citation-js/core';
 import '@citation-js/plugin-bibtex';
 import localforage from 'localforage';
-import { digestSourceForManuscript, digestApiSource, analyzeSourceAgainstManuscript, AGENT_INFO, AGENT_ICONS } from '../services/ai';
+import { digestSourceForManuscript, digestApiSource, analyzeSourceAgainstManuscript, AGENT_INFO, AGENT_ICONS, localModelSupportsVision } from '../services/ai';
 import { detectOrphanedCitations, formatBibliography, BIB_STYLE_LABELS, type BibStyle, type CitationAnalysis } from '../services/citations';
 
 // Use bundled worker via Vite's URL import for Electron compatibility
@@ -20,7 +20,7 @@ interface SidebarProps {
   suggestions: Suggestion[];
   messages: Message[];
   history: HistoryItem[];
-  onSendMessage: (text: string, agent: AgentType, attachedSources?: Array<{ name: string; text: string }>) => void;
+  onSendMessage: (text: string, agent: AgentType, attachedSources?: Array<{ name: string; text: string }>, images?: AttachedImage[]) => void;
   onAcceptSuggestion: (suggestion: Suggestion) => void;
   onRejectSuggestion: (suggestion: Suggestion) => void;
   onRevertHistory: (historyId: string) => void;
@@ -30,6 +30,7 @@ interface SidebarProps {
   onAcceptAll?: () => void;
   onRejectAll?: () => void;
   isAnalyzing: boolean;
+  onStop?: () => void;
   highlightedSuggestionId?: string | null;
   analysisProgress?: { agent: string; total: number; done: number } | null;
   activeTabOverride?: 'chat' | 'suggestions' | 'history' | 'sources' | 'outline';
@@ -113,6 +114,7 @@ export default function Sidebar({
   onAcceptAll,
   onRejectAll,
   isAnalyzing,
+  onStop,
   highlightedSuggestionId,
   analysisProgress,
   activeTabOverride,
@@ -157,6 +159,9 @@ export default function Sidebar({
   const [isGlobalSearching, setIsGlobalSearching] = useState(false);
   const [globalSearchError, setGlobalSearchError] = useState<string | null>(null);
   const fileUploadRef = useRef<HTMLInputElement>(null);
+  const imageUploadRef = useRef<HTMLInputElement>(null);
+  const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([]);
+  const [visionWarning, setVisionWarning] = useState<string | null>(null);
 
   const runGlobalSearch = () => {
     const q = globalSearchQuery.trim();
@@ -478,7 +483,7 @@ export default function Sidebar({
   }, [manuscriptHtml]);
 
   const handleSend = () => {
-    if (!input.trim()) return;
+    if (!input.trim() && attachedImages.length === 0) return;
     const attached: Array<{ name: string; text: string }> = [];
     // Scope sentinels — resolved to actual text by App.tsx handleSendMessage
     if (attachedSourceIds.has('__full__'))    attached.push({ name: '__full__',    text: '' });
@@ -488,9 +493,50 @@ export default function Sidebar({
         attached.push({ name: src.name, text: src.text });
       }
     });
-    onSendMessage(input, agentMode ? selectedAgent : 'manuscript-ai', attached.length > 0 ? attached : undefined);
+    const imagesToSend = attachedImages.length > 0 ? [...attachedImages] : undefined;
+    onSendMessage(input, agentMode ? selectedAgent : 'manuscript-ai', attached.length > 0 ? attached : undefined, imagesToSend);
     setInput('');
+    setAttachedImages([]);
+    setVisionWarning(null);
     setShowSourcePicker(false);
+  };
+
+  const handleImageFiles = async (files: File[]) => {
+    const supported = ['image/jpeg', 'image/png', 'image/webp'];
+    const imageFiles = files.filter(f => supported.includes(f.type));
+    if (imageFiles.length === 0) return;
+
+    // Warn for local models without apparent vision support
+    if (aiSettings?.provider === 'local') {
+      const modelName = aiSettings.localModel || '';
+      if (!localModelSupportsVision(modelName)) {
+        setVisionWarning(
+          `"${modelName || 'this model'}" may not support vision. Use a VLM (e.g. qwen2-vl, llava) in LM Studio for image input. The request will be sent anyway — the model will error if unsupported.`
+        );
+      } else {
+        setVisionWarning(null);
+      }
+    } else {
+      setVisionWarning(null);
+    }
+
+    const newImages: AttachedImage[] = [];
+    for (const file of imageFiles) {
+      const buffer = await file.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      let binary = '';
+      bytes.forEach(b => { binary += String.fromCharCode(b); });
+      const base64 = btoa(binary);
+      const dataUrl = `data:${file.type};base64,${base64}`;
+      newImages.push({
+        id: Date.now().toString() + Math.random(),
+        name: file.name,
+        base64,
+        mimeType: file.type as AttachedImage['mimeType'],
+        dataUrl,
+      });
+    }
+    setAttachedImages(prev => [...prev, ...newImages]);
   };
 
   return (
@@ -584,7 +630,23 @@ export default function Sidebar({
                     }
                   >
                     {msg.role === 'user' ? (
-                      <p className="whitespace-pre-wrap">{msg.content}</p>
+                      <div className="space-y-2">
+                        {msg.images && msg.images.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5">
+                            {msg.images.map(img => (
+                              <img
+                                key={img.id}
+                                src={img.dataUrl}
+                                alt={img.name}
+                                className="rounded-lg object-cover border border-white/20"
+                                style={{ maxWidth: '120px', maxHeight: '90px' }}
+                                title={img.name}
+                              />
+                            ))}
+                          </div>
+                        )}
+                        {msg.content && <p className="whitespace-pre-wrap">{msg.content}</p>}
+                      </div>
                     ) : (
                       <div className="markdown-chat-content whitespace-normal break-words text-[13px] leading-relaxed">
                         <ReactMarkdown
@@ -660,9 +722,22 @@ export default function Sidebar({
                 </div>
               ))}
               {isAnalyzing && (
-                <div className="flex items-center gap-2 text-xs animate-pulse" style={{ color: 'var(--text-muted)' }}>
-                  <Sparkles size={12} />
-                  Agent is thinking...
+                <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 text-xs animate-pulse" style={{ color: 'var(--text-muted)' }}>
+                    <Sparkles size={12} />
+                    Agent is thinking...
+                  </div>
+                  {onStop && (
+                    <button
+                      onClick={onStop}
+                      className="flex items-center gap-1 px-2 py-0.5 rounded-lg text-[11px] font-semibold transition-colors"
+                      style={{ background: 'rgba(220,38,38,0.1)', color: '#dc2626', border: '1px solid rgba(220,38,38,0.3)' }}
+                      title="Stop request"
+                    >
+                      <Square size={9} className="fill-red-600" />
+                      Stop
+                    </button>
+                  )}
                 </div>
               )}
               {analyzingSourceId && (
@@ -1209,7 +1284,7 @@ export default function Sidebar({
                   )}
                 </h3>
                 {sources.map((source) => (
-                  <div key={source.id} className="border rounded-xl shadow-sm overflow-hidden" style={{ borderColor: source.type === 'api' ? 'rgba(139,92,246,0.25)' : 'var(--border)', background: source.type === 'api' ? 'rgba(245,243,255,0.5)' : 'var(--surface-1)' }}>
+                  <div key={source.id} className="rounded-xl shadow-sm overflow-hidden" style={{ border: source.type === 'api' ? '1.5px solid rgba(139,92,246,0.5)' : '1px solid var(--border)', background: source.type === 'api' ? 'var(--surface-2)' : 'var(--surface-1)', boxShadow: source.type === 'api' ? '0 2px 8px rgba(124,58,237,0.08)' : undefined }}>
                     <div className="flex items-center justify-between p-3">
                       <div className="flex items-center gap-2 overflow-hidden">
                         {source.type === 'api' ? <Search size={14} style={{ color: '#7c3aed' }} className="shrink-0" /> : <FileText size={14} style={{ color: 'var(--text-tertiary)' }} className="shrink-0" />}
@@ -1295,7 +1370,7 @@ export default function Sidebar({
                             const result = match.results[match.matchIndex];
                             if (!result) return null;
                             return (
-                              <div className="p-2.5 rounded-lg border space-y-1.5" style={{ background: '#fffbeb', borderColor: '#fde68a' }}>
+                              <div className="p-2.5 rounded-lg border space-y-1.5" style={{ background: 'var(--surface-2)', borderColor: 'var(--border)' }}>
                                 <p className="text-[10px] font-bold text-amber-700 flex items-center gap-1">
                                   <Zap size={10} />
                                   Is this your paper? ({match.matchIndex + 1}/{match.results.length})
@@ -1687,12 +1762,70 @@ export default function Sidebar({
             </div>
           )}
 
+          {/* Image preview strip */}
+          {activeTab === 'chat' && attachedImages.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 p-1">
+              {attachedImages.map(img => (
+                <div key={img.id} className="relative group">
+                  <img
+                    src={img.dataUrl}
+                    alt={img.name}
+                    className="rounded-lg object-cover border"
+                    style={{ width: '56px', height: '42px', borderColor: 'var(--border)' }}
+                    title={img.name}
+                  />
+                  <button
+                    onClick={() => setAttachedImages(prev => prev.filter(i => i.id !== img.id))}
+                    className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-stone-700 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                    title="Remove image"
+                  >
+                    <X size={8} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Vision warning */}
+          {activeTab === 'chat' && visionWarning && (
+            <div className="flex items-start gap-1.5 px-2 py-1.5 rounded-lg text-[10px] leading-snug" style={{ background: '#fef9c3', color: '#854d0e' }}>
+              <AlertTriangle size={11} className="mt-0.5 shrink-0" />
+              <span>{visionWarning}</span>
+              <button onClick={() => setVisionWarning(null)} className="ml-auto shrink-0 opacity-60 hover:opacity-100"><X size={10} /></button>
+            </div>
+          )}
+
           {/* Textarea + buttons */}
           <div className="relative">
+            {/* Hidden image file input */}
+            <input
+              ref={imageUploadRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              multiple
+              className="hidden"
+              onChange={(e) => { if (e.target.files) { handleImageFiles(Array.from(e.target.files)); e.target.value = ''; } }}
+            />
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), handleSend())}
+              onPaste={(e) => {
+                // Support pasting images from clipboard
+                const items = Array.from(e.clipboardData.items);
+                const imageItems = items.filter(item => item.type.startsWith('image/'));
+                if (imageItems.length > 0) {
+                  e.preventDefault();
+                  const files = imageItems.map(item => item.getAsFile()).filter((f): f is File => f !== null);
+                  handleImageFiles(files);
+                }
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                const files = Array.from(e.dataTransfer.files);
+                handleImageFiles(files);
+              }}
+              onDragOver={(e) => e.preventDefault()}
               placeholder={
                 activeTab !== 'chat' ? 'Switch to chat to send messages...' :
                 !attachedSourceIds.has('__manuscript__') && attachedSourceIds.size > 0
@@ -1702,9 +1835,20 @@ export default function Sidebar({
                     : 'Ask Manuscript AI anything about your manuscript...'
               }
               disabled={activeTab !== 'chat'}
-              className="w-full p-3 pr-20 border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-stone-800/10 resize-none min-h-[64px] transition-all disabled:opacity-50"
+              className="w-full p-3 pr-24 border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-stone-800/10 resize-none min-h-[64px] transition-all disabled:opacity-50"
               style={{ background: 'var(--surface-2)', borderColor: 'var(--border)', color: 'var(--text-primary)' }}
             />
+            {/* Image attach button */}
+            {activeTab === 'chat' && (
+              <button
+                onClick={() => imageUploadRef.current?.click()}
+                className="absolute right-20 bottom-3 p-2 rounded-lg transition-all hover:bg-stone-200"
+                style={{ color: attachedImages.length > 0 ? 'var(--accent-blue)' : 'var(--text-muted)' }}
+                title="Attach image (JPEG, PNG, WebP)"
+              >
+                <ImagePlus size={14} />
+              </button>
+            )}
             {/* Source picker button */}
             {activeTab === 'chat' && (
               <div className="absolute right-12 bottom-3" ref={sourcePickerRef}>
@@ -1804,7 +1948,7 @@ export default function Sidebar({
             )}
             <button
               onClick={handleSend}
-              disabled={!input.trim() || isAnalyzing || activeTab !== 'chat'}
+              disabled={(!input.trim() && attachedImages.length === 0) || isAnalyzing || activeTab !== 'chat'}
               className="absolute right-3 bottom-3 p-2 bg-stone-800 text-white rounded-lg hover:bg-stone-700 disabled:opacity-40 transition-all shadow-sm"
             >
               <Send size={14} />

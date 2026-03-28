@@ -3,10 +3,10 @@ import Editor, { EditorRef } from './components/Editor';
 import Sidebar from './components/Sidebar';
 import SettingsModal from './components/SettingsModal';
 import PostDraftingView from './components/PostDraftingView';
-import { AgentType, Message, Suggestion, HistoryItem, AISettings, ManuscriptSource } from './types';
+import { AgentType, Message, Suggestion, HistoryItem, AISettings, ManuscriptSource, AttachedImage } from './types';
 import { searchSimilarManuscripts } from './services/manuscriptSearch';
 import { analyzeText, chatWithAgent, chatWithManuscript, resolveConflicts, runJudgeAgent, rebutSuggestion, manuscriptSummary, rewriteSection, transformWithInstruction, analyzeSourceAgainstManuscript, verifyClaimAgainstSources, AGENT_INFO, AGENT_ICONS, estimateTokens } from './services/ai';
-import { Sparkles, FileText, Settings, Download, Keyboard, Eye, Moon, Sun, ChevronDown, FilePlus, Coins, BookOpen, Github } from 'lucide-react';
+import { Sparkles, FileText, Settings, Download, Keyboard, Eye, Moon, Sun, ChevronDown, FilePlus, Coins, BookOpen, Github, Square } from 'lucide-react';
 import { saveAs } from 'file-saver';
 import * as mammoth from 'mammoth';
 import TurndownService from 'turndown';
@@ -27,6 +27,7 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const editorRef = useRef<EditorRef>(null);
   const sourcesRef = useRef<ManuscriptSource[]>([]);
+  const abortRef = useRef<AbortController | null>(null);
   const [pendingApiSources, setPendingApiSources] = useState<ManuscriptSource[]>([]);
   const [clearSourcesTrigger, setClearSourcesTrigger] = useState(0);
   const [citationRegistry, setCitationRegistry] = useState<Record<string, number>>({});
@@ -124,15 +125,15 @@ export default function App() {
     setTimeout(() => setToast(null), 5000);
   }, []);
 
-  // Auto-save every 30s
+  // Auto-save every 30s (uses IndexedDB via localforage — no size limit)
   useEffect(() => {
-    const interval = setInterval(() => {
+    const interval = setInterval(async () => {
       const workspace = { title, content, suggestions, history, messages, aiSettings };
       try {
-        localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(workspace));
+        await localforage.setItem(AUTOSAVE_KEY, workspace);
         if (saveState === 'Draft') setSaveState('Auto-saved');
       } catch (e) {
-        showToast('Auto-save failed: document too large. Use "Save Workspace" to download a file instead.', 'error');
+        showToast('Auto-save failed. Use "Save Workspace" to download a backup file.', 'error');
       }
     }, 30000);
     return () => clearInterval(interval);
@@ -140,23 +141,17 @@ export default function App() {
 
   // Load auto-save on mount
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem(AUTOSAVE_KEY);
-      if (saved) {
-        const data = JSON.parse(saved);
-        if (data.content) {
-          setTitle(data.title || 'Untitled Manuscript');
-          setContent(data.content);
-          setSuggestions(data.suggestions || []);
-          setHistory(data.history || []);
-          setMessages(data.messages || []);
-          if (data.aiSettings) setAiSettings(data.aiSettings);
-          setSaveState('Auto-saved');
-        }
+    localforage.getItem<any>(AUTOSAVE_KEY).then(data => {
+      if (data?.content) {
+        setTitle(data.title || 'Untitled Manuscript');
+        setContent(data.content);
+        setSuggestions(data.suggestions || []);
+        setHistory(data.history || []);
+        setMessages(data.messages || []);
+        if (data.aiSettings) setAiSettings(data.aiSettings);
+        setSaveState('Auto-saved');
       }
-    } catch (err) {
-      console.error("Failed to load auto-save", err);
-    }
+    }).catch(err => console.error('Failed to load auto-save', err));
   }, []);
 
   useEffect(() => { setSaveState('Draft'); }, [content, title]);
@@ -205,7 +200,7 @@ export default function App() {
     setSidebarSources([]);
 
     // Clear autosave so old content doesn't reload
-    localStorage.removeItem(AUTOSAVE_KEY);
+    await localforage.removeItem(AUTOSAVE_KEY);
     await localforage.removeItem('manuscript-sources');
 
     // Force editor content reset
@@ -214,7 +209,17 @@ export default function App() {
     showToast('New manuscript created', 'success');
   };
 
+  const stopRequest = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setIsAnalyzing(false);
+    setAnalysisProgress(null);
+    showToast('Request stopped.', 'info');
+  };
+
   const handleAnalyze = async (specificAgent?: AgentType) => {
+    abortRef.current = new AbortController();
+    const signal = abortRef.current.signal;
     setIsAnalyzing(true);
     setShowAnalyzeMenu(false);
     try {
@@ -232,14 +237,14 @@ export default function App() {
         setAnalysisProgress({ agent: AGENT_INFO[specificAgent].label, total: 1, done: 0 });
         const result = await analyzeText(plainText, specificAgent, aiSettings, suggestions, (msg) => {
           setAnalysisProgress(prev => prev ? { ...prev, agent: `${AGENT_INFO[specificAgent].label} — ${msg}` } : null);
-        }, htmlContent);
-        
+        }, htmlContent, signal);
+
         if (result.status === 'parsing_failed') {
           showToast(`⚠ ${AGENT_INFO[specificAgent].label}: Response wasn't valid JSON. Try a larger model or cloud API.`, 'error');
         } else if (result.status === 'no_suggestions') {
           showToast(`${AGENT_INFO[specificAgent].label} found no issues — nice work!`, 'info');
         }
-        
+
         if (result.suggestions.length > 0) {
           const resolved = await resolveConflicts(result.suggestions, aiSettings);
           setSuggestions(prev => [...prev, ...resolved].sort((a, b) => a.startIndex - b.startIndex));
@@ -249,9 +254,9 @@ export default function App() {
         // Run all agents in parallel
         const agentsToRun: AgentType[] = ['editor', 'reviewer-2', 'researcher'];
         setAnalysisProgress({ agent: 'Running all agents in parallel...', total: agentsToRun.length, done: 0 });
-        
+
         const results = await Promise.all(
-          agentsToRun.map(agent => analyzeText(plainText, agent, aiSettings, suggestions, undefined, htmlContent))
+          agentsToRun.map(agent => analyzeText(plainText, agent, aiSettings, suggestions, undefined, htmlContent, signal))
         );
         
         let totalNew = 0;
@@ -294,17 +299,19 @@ export default function App() {
           showToast('No suggestions from any agent. Your text looks good!', 'info');
         }
       }
-    } catch (error) {
+    } catch (error: any) {
+      if (error?.name === 'AbortError') return; // stopped by user — already handled by stopRequest
       console.error("Analysis failed", error);
       showToast(`Analysis error: ${error instanceof Error ? error.message : 'Unknown error'}`, 'error');
     } finally {
+      abortRef.current = null;
       setIsAnalyzing(false);
       setAnalysisProgress(null);
     }
   };
 
-  const handleSendMessage = async (text: string, agent: AgentType, attachedSources?: Array<{ name: string; text: string }>) => {
-    const userMsg: Message = { id: Date.now().toString(), role: 'user', content: text };
+  const handleSendMessage = async (text: string, agent: AgentType, attachedSources?: Array<{ name: string; text: string }>, images?: AttachedImage[]) => {
+    const userMsg: Message = { id: Date.now().toString(), role: 'user', content: text, images };
     setMessages(prev => [...prev, userMsg]);
 
     // Resolve manuscript scope: __full__ sends full text, __section__ sends current section only
@@ -326,11 +333,13 @@ export default function App() {
       sourcesWithContext.unshift({ name: 'Full Manuscript', text: fullText });
     }
 
+    abortRef.current = new AbortController();
+    const signal = abortRef.current.signal;
     setIsAnalyzing(true);
     try {
       const result = agent === 'manuscript-ai'
-        ? await chatWithManuscript(text, manuscriptArg, aiSettings, sourcesWithContext.length > 0 ? sourcesWithContext : undefined)
-        : await chatWithAgent(text, manuscriptArg, agent, aiSettings, sourcesWithContext.length > 0 ? sourcesWithContext : undefined);
+        ? await chatWithManuscript(text, manuscriptArg, aiSettings, sourcesWithContext.length > 0 ? sourcesWithContext : undefined, images, signal)
+        : await chatWithAgent(text, manuscriptArg, agent, aiSettings, sourcesWithContext.length > 0 ? sourcesWithContext : undefined, images, signal);
       const suggestions: Suggestion[] | undefined = 'suggestions' in result ? (result as any).suggestions : undefined;
       const assistantMsg: Message = {
         id: (Date.now() + 1).toString(),
@@ -344,7 +353,8 @@ export default function App() {
         const resolved = await resolveConflicts(suggestions, aiSettings);
         setSuggestions(prev => [...prev, ...resolved].sort((a, b) => a.startIndex - b.startIndex));
       }
-    } catch (error) {
+    } catch (error: any) {
+      if (error?.name === 'AbortError') return; // stopped by user
       console.error("Chat failed", error);
       setMessages(prev => [...prev, {
         id: (Date.now() + 1).toString(),
@@ -353,8 +363,26 @@ export default function App() {
         agent
       }]);
     } finally {
+      abortRef.current = null;
       setIsAnalyzing(false);
     }
+  };
+
+  const handleAnalyzeImage = (dataUrl: string, prompt: string, contextText?: string) => {
+    const match = dataUrl.match(/^data:(image\/[a-z]+);base64,(.+)$/);
+    if (!match) return;
+    const rawMime = match[1];
+    const allowed: AttachedImage['mimeType'][] = ['image/jpeg', 'image/png', 'image/webp'];
+    const mimeType: AttachedImage['mimeType'] = allowed.includes(rawMime as AttachedImage['mimeType'])
+      ? (rawMime as AttachedImage['mimeType'])
+      : 'image/png';
+    const base64 = match[2];
+    const img: AttachedImage = { id: Date.now().toString(), name: 'figure', base64, mimeType, dataUrl };
+    const fullPrompt = contextText?.trim()
+      ? `${prompt}\n\nContext from the manuscript around this figure:\n"""\n${contextText.trim()}\n"""`
+      : prompt;
+    handleSendMessage(fullPrompt, 'manuscript-ai', undefined, [img]);
+    setSidebarTab('chat');
   };
 
   const handleAnalyzeSection = async (sectionText: string, sectionTitle: string) => {
@@ -971,22 +999,40 @@ export default function App() {
             <span className="text-[11px] font-medium shrink-0 hidden sm:inline" style={{ color: 'var(--text-muted)' }}>
               {wordCount} words
             </span>
-            <div id="toolbar-portal" className="flex-1 flex justify-end min-w-0 overflow-hidden" />
+            <div className="flex-1" />
           </div>
           <div className="flex items-center gap-2 shrink-0">
                         {/* Zoom Controls */}
-            <div className="hidden lg:flex items-center gap-1 border rounded-lg p-1 mr-2 bg-stone-50" style={{ borderColor: 'var(--border)' }}>
-              <button onClick={() => setZoom(z => Math.max(50, z - 10))} className="px-1.5 hover:bg-stone-200 rounded text-xs font-medium" title="Zoom Out">-</button>
-              <span className="text-[10px] font-bold px-1 w-10 text-center" title="Text Zoom">{zoom}%</span>
-              <button onClick={() => setZoom(z => Math.min(200, z + 10))} className="px-1.5 hover:bg-stone-200 rounded text-xs font-medium" title="Zoom In">+</button>
+            <div className="hidden lg:flex items-center gap-1 rounded-lg p-1 mr-2" style={{ border: '1px solid var(--border)', background: 'var(--surface-2)' }}>
+              <button
+                onClick={() => setZoom(z => Math.max(50, z - 10))}
+                className="px-1.5 rounded text-xs font-medium transition-colors"
+                style={{ color: 'var(--text-secondary)' }}
+                onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface-1)')}
+                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                title="Zoom Out"
+              >−</button>
+              <span className="text-[10px] font-bold px-1 w-10 text-center" style={{ color: 'var(--text-primary)' }} title="Text Zoom">{zoom}%</span>
+              <button
+                onClick={() => setZoom(z => Math.min(200, z + 10))}
+                className="px-1.5 rounded text-xs font-medium transition-colors"
+                style={{ color: 'var(--text-secondary)' }}
+                onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface-1)')}
+                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                title="Zoom In"
+              >+</button>
             </div>
             {/* Editor width toggle */}
-            <div className="hidden lg:flex items-center gap-0.5 border rounded-lg p-1 mr-1 bg-stone-50" style={{ borderColor: 'var(--border)' }}>
+            <div className="hidden lg:flex items-center gap-0.5 rounded-lg p-1 mr-1" style={{ border: '1px solid var(--border)', background: 'var(--surface-2)' }}>
               {(['normal', 'wide', 'full'] as const).map(w => (
                 <button
                   key={w}
                   onClick={() => setEditorWidth(w)}
-                  className={`px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${editorWidth === w ? 'bg-stone-800 text-white' : 'hover:bg-stone-100 text-stone-500'}`}
+                  className="px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors"
+                  style={{
+                    background: editorWidth === w ? 'var(--text-primary)' : 'transparent',
+                    color: editorWidth === w ? 'var(--surface-1)' : 'var(--text-secondary)',
+                  }}
                   title={`Editor width: ${w}`}
                 >
                   {w === 'normal' ? '◫' : w === 'wide' ? '⬛' : '⬜'}
@@ -1007,14 +1053,24 @@ export default function App() {
             {/* Analyze button with dropdown */}
             <div className="relative" ref={analyzeMenuRef}>
               <div className="flex">
+                {isAnalyzing ? (
+                  <button
+                    onClick={stopRequest}
+                    className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-rose-600 text-white rounded-lg text-xs font-semibold hover:bg-rose-700 transition-all shadow-sm"
+                  >
+                    <Square size={12} className="fill-white" />
+                    <span>Stop</span>
+                  </button>
+                ) : (
+                  <>
                 <button
                   onClick={() => handleAnalyze()}
                   disabled={isAnalyzing}
                   className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-stone-900 text-white rounded-l-lg text-xs font-semibold hover:bg-stone-800 transition-all disabled:opacity-40 shadow-sm"
                 >
                   <Sparkles size={14} className={isAnalyzing ? 'animate-spin' : ''} />
-                  <span className="hidden sm:inline">{isAnalyzing ? 'Analyzing...' : 'Analyze All'}</span>
-                  <span className="sm:hidden">{isAnalyzing ? '...' : 'Analyze'}</span>
+                  <span className="hidden sm:inline">Analyze All</span>
+                  <span className="sm:hidden">Analyze</span>
                 </button>
                 <button
                   onClick={() => setShowAnalyzeMenu(!showAnalyzeMenu)}
@@ -1023,6 +1079,8 @@ export default function App() {
                 >
                   <ChevronDown size={12} />
                 </button>
+                  </>
+                )}
               </div>
 
               {showAnalyzeMenu && (
@@ -1031,7 +1089,7 @@ export default function App() {
                     Run Single Agent
                   </div>
                   {(Object.entries(AGENT_INFO) as [AgentType, typeof AGENT_INFO[AgentType]][])
-                    .filter(([agentId]) => agentId !== 'literature-reviewer' && agentId !== 'manuscript-ai')
+                    .filter(([agentId]) => agentId !== 'literature-reviewer' && agentId !== 'manuscript-ai' && agentId !== 'citation-checker')
                     .map(([agentId, info]) => (
                       <button
                         key={agentId}
@@ -1083,6 +1141,7 @@ export default function App() {
             editorWidth={editorWidth}
             currentAgent={currentAgent}
             aiSettings={aiSettings}
+            onAnalyzeImage={handleAnalyzeImage}
           />
         </main>
 
@@ -1126,6 +1185,7 @@ export default function App() {
             onAcceptAll={handleAcceptAll}
             onRejectAll={handleRejectAll}
             isAnalyzing={isAnalyzing}
+            onStop={stopRequest}
             highlightedSuggestionId={highlightedSuggestionId}
             analysisProgress={analysisProgress}
             activeTabOverride={sidebarTab}

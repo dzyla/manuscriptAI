@@ -56,12 +56,21 @@ export interface Suggestion {
   section?: string;
 }
 
+export interface AttachedImage {
+  id: string;
+  name: string;
+  base64: string;       // pure base64, no data URL prefix
+  mimeType: 'image/jpeg' | 'image/png' | 'image/webp';
+  dataUrl: string;      // full data URL for preview
+}
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   agent?: AgentType;
   suggestions?: Suggestion[];
+  images?: AttachedImage[];
 }
 
 export interface HistoryItem {
