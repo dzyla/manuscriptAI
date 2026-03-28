@@ -364,3 +364,19 @@ mark {
   user-select: none;
   font-style: italic;
 }
+
+.autocomplete-tab-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 0.4em;
+  padding: 1px 5px;
+  font-size: 0.7em;
+  font-family: ui-monospace, monospace;
+  font-style: normal;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  opacity: 0.65;
+  vertical-align: middle;
+  line-height: 1.5;
+  letter-spacing: 0.03em;
+}

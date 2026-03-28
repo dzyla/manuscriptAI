@@ -1,5 +1,5 @@
 import { Extension } from '@tiptap/core';
-import { Plugin, PluginKey } from '@tiptap/pm/state';
+import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 
 export interface AutoCompleteOptions {
@@ -86,9 +86,18 @@ export const AutoComplete = Extension.create<AutoCompleteOptions>({
             () => {
               const el = document.createElement('span');
               el.className = 'autocomplete-ghost';
-              el.textContent = ps.suggestion;
               el.contentEditable = 'false';
               el.setAttribute('aria-hidden', 'true');
+
+              const text = document.createElement('span');
+              text.textContent = ps.suggestion;
+              el.appendChild(text);
+
+              const badge = document.createElement('kbd');
+              badge.className = 'autocomplete-tab-badge';
+              badge.textContent = 'Tab';
+              el.appendChild(badge);
+
               return el;
             },
             { side: 1, key: 'ac-ghost' }
@@ -103,11 +112,15 @@ export const AutoComplete = Extension.create<AutoCompleteOptions>({
           if (event.key === 'Tab') {
             event.preventDefault();
             event.stopPropagation();
-            view.dispatch(
-              view.state.tr
-                .insertText(ps.suggestion, view.state.selection.from)
-                .setMeta(autocompleteKey, { suggestion: '' })
-            );
+            const from = view.state.selection.from;
+            const text = ps.suggestion;
+            const tr = view.state.tr
+              .insertText(text, from)
+              .setMeta(autocompleteKey, { suggestion: '' });
+            // Explicitly place cursor after the inserted text so the next
+            // triggerCompletion picks up the right context start position.
+            tr.setSelection(TextSelection.create(tr.doc, from + text.length));
+            view.dispatch(tr);
             return true;
           }
 
