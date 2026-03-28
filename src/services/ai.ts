@@ -623,17 +623,94 @@ async function callLLM(prompt: string, settings: AISettings, systemPrompt: strin
 }
 
 
+/**
+ * Inline autocomplete using the assistant-prefill pattern.
+ * The entire context is placed as the start of the assistant turn so the model
+ * is forced to continue outputting text from that exact point — no instructions,
+ * no meta-framing, just next-token prediction like GitHub Copilot.
+ */
 export async function generateCompletion(contextText: string, settings: AISettings, signal?: AbortSignal): Promise<string> {
-  const systemPrompt = `You are an inline text completion engine for a scientific manuscript editor, similar to GitHub Copilot but for writing. Your sole job is to predict the next few words or sentences that the author would write — continuing their exact sentence or paragraph mid-stream. Rules:
-- Output ONLY the raw continuation text. No commentary, no review, no suggestions, no preamble, no quotes.
-- Do NOT start with "I", "The text", "This study", or any meta-language about the document.
-- Match the author's voice, tense, and sentence structure seamlessly — the output must read as if the author typed it.
-- If the last sentence is unfinished, complete it first, then optionally add 1–2 more sentences in the same vein.
-- Maximum 2–3 sentences total. Stop there.`;
-  const prompt = `Complete the following manuscript text by writing what comes next. Output only the continuation, starting exactly where the text ends:\n\n${contextText}`;
-  const result = await callLLM(prompt, settings, systemPrompt, false, undefined, signal, 150);
-  // Strip any leading whitespace that duplicates what's already at cursor
-  return result.replace(/^\n+/, '');
+  const MAX_TOKENS = 150;
+  // A minimal system prompt — avoid task-framing language entirely
+  const system = 'You are a scientific manuscript writing assistant.';
+
+  if (settings.provider === 'anthropic') {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: getAnthropicHeaders(settings),
+      signal,
+      body: JSON.stringify({
+        model: settings.anthropicModel || 'claude-sonnet-4-6',
+        max_tokens: MAX_TOKENS,
+        system,
+        messages: [
+          { role: 'user', content: 'Continue writing:' },
+          // Prefill: model must complete starting from exactly contextText
+          { role: 'assistant', content: contextText },
+        ],
+      }),
+    });
+    if (!response.ok) throw new Error(`Anthropic ${response.status}`);
+    const data = await response.json();
+    return data.content?.[0]?.text || '';
+  }
+
+  if (settings.provider === 'openai') {
+    const openai = getOpenAIClient(settings);
+    const result = await withSignal(
+      openai.chat.completions.create({
+        model: settings.openaiModel || 'gpt-4o-mini',
+        max_tokens: MAX_TOKENS,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: 'Continue writing:' },
+          { role: 'assistant', content: contextText },
+        ],
+      }).then(r => r.choices[0].message.content || ''),
+      signal,
+    );
+    return result;
+  }
+
+  if (settings.provider === 'gemini') {
+    const ai = getGeminiClient(settings);
+    // Gemini doesn't support assistant prefill via contents, so use a
+    // tightly constrained prompt that ends with the text to continue
+    const result = await withSignal(
+      ai.models.generateContent({
+        model: settings.geminiModel || 'gemini-2.0-flash',
+        contents: `${system}\n\nContinue the manuscript text below. Output only the continuation text, nothing else. Do not comment, review, or explain — just write the next 1–3 sentences as the author would.\n\n${contextText}`,
+        config: { maxOutputTokens: MAX_TOKENS },
+      }).then(r => r.text || ''),
+      signal,
+    );
+    return result;
+  }
+
+  // Local (OpenAI-compatible) — assistant prefill via messages array
+  let baseUrl = settings.localBaseUrl.trim().replace(/\/$/, '');
+  let endpoint = baseUrl.includes('/chat/completions')
+    ? baseUrl
+    : (() => { try { return new URL(baseUrl).origin + '/v1/chat/completions'; } catch { return baseUrl; } })();
+
+  const body = JSON.stringify({
+    model: settings.localModel,
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: 'Continue writing:' },
+      { role: 'assistant', content: contextText },
+    ],
+    temperature: 0.3,
+    max_tokens: MAX_TOKENS,
+  });
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(settings.localApiKey ? { Authorization: `Bearer ${settings.localApiKey}` } : {}),
+  };
+  const response = await fetch(endpoint, { method: 'POST', headers, body, signal });
+  if (!response.ok) throw new Error(`Local LLM ${response.status}`);
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content || '';
 }
 
 export async function resolveConflicts(suggestions: Suggestion[], settings: AISettings): Promise<Suggestion[]> {
