@@ -262,11 +262,66 @@ Click **Settings** (gear icon, bottom-left) to configure your provider:
 
 All API keys are stored in browser `localStorage` and never leave your machine.
 
-### Local LLM Tips
+### Recommended Local Models
 
-- Use **8B+ parameter** models for reliable JSON output (Llama 3.1 8B, Mistral Nemo, Qwen 2.5 7B)
-- Smaller models (3–4B) may produce malformed JSON → "JSON parse failed" toast
-- Set **Chunk size** in Settings to control how many characters per section are sent to local models (0 = send full manuscript, not recommended for small context windows)
+The app has been tested extensively with local models. Smaller models in the 4–8B range run very fast on consumer hardware and produce good-quality suggestions for most manuscripts.
+
+#### Fast 4B models — great for everyday use
+
+| Model | Speed (approx.) | Vision | Notes |
+|-------|----------------|--------|-------|
+| **NVIDIA Nemotron-3 Nano 4B** | ~180 tok/s | No | Fastest tested; excellent grammar and flow suggestions |
+| **Google Gemma 3 4B** | ~140 tok/s | Yes | Slightly slower, but supports image analysis in chat |
+
+Both models are available in LM Studio and Ollama and run comfortably on a modern GPU with 8 GB VRAM. They handle the structured JSON output required by the analysis pipeline reliably.
+
+#### Larger models — higher quality, slower throughput
+
+| Model | Vision | Notes |
+|-------|--------|-------|
+| **Qwen 2.5 7B / 14B** | Some variants | Strong reasoning, good JSON compliance |
+| **Qwen2-VL 7B** | Yes | Excellent for figure analysis |
+| **GLM-4 9B** | No | Good scientific writing style |
+| **Llama 3.1 8B / 70B** | No | Solid all-rounder |
+
+Larger models generally produce higher-quality suggestions but may be slower depending on hardware. If JSON parse errors appear, switch to a larger model or a cloud API.
+
+#### General tips
+
+- Set **Chunk size** in Settings to control how many characters are sent per section (0 = full manuscript in one request; not recommended for models with short context windows)
+- Smaller models (< 3B) may produce malformed JSON → "JSON parse failed" toast. Use 4B+ for reliable results
+- For vision/image features, use a VLM — the app warns you if the selected model name does not look like a vision model
+
+---
+
+### Using Local LLMs with the GitHub-Hosted Web App
+
+The hosted version at GitHub Pages runs entirely in your browser. To connect it to a local LM Studio or Ollama server, you need to expose your local server to the internet. The easiest way is [**ngrok**](https://ngrok.com/):
+
+1. Start your LLM server normally (LM Studio on port 1234, Ollama on port 11434)
+2. Install ngrok (free, works on Windows, macOS, Linux): `npm install -g ngrok` or download from ngrok.com
+3. Run: `ngrok http 1234` (or your port)
+4. ngrok gives you a public HTTPS URL like `https://abc123.ngrok-free.app`
+5. Paste that URL into **Settings → Local LLM → Base URL** in the app
+
+The tunnel is free, fast, and requires no server setup. Your model runs locally; ngrok just forwards the HTTPS traffic from the browser to your machine.
+
+> **Privacy note:** ngrok traffic passes through ngrok's servers as HTTPS. If you prefer fully local operation, run the Electron desktop app instead (see below) — it connects to `localhost` directly with no tunnel needed.
+
+### Running Fully Locally with Electron
+
+The desktop (Electron) build connects directly to `http://localhost:1234` — no tunnel, no CORS, no internet required:
+
+```bash
+git clone https://github.com/dzyla/manuscriptAI
+cd manuscript-ai-editor
+npm install
+npm run build:electron
+```
+
+This produces a standalone app in `release/`. All LLM traffic stays on your machine. The Electron build also bypasses CORS for the semantic literature search API.
+
+---
 
 ### Customizing Agent Prompts
 
