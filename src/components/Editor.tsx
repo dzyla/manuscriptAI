@@ -21,6 +21,7 @@ import {
 import { getThesaurus, generateCompletion } from '../services/ai';
 import { AISettings } from '../types';
 import { AutoComplete } from '../extensions/AutoComplete';
+import { expandCitationNums } from '../services/citations';
 
 interface EditorProps {
   content: string;
@@ -54,6 +55,7 @@ export interface EditorRef {
   getCurrentSection: () => string | null;
   getCurrentSectionText: () => string | null;
   scrollToHeading: (headingText: string) => void;
+  scrollToCitation: (num: number) => void;
 }
 
 const findTextPosition = (doc: any, searchText: string): { from: number; to: number } | null => {
@@ -438,11 +440,21 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
     const num = onInsertCitation(source.id);
     const atPos = atInsertPos.current;
     const curPos = editor.state.selection.from;
-    // Delete from atPos (the '@') to current cursor position, then insert [N]
-    editor.chain().focus()
-      .deleteRange({ from: atPos, to: curPos })
-      .insertContent(`[${num}]`)
-      .run();
+
+    // Delete the '@filter' typed text, leaving cursor at atPos
+    editor.chain().focus().deleteRange({ from: atPos, to: curPos }).run();
+
+    // Check for an adjacent citation group immediately before the insertion point.
+    // If this reference number is already there, skip insertion (no duplicate).
+    const textBefore = editor.state.doc.textBetween(Math.max(0, atPos - 50), atPos, '\n');
+    const adjacentMatch = textBefore.match(/\[([\d,\-]+)\]\s*$/);
+    if (adjacentMatch && expandCitationNums(adjacentMatch[1]).includes(num)) {
+      setCitationPicker(null);
+      setCitationFilter('');
+      return;
+    }
+
+    editor.chain().focus().insertContent(`[${num}]`).run();
     setCitationPicker(null);
     setCitationFilter('');
   };
@@ -629,6 +641,38 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
             if (scrollParent) {
               const rect = scrollParent.getBoundingClientRect();
               const targetY = coords.top - rect.top + scrollParent.scrollTop - 80;
+              scrollParent.scrollTo({ top: Math.max(0, targetY), behavior: 'smooth' });
+            }
+          }
+        }, 50);
+      }
+    },
+    scrollToCitation: (num: number) => {
+      if (!editor) return;
+      let targetPos: number | null = null;
+      editor.state.doc.descendants((node, pos) => {
+        if (targetPos !== null) return false;
+        if (node.isText && node.text) {
+          const pat = /\[([\d,\-]+)\]/g;
+          let m;
+          while ((m = pat.exec(node.text)) !== null) {
+            if (expandCitationNums(m[1]).includes(num)) {
+              targetPos = pos + m.index;
+              return false;
+            }
+          }
+        }
+        return true;
+      });
+      if (targetPos !== null) {
+        editor.chain().focus().setTextSelection(targetPos).scrollIntoView().run();
+        setTimeout(() => {
+          const coords = editor.view.coordsAtPos(targetPos!);
+          if (coords) {
+            const scrollParent = editor.view.dom.closest('.overflow-y-auto') || editor.view.dom.parentElement?.closest('.overflow-y-auto');
+            if (scrollParent) {
+              const rect = scrollParent.getBoundingClientRect();
+              const targetY = coords.top - rect.top + scrollParent.scrollTop - scrollParent.clientHeight / 3;
               scrollParent.scrollTo({ top: Math.max(0, targetY), behavior: 'smooth' });
             }
           }

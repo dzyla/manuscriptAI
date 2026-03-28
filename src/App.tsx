@@ -5,6 +5,7 @@ import SettingsModal from './components/SettingsModal';
 import PostDraftingView from './components/PostDraftingView';
 import { AgentType, Message, Suggestion, HistoryItem, AISettings, ManuscriptSource, AttachedImage } from './types';
 import { searchSimilarManuscripts } from './services/manuscriptSearch';
+import { expandCitationNums, formatCitationGroup, mergeAdjacentCitations } from './services/citations';
 import { analyzeText, chatWithAgent, chatWithManuscript, resolveConflicts, runJudgeAgent, rebutSuggestion, manuscriptSummary, rewriteSection, transformWithInstruction, analyzeSourceAgainstManuscript, verifyClaimAgainstSources, AGENT_INFO, AGENT_ICONS, estimateTokens } from './services/ai';
 import { Sparkles, FileText, Settings, Download, Keyboard, Eye, Moon, Sun, ChevronDown, FilePlus, Coins, BookOpen, Github, Square } from 'lucide-react';
 import { saveAs } from 'file-saver';
@@ -431,8 +432,14 @@ export default function App() {
     if (citationRegistry[sourceId]) return citationRegistry[sourceId];
     const num = ++citationCounter.current;
     setCitationRegistry(prev => ({ ...prev, [sourceId]: num }));
-    // Auto-renumber after editor has committed the inserted text
-    setTimeout(() => renumberCitations(), 150);
+    // Merge adjacent groups after the editor commits the inserted text
+    setTimeout(() => {
+      const html = editorRef.current?.getHTML();
+      if (html) {
+        const merged = mergeAdjacentCitations(html);
+        if (merged !== html) { editorRef.current?.setContent(merged); setContent(merged); }
+      }
+    }, 150);
     return num;
   };
 
@@ -441,62 +448,72 @@ export default function App() {
     if (!html) return;
     setCitationRegistry(prev => {
       if (Object.keys(prev).length === 0) return prev;
-      // Build inverted map: current number → sourceId
       const numToId: Record<number, string> = {};
       for (const [id, num] of Object.entries(prev)) numToId[num] = id;
-      // Scan HTML for [N] in document order, collect unique sourceIds
+      // Scan all citation groups (handles [N], [N-M], [A,B,...])
       const seenIds: string[] = [];
       const seenNums = new Set<number>();
-      const pat = /\[(\d+)\]/g;
+      const pat = /\[([\d,\-]+)\]/g;
       let m;
       while ((m = pat.exec(html)) !== null) {
-        const n = parseInt(m[1]);
-        if (numToId[n] && !seenNums.has(n)) { seenNums.add(n); seenIds.push(numToId[n]); }
+        for (const n of expandCitationNums(m[1])) {
+          if (numToId[n] && !seenNums.has(n)) { seenNums.add(n); seenIds.push(numToId[n]); }
+        }
       }
-      // Include sources in registry that weren't found in the document (orphaned)
-      for (const [id] of Object.entries(prev)) {
+      for (const id of Object.keys(prev)) {
         if (!seenIds.includes(id)) seenIds.push(id);
       }
-      // Build new numbering
       const newReg: Record<string, number> = {};
       seenIds.forEach((id, i) => { newReg[id] = i + 1; });
-      // Replace [N] in editor HTML with renumbered values
-      const newHtml = html.replace(/\[(\d+)\]/g, (_, n) => {
-        const id = numToId[parseInt(n)];
-        return id && newReg[id] ? `[${newReg[id]}]` : `[${n}]`;
+      // Remap every citation group, then merge adjacent groups and compress ranges
+      const remapped = html.replace(/\[([\d,\-]+)\]/g, (_, inner) => {
+        const nums = [...new Set(expandCitationNums(inner).map(n => {
+          const id = numToId[n];
+          return id && newReg[id] ? newReg[id] : n;
+        }))].sort((a, b) => a - b);
+        return formatCitationGroup(nums);
       });
+      const newHtml = mergeAdjacentCitations(remapped);
       editorRef.current?.setContent(newHtml);
       setContent(newHtml);
       citationCounter.current = seenIds.length;
       return newReg;
     });
-  }, []);  // stable — only uses refs + setters
+  }, []);
 
   const removeCitation = useCallback((sourceId: string) => {
     setCitationRegistry(prev => {
       const { [sourceId]: removed, ...rest } = prev;
       if (!removed) return prev;
-      // Remove all occurrences of [N] from editor content
       const html = editorRef.current?.getHTML() || '';
-      const cleaned = html.replace(new RegExp(`\\[${removed}\\]`, 'g'), '');
-      editorRef.current?.setContent(cleaned);
-      setContent(cleaned);
-      // Renumber remaining entries
+      // Strip the number from every group that contains it; remove empty groups
+      const stripped = html.replace(/\[([\d,\-]+)\]/g, (_, inner) => {
+        const nums = expandCitationNums(inner).filter(n => n !== removed);
+        return nums.length > 0 ? formatCitationGroup(nums) : '';
+      });
+      // Renumber remaining
       const sorted = Object.entries(rest).sort((a, b) => a[1] - b[1]);
       const newReg: Record<string, number> = {};
       sorted.forEach(([id], i) => { newReg[id] = i + 1; });
-      // Update [N] values in cleaned HTML
       const numToId: Record<number, string> = {};
       for (const [id, num] of Object.entries(rest)) numToId[num] = id;
-      const renumbered = cleaned.replace(/\[(\d+)\]/g, (_, n) => {
-        const id = numToId[parseInt(n)];
-        return id && newReg[id] ? `[${newReg[id]}]` : `[${n}]`;
+      const remapped = stripped.replace(/\[([\d,\-]+)\]/g, (_, inner) => {
+        const nums = [...new Set(expandCitationNums(inner).map(n => {
+          const id = numToId[n];
+          return id && newReg[id] ? newReg[id] : n;
+        }))].sort((a, b) => a - b);
+        return nums.length > 0 ? formatCitationGroup(nums) : '';
       });
-      editorRef.current?.setContent(renumbered);
-      setContent(renumbered);
+      const newHtml = mergeAdjacentCitations(remapped);
+      editorRef.current?.setContent(newHtml);
+      setContent(newHtml);
       citationCounter.current = sorted.length;
       return newReg;
     });
+  }, []);
+
+  const handleScrollToCitation = useCallback((num: number) => {
+    editorRef.current?.scrollToCitation(num);
   }, []);
 
   const handleSearchSimilar = (text: string) => {
@@ -1205,6 +1222,8 @@ export default function App() {
             citationRegistry={citationRegistry}
             onRenumberCitations={renumberCitations}
             onRemoveCitation={removeCitation}
+            onScrollToCitation={handleScrollToCitation}
+            documentHTML={content}
           />
         </div>
       )}

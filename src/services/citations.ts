@@ -143,3 +143,62 @@ export function formatBibliography(bibText: string, style: BibStyle = 'apa'): st
     }
   }
 }
+
+// ─── Numeric citation utilities ───────────────────────────────────────────────
+
+/** Parse the inner part of a bracket group, e.g. "1-3,5" → [1,2,3,5] */
+export function expandCitationNums(inner: string): number[] {
+  const nums: number[] = [];
+  for (const part of inner.split(',')) {
+    const t = part.trim();
+    const dash = t.indexOf('-');
+    if (dash > 0) {
+      const a = parseInt(t.slice(0, dash));
+      const b = parseInt(t.slice(dash + 1));
+      if (!isNaN(a) && !isNaN(b)) for (let i = a; i <= b; i++) nums.push(i);
+    } else {
+      const n = parseInt(t);
+      if (!isNaN(n) && n > 0) nums.push(n);
+    }
+  }
+  return nums;
+}
+
+/** Convert a sorted array of numbers to a compressed bracket string, e.g. [1,2,3,5] → "[1-3,5]" */
+export function formatCitationGroup(nums: number[]): string {
+  const sorted = [...new Set(nums)].filter(n => n > 0).sort((a, b) => a - b);
+  if (sorted.length === 0) return '';
+  const parts: string[] = [];
+  let start = sorted[0], end = sorted[0];
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i] === end + 1) { end = sorted[i]; }
+    else { parts.push(start === end ? `${start}` : `${start}-${end}`); start = end = sorted[i]; }
+  }
+  parts.push(start === end ? `${start}` : `${start}-${end}`);
+  return `[${parts.join(',')}]`;
+}
+
+/**
+ * Merge immediately adjacent citation groups in HTML, e.g. "[1][2] [3]" → "[1-3]".
+ * Only merges groups with at most whitespace between them (not across HTML tags).
+ */
+export function mergeAdjacentCitations(html: string): string {
+  return html.replace(/(\[[\d,\-]+\])(\s*\[[\d,\-]+\])+/g, (match) => {
+    const nums = new Set<number>();
+    const pat = /\[([\d,\-]+)\]/g;
+    let m;
+    while ((m = pat.exec(match)) !== null) expandCitationNums(m[1]).forEach(n => nums.add(n));
+    return formatCitationGroup([...nums].sort((a, b) => a - b));
+  });
+}
+
+/** Count how many citation groups in the HTML document include a given number */
+export function countCitationOccurrences(html: string, num: number): number {
+  let count = 0;
+  const pat = /\[([\d,\-]+)\]/g;
+  let m;
+  while ((m = pat.exec(html)) !== null) {
+    if (expandCitationNums(m[1]).includes(num)) count++;
+  }
+  return count;
+}
