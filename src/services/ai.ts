@@ -624,93 +624,36 @@ async function callLLM(prompt: string, settings: AISettings, systemPrompt: strin
 
 
 /**
- * Inline autocomplete using the assistant-prefill pattern.
- * The entire context is placed as the start of the assistant turn so the model
- * is forced to continue outputting text from that exact point — no instructions,
- * no meta-framing, just next-token prediction like GitHub Copilot.
+ * Inline autocomplete.
+ *
+ * Works with any provider including small local models (4–8B).
+ * The model receives the manuscript context as a user message and must
+ * reply with only the continuation text. No assistant-prefill is used
+ * because small instruction-tuned models respond to the user turn, not
+ * to the prefilled assistant turn, producing leaked instructions instead
+ * of a clean continuation.
  */
 export async function generateCompletion(contextText: string, settings: AISettings, signal?: AbortSignal): Promise<string> {
-  const MAX_TOKENS = 150;
-  // A minimal system prompt — avoid task-framing language entirely
-  const system = 'You are a scientific manuscript writing assistant.';
+  const system =
+    'You are an autocomplete engine for scientific manuscripts. ' +
+    'The user will provide the text they have written so far. ' +
+    'Reply with ONLY the next 1–3 sentences that continue it. ' +
+    'Never include labels, preamble, explanations, or any text other than the continuation itself.';
 
-  if (settings.provider === 'anthropic') {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: getAnthropicHeaders(settings),
-      signal,
-      body: JSON.stringify({
-        model: settings.anthropicModel || 'claude-sonnet-4-6',
-        max_tokens: MAX_TOKENS,
-        system,
-        messages: [
-          { role: 'user', content: 'Continue writing:' },
-          // Prefill: model must complete starting from exactly contextText
-          { role: 'assistant', content: contextText },
-        ],
-      }),
-    });
-    if (!response.ok) throw new Error(`Anthropic ${response.status}`);
-    const data = await response.json();
-    return data.content?.[0]?.text || '';
-  }
+  // Prompt ends with the manuscript text so the model's first output token
+  // is naturally the next word after the cursor.
+  const prompt = contextText;
 
-  if (settings.provider === 'openai') {
-    const openai = getOpenAIClient(settings);
-    const result = await withSignal(
-      openai.chat.completions.create({
-        model: settings.openaiModel || 'gpt-4o-mini',
-        max_tokens: MAX_TOKENS,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: 'Continue writing:' },
-          { role: 'assistant', content: contextText },
-        ],
-      }).then(r => r.choices[0].message.content || ''),
-      signal,
-    );
-    return result;
-  }
+  const raw = await callLLM(prompt, settings, system, false, undefined, signal, 150);
 
-  if (settings.provider === 'gemini') {
-    const ai = getGeminiClient(settings);
-    // Gemini doesn't support assistant prefill via contents, so use a
-    // tightly constrained prompt that ends with the text to continue
-    const result = await withSignal(
-      ai.models.generateContent({
-        model: settings.geminiModel || 'gemini-2.0-flash',
-        contents: `${system}\n\nContinue the manuscript text below. Output only the continuation text, nothing else. Do not comment, review, or explain — just write the next 1–3 sentences as the author would.\n\n${contextText}`,
-        config: { maxOutputTokens: MAX_TOKENS },
-      }).then(r => r.text || ''),
-      signal,
-    );
-    return result;
-  }
+  // Strip preamble that small models sometimes emit despite instructions
+  // e.g. "Sure! Here's the continuation:", "Continuation:", blank lines
+  const stripped = raw
+    .replace(/^\s*[\w\s]*:\s*/i, '') // "Continuation: " / "Here's the continuation: "
+    .replace(/^(Sure|Of course|Certainly|Here|I'll)[^.!?\n]*[.!?]\s*/i, '') // "Sure! Here's what comes next."
+    .replace(/^\n+/, '');
 
-  // Local (OpenAI-compatible) — assistant prefill via messages array
-  let baseUrl = settings.localBaseUrl.trim().replace(/\/$/, '');
-  let endpoint = baseUrl.includes('/chat/completions')
-    ? baseUrl
-    : (() => { try { return new URL(baseUrl).origin + '/v1/chat/completions'; } catch { return baseUrl; } })();
-
-  const body = JSON.stringify({
-    model: settings.localModel,
-    messages: [
-      { role: 'system', content: system },
-      { role: 'user', content: 'Continue writing:' },
-      { role: 'assistant', content: contextText },
-    ],
-    temperature: 0.3,
-    max_tokens: MAX_TOKENS,
-  });
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...(settings.localApiKey ? { Authorization: `Bearer ${settings.localApiKey}` } : {}),
-  };
-  const response = await fetch(endpoint, { method: 'POST', headers, body, signal });
-  if (!response.ok) throw new Error(`Local LLM ${response.status}`);
-  const data = await response.json();
-  return data.choices?.[0]?.message?.content || '';
+  return stripped;
 }
 
 export async function resolveConflicts(suggestions: Suggestion[], settings: AISettings): Promise<Suggestion[]> {
