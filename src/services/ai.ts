@@ -624,8 +624,13 @@ async function callLLM(prompt: string, settings: AISettings, systemPrompt: strin
 
 
 export async function generateCompletion(contextText: string, settings: AISettings, signal?: AbortSignal): Promise<string> {
-  const systemPrompt = `You are an autocomplete assistant for scientific manuscript writing. Output ONLY the completion text — no preamble, no explanation, no quotes. Continue the author's text naturally, staying consistent with their style, voice, and scientific register. Write 1–3 sentences at most.`;
-  const prompt = `Continue the following text naturally:\n\n${contextText}`;
+  const systemPrompt = `You are an inline text completion engine for a scientific manuscript editor, similar to GitHub Copilot but for writing. Your sole job is to predict the next few words or sentences that the author would write — continuing their exact sentence or paragraph mid-stream. Rules:
+- Output ONLY the raw continuation text. No commentary, no review, no suggestions, no preamble, no quotes.
+- Do NOT start with "I", "The text", "This study", or any meta-language about the document.
+- Match the author's voice, tense, and sentence structure seamlessly — the output must read as if the author typed it.
+- If the last sentence is unfinished, complete it first, then optionally add 1–2 more sentences in the same vein.
+- Maximum 2–3 sentences total. Stop there.`;
+  const prompt = `Complete the following manuscript text by writing what comes next. Output only the continuation, starting exactly where the text ends:\n\n${contextText}`;
   const result = await callLLM(prompt, settings, systemPrompt, false, undefined, signal, 150);
   // Strip any leading whitespace that duplicates what's already at cursor
   return result.replace(/^\n+/, '');
