@@ -244,7 +244,7 @@ function withSignal<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
   ]);
 }
 
-async function callAnthropicLLM(prompt: string, settings: AISettings, systemPrompt: string = "", images?: AttachedImage[], signal?: AbortSignal): Promise<string> {
+async function callAnthropicLLM(prompt: string, settings: AISettings, systemPrompt: string = "", images?: AttachedImage[], signal?: AbortSignal, maxTokens?: number): Promise<string> {
   const userContent: any[] = [];
 
   if (images && images.length > 0) {
@@ -263,7 +263,7 @@ async function callAnthropicLLM(prompt: string, settings: AISettings, systemProm
     signal,
     body: JSON.stringify({
       model: settings.anthropicModel || 'claude-sonnet-4-6',
-      max_tokens: 4096,
+      max_tokens: maxTokens ?? 4096,
       system: systemPrompt || undefined,
       messages: [{ role: 'user', content: userContent }],
     })
@@ -287,7 +287,7 @@ export function localModelSupportsVision(modelName: string): boolean {
   return /vl\b|vision|visual|llava|clip|multimodal|bakllava|minicpm-v|moondream|qwen.*vl|phi.*vision|internvl|cogvlm|pixtral|molmo|paligemma/.test(lower);
 }
 
-async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: string = "", images?: AttachedImage[], signal?: AbortSignal): Promise<string> {
+async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: string = "", images?: AttachedImage[], signal?: AbortSignal, maxTokens?: number): Promise<string> {
   let baseUrl = settings.localBaseUrl.trim();
   if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
   
@@ -340,7 +340,7 @@ async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: 
     model: settings.localModel,
     messages,
     temperature: 0.3,
-    max_tokens: 4096,
+    max_tokens: maxTokens ?? 4096,
   });
 
   const headers: Record<string, string> = {
@@ -571,11 +571,11 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
-async function callLLM(prompt: string, settings: AISettings, systemPrompt: string, jsonMode: boolean = false, images?: AttachedImage[], signal?: AbortSignal): Promise<string> {
+async function callLLM(prompt: string, settings: AISettings, systemPrompt: string, jsonMode: boolean = false, images?: AttachedImage[], signal?: AbortSignal, maxTokens?: number): Promise<string> {
   if (settings.provider === 'local') {
-    return callLocalLLM(prompt, settings, systemPrompt, images, signal);
+    return callLocalLLM(prompt, settings, systemPrompt, images, signal, maxTokens);
   } else if (settings.provider === 'anthropic') {
-    return callAnthropicLLM(prompt, settings, systemPrompt, images, signal);
+    return callAnthropicLLM(prompt, settings, systemPrompt, images, signal, maxTokens);
   } else if (settings.provider === 'openai') {
     const openai = getOpenAIClient(settings);
     let userContent: any = prompt;
@@ -591,7 +591,8 @@ async function callLLM(prompt: string, settings: AISettings, systemPrompt: strin
         ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
         { role: 'user' as const, content: userContent }
       ],
-      ...(jsonMode ? { response_format: { type: 'json_object' as const } } : {})
+      ...(jsonMode ? { response_format: { type: 'json_object' as const } } : {}),
+      ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
     }).then(r => r.choices[0].message.content || ''), signal);
   } else {
     // Gemini
@@ -604,17 +605,31 @@ async function callLLM(prompt: string, settings: AISettings, systemPrompt: strin
       return withSignal(ai.models.generateContent({
         model: settings.geminiModel || 'gemini-3.1-pro-preview',
         contents: [{ parts }],
-        ...(jsonMode ? { config: { responseMimeType: 'application/json' } } : {})
+        config: {
+          ...(jsonMode ? { responseMimeType: 'application/json' } : {}),
+          ...(maxTokens !== undefined ? { maxOutputTokens: maxTokens } : {}),
+        },
       }).then(r => r.text || ''), signal);
     }
     return withSignal(ai.models.generateContent({
       model: settings.geminiModel || 'gemini-3.1-pro-preview',
       contents: (systemPrompt ? systemPrompt + '\n\n' : '') + prompt,
-      ...(jsonMode ? { config: { responseMimeType: 'application/json' } } : {})
+      config: {
+        ...(jsonMode ? { responseMimeType: 'application/json' } : {}),
+        ...(maxTokens !== undefined ? { maxOutputTokens: maxTokens } : {}),
+      },
     }).then(r => r.text || ''), signal);
   }
 }
 
+
+export async function generateCompletion(contextText: string, settings: AISettings, signal?: AbortSignal): Promise<string> {
+  const systemPrompt = `You are an autocomplete assistant for scientific manuscript writing. Output ONLY the completion text — no preamble, no explanation, no quotes. Continue the author's text naturally, staying consistent with their style, voice, and scientific register. Write 1–3 sentences at most.`;
+  const prompt = `Continue the following text naturally:\n\n${contextText}`;
+  const result = await callLLM(prompt, settings, systemPrompt, false, undefined, signal, 150);
+  // Strip any leading whitespace that duplicates what's already at cursor
+  return result.replace(/^\n+/, '');
+}
 
 export async function resolveConflicts(suggestions: Suggestion[], settings: AISettings): Promise<Suggestion[]> {
   if (suggestions.length < 2) return suggestions;

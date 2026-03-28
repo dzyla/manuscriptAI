@@ -16,10 +16,11 @@ import {
   Bold, Italic, Underline as UnderlineIcon, List, ListOrdered,
   AlignLeft, AlignCenter, AlignRight, AlignJustify, Quote, Heading2,
   Heading3, Undo, Redo, Clock, Sparkles, PenLine, FlaskConical, Beaker, Send, MessageSquare, BookOpen, RefreshCw, FileSearch, Search,
-  Table as TableIcon, ImagePlus, Menu, X, ScanEye, Trash2, ShieldCheck, Eye as EyeIcon
+  Table as TableIcon, ImagePlus, Menu, X, ScanEye, Trash2, ShieldCheck, Eye as EyeIcon, Wand2, Loader2
 } from 'lucide-react';
-import { getThesaurus } from '../services/ai';
+import { getThesaurus, generateCompletion } from '../services/ai';
 import { AISettings } from '../types';
+import { AutoComplete } from '../extensions/AutoComplete';
 
 interface EditorProps {
   content: string;
@@ -171,8 +172,15 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
   const [showAskInput, setShowAskInput] = useState(false);
   const [askInputValue, setAskInputValue] = useState('');
   const askInputRef = useRef<HTMLInputElement>(null);
+  const [autocompleteEnabled, setAutocompleteEnabled] = useState(false);
+  const [autocompleteLoading, setAutocompleteLoading] = useState(false);
+  const autocompleteEnabledRef = useRef(false);
+  const aiSettingsRef = useRef<AISettings | undefined>(aiSettings);
 
   useEffect(() => { setIsMounted(true); }, []);
+
+  useEffect(() => { aiSettingsRef.current = aiSettings; }, [aiSettings]);
+  useEffect(() => { autocompleteEnabledRef.current = autocompleteEnabled; }, [autocompleteEnabled]);
 
   const editor = useEditor({
     extensions: [
@@ -185,6 +193,14 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
       GrammarChecker,
       TableKit.configure({ table: { resizable: true } }),
       ResizableImage,
+      AutoComplete.configure({
+        getEnabled: () => autocompleteEnabledRef.current,
+        onSuggest: (contextText, signal) => {
+          if (!aiSettingsRef.current) return Promise.resolve('');
+          return generateCompletion(contextText, aiSettingsRef.current, signal);
+        },
+        onLoadingChange: setAutocompleteLoading,
+      }),
     ],
     content,
     onUpdate: ({ editor }) => {
@@ -716,6 +732,16 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
             <div className="w-px h-4 mx-0.5 shrink-0" style={{ background: 'var(--border)' }} />
             <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().undo().run(); }} title="Undo"><Undo size={14} /></ToolbarButton>
             <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().redo().run(); }} title="Redo"><Redo size={14} /></ToolbarButton>
+            <div className="w-px h-4 mx-0.5 shrink-0" style={{ background: 'var(--border)' }} />
+            <ToolbarButton
+              onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); setAutocompleteEnabled(v => !v); }}
+              title={autocompleteEnabled ? 'Autocomplete on (Tab to accept)' : 'Autocomplete off'}
+              isActive={autocompleteEnabled}
+            >
+              {autocompleteLoading
+                ? <Loader2 size={14} className="animate-spin" />
+                : <Wand2 size={14} />}
+            </ToolbarButton>
           </div>
         </div>
 
