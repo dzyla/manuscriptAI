@@ -312,6 +312,25 @@ mark {
   border-radius: 2px;
 }
 
+/* CitationNode badge */
+.citation-badge {
+  display: inline;
+  font-size: 0.8em;
+  font-weight: 600;
+  color: var(--accent-blue, #3b6fd4);
+  cursor: default;
+  user-select: none;
+  border-radius: 3px;
+  padding: 0 1px;
+  transition: background 0.15s;
+}
+.citation-badge:hover {
+  background: rgba(59, 111, 212, 0.1);
+}
+[data-theme='dark'] .citation-badge {
+  color: #7ba7ff;
+}
+
 /* TipTap Table styles */
 .ProseMirror table {
   border-collapse: collapse;

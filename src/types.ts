@@ -40,6 +40,7 @@ export interface AISettings {
   localModel: string;
   localChunkSize?: number;  // 0 = no chunking (full manuscript), undefined/default = 2000 chars
   customPrompts?: Partial<Record<AgentType, string>>;
+  zotero?: ZoteroSettings;
 }
 
 export interface Suggestion {
@@ -82,4 +83,53 @@ export interface HistoryItem {
   suggestedText: string;
   suggestionId: string;
   agent: AgentType;
+}
+
+/** Named full-document snapshot for version history ("Time Machine") */
+export interface VersionSnapshot {
+  id: string;
+  name: string;
+  timestamp: number;
+  title: string;
+  content: string;
+  description?: string;
+  wordCount?: number;
+}
+
+/** Zotero API credentials for library sync */
+export interface ZoteroSettings {
+  apiKey: string;
+  userId: string;
+  groupId?: string;
+  lastSynced?: number;
+}
+
+// ─── Dexie row types ──────────────────────────────────────────────────────────
+
+export interface DocumentRow {
+  id: 'current';
+  title: string;
+  content: string;
+  saveState: 'Draft' | 'Saved' | 'Auto-saved';
+  citationRegistry: Record<string, number>;
+  citationCounter: number;
+  updatedAt: number;
+}
+
+export interface SourceRow extends ManuscriptSource {
+  order: number;
+}
+
+export interface ChatHistoryRow {
+  id: string;
+  message: Message;
+  order: number;
+}
+
+export interface SuggestionRow extends Suggestion {
+  // id already on Suggestion
+}
+
+export interface HistoryItemRow extends HistoryItem {
+  // id already on HistoryItem
 }

@@ -1,42 +1,55 @@
-import { app as o, BrowserWindow as i, ipcMain as R, net as w } from "electron";
-import e from "node:path";
-import { fileURLToPath as h } from "node:url";
-const s = e.dirname(h(import.meta.url));
-process.env.APP_ROOT = e.join(s, "..");
-const r = process.env.VITE_DEV_SERVER_URL, P = e.join(process.env.APP_ROOT, "dist-electron"), a = e.join(process.env.APP_ROOT, "dist");
-process.env.VITE_PUBLIC = r ? e.join(process.env.APP_ROOT, "public") : a;
-let n;
-function c() {
-  n = new i({
-    icon: e.join(process.env.VITE_PUBLIC, "electron-vite.svg"),
+import { app, BrowserWindow, ipcMain, net } from "electron";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+const __dirname$1 = path.dirname(fileURLToPath(import.meta.url));
+process.env.APP_ROOT = path.join(__dirname$1, "..");
+const VITE_DEV_SERVER_URL = process.env["VITE_DEV_SERVER_URL"];
+const MAIN_DIST = path.join(process.env.APP_ROOT, "dist-electron");
+const RENDERER_DIST = path.join(process.env.APP_ROOT, "dist");
+process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, "public") : RENDERER_DIST;
+let win;
+function createWindow() {
+  win = new BrowserWindow({
+    icon: path.join(process.env.VITE_PUBLIC, "electron-vite.svg"),
     webPreferences: {
-      preload: e.join(s, "preload.mjs"),
-      nodeIntegration: !1,
-      contextIsolation: !0,
-      webSecurity: !0
+      preload: path.join(__dirname$1, "preload.mjs"),
+      nodeIntegration: false,
+      contextIsolation: true,
+      webSecurity: true
     },
     width: 1280,
     height: 800,
     titleBarStyle: "hiddenInset"
-  }), r ? n.loadURL(r) : n.loadFile(e.join(a, "index.html"));
+  });
+  if (VITE_DEV_SERVER_URL) {
+    win.loadURL(VITE_DEV_SERVER_URL);
+  } else {
+    win.loadFile(path.join(RENDERER_DIST, "index.html"));
+  }
 }
-o.on("window-all-closed", () => {
-  process.platform !== "darwin" && (o.quit(), n = null);
-});
-o.on("activate", () => {
-  i.getAllWindows().length === 0 && c();
-});
-R.handle("net-post", async (m, { url: l, headers: p, body: d }) => {
-  try {
-    const t = await w.fetch(l, { method: "POST", headers: p, body: d }), _ = await t.text();
-    return { ok: t.ok, status: t.status, text: _ };
-  } catch (t) {
-    return { ok: !1, status: 0, text: "", error: String(t) };
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") {
+    app.quit();
+    win = null;
   }
 });
-o.whenReady().then(c);
+app.on("activate", () => {
+  if (BrowserWindow.getAllWindows().length === 0) {
+    createWindow();
+  }
+});
+ipcMain.handle("net-post", async (_event, { url, headers, body }) => {
+  try {
+    const response = await net.fetch(url, { method: "POST", headers, body });
+    const text = await response.text();
+    return { ok: response.ok, status: response.status, text };
+  } catch (err) {
+    return { ok: false, status: 0, text: "", error: String(err) };
+  }
+});
+app.whenReady().then(createWindow);
 export {
-  P as MAIN_DIST,
-  a as RENDERER_DIST,
-  r as VITE_DEV_SERVER_URL
+  MAIN_DIST,
+  RENDERER_DIST,
+  VITE_DEV_SERVER_URL
 };

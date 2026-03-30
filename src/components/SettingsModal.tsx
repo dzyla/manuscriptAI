@@ -1,8 +1,10 @@
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Settings, Server, Zap, RotateCcw, Cloud } from 'lucide-react';
+import { X, Settings, Server, Zap, RotateCcw, Cloud, BookMarked, RefreshCw } from 'lucide-react';
 import { AISettings, AgentType } from '../types';
 import { DEFAULT_AGENT_PROMPTS, AGENT_INFO, AGENT_ICONS } from '../services/ai';
 import { useState, createElement } from 'react';
+import { fetchZoteroLibrary } from '../services/zotero';
+import { useSourceStore } from '../stores/useSourceStore';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -19,7 +21,31 @@ function AgentIcon({ agent, size = 12 }: { agent: AgentType; size?: number }) {
 }
 
 export default function SettingsModal({ isOpen, onClose, settings, onUpdateSettings }: SettingsModalProps) {
-  const [activeSection, setActiveSection] = useState<'provider' | 'agents'>('provider');
+  const [activeSection, setActiveSection] = useState<'provider' | 'agents' | 'zotero'>('provider');
+  const [zoteroSyncing, setZoteroSyncing] = useState(false);
+  const [zoteroStatus, setZoteroStatus] = useState<string | null>(null);
+  const { addSources } = useSourceStore();
+
+  const handleZoteroSync = async () => {
+    const zotero = settings.zotero;
+    if (!zotero?.apiKey || !zotero?.userId) {
+      setZoteroStatus('Enter your Zotero API key and user ID first.');
+      return;
+    }
+    setZoteroSyncing(true);
+    setZoteroStatus(null);
+    try {
+      const items = await fetchZoteroLibrary(zotero.userId, zotero.apiKey, zotero.groupId);
+      addSources(items);
+      const now = Date.now();
+      onUpdateSettings({ ...settings, zotero: { ...zotero, lastSynced: now } });
+      setZoteroStatus(`Synced ${items.length} items from Zotero at ${new Date(now).toLocaleTimeString()}.`);
+    } catch (err) {
+      setZoteroStatus(`Sync failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    } finally {
+      setZoteroSyncing(false);
+    }
+  };
   const allAgents: AgentType[] = ['manager', 'editor', 'reviewer-2', 'researcher'];
 
   const resetPrompt = (agent: AgentType) => {
@@ -78,6 +104,13 @@ export default function SettingsModal({ isOpen, onClose, settings, onUpdateSetti
                 style={{ color: activeSection === 'agents' ? 'var(--text-primary)' : 'var(--text-tertiary)' }}
               >
                 <Zap size={12} /> Agent Prompts
+              </button>
+              <button
+                onClick={() => setActiveSection('zotero')}
+                className={`px-3 py-2.5 text-xs font-semibold transition-colors flex items-center gap-1.5 ${activeSection === 'zotero' ? 'border-b-2 border-stone-800' : ''}`}
+                style={{ color: activeSection === 'zotero' ? 'var(--text-primary)' : 'var(--text-tertiary)' }}
+              >
+                <BookMarked size={12} /> Zotero
               </button>
             </div>
 
@@ -262,7 +295,7 @@ export default function SettingsModal({ isOpen, onClose, settings, onUpdateSetti
                       </motion.div>
                     )}
                   </>
-                ) : (
+                ) : activeSection === 'agents' ? (
                   <div className="space-y-4">
                     <div>
                       <h3 className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>Agent Personalities</h3>
@@ -302,7 +335,75 @@ export default function SettingsModal({ isOpen, onClose, settings, onUpdateSetti
                       </div>
                     ))}
                   </div>
-                )}
+                ) : activeSection === 'zotero' ? (
+                  <div className="space-y-4">
+                    <div>
+                      <p className="text-xs leading-relaxed mb-3" style={{ color: 'var(--text-secondary)' }}>
+                        Sync your Zotero library to use as sources. Get your API key at{' '}
+                        <span className="font-mono text-[10px]">zotero.org/settings/keys</span>.
+                        Your user ID appears above the key list on that page.
+                      </p>
+                    </div>
+
+                    <div className="space-y-3">
+                      <div>
+                        <label className="text-[10px] font-bold uppercase tracking-widest block mb-1" style={{ color: 'var(--text-muted)' }}>API Key</label>
+                        <input
+                          type="password"
+                          className="w-full p-2.5 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-stone-400"
+                          style={inputStyle}
+                          placeholder="Your Zotero API key"
+                          value={settings.zotero?.apiKey ?? ''}
+                          onChange={e => onUpdateSettings({ ...settings, zotero: { ...settings.zotero, apiKey: e.target.value, userId: settings.zotero?.userId ?? '' } })}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-bold uppercase tracking-widest block mb-1" style={{ color: 'var(--text-muted)' }}>User ID</label>
+                        <input
+                          type="text"
+                          className="w-full p-2.5 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-stone-400"
+                          style={inputStyle}
+                          placeholder="Numeric user ID (e.g. 1234567)"
+                          value={settings.zotero?.userId ?? ''}
+                          onChange={e => onUpdateSettings({ ...settings, zotero: { ...settings.zotero, userId: e.target.value, apiKey: settings.zotero?.apiKey ?? '' } })}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-bold uppercase tracking-widest block mb-1" style={{ color: 'var(--text-muted)' }}>Group ID <span className="font-normal normal-case">(optional)</span></label>
+                        <input
+                          type="text"
+                          className="w-full p-2.5 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-stone-400"
+                          style={inputStyle}
+                          placeholder="Group library ID (leave blank for personal library)"
+                          value={settings.zotero?.groupId ?? ''}
+                          onChange={e => onUpdateSettings({ ...settings, zotero: { ...settings.zotero, groupId: e.target.value || undefined, apiKey: settings.zotero?.apiKey ?? '', userId: settings.zotero?.userId ?? '' } })}
+                        />
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={handleZoteroSync}
+                      disabled={zoteroSyncing}
+                      className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-semibold transition-all disabled:opacity-40"
+                      style={{ background: 'var(--accent)', color: '#fff' }}
+                    >
+                      <RefreshCw size={12} className={zoteroSyncing ? 'animate-spin' : ''} />
+                      {zoteroSyncing ? 'Syncing…' : 'Sync Library'}
+                    </button>
+
+                    {zoteroStatus && (
+                      <p className="text-[11px] px-3 py-2 rounded-lg" style={{ background: 'var(--surface-2)', color: 'var(--text-secondary)' }}>
+                        {zoteroStatus}
+                      </p>
+                    )}
+
+                    {settings.zotero?.lastSynced && (
+                      <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                        Last synced: {new Date(settings.zotero.lastSynced).toLocaleString()}
+                      </p>
+                    )}
+                  </div>
+                ) : null}
               </div>
             </div>
 

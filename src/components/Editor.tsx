@@ -12,6 +12,7 @@ import { createPortal } from 'react-dom';
 import { AgentType, Suggestion, ManuscriptSource } from '../types';
 import { GrammarChecker } from '../extensions/GrammarChecker';
 import { ResizableImage } from '../extensions/ResizableImage';
+import { CitationNode } from '../extensions/CitationNode';
 import {
   Bold, Italic, Underline as UnderlineIcon, List, ListOrdered,
   AlignLeft, AlignCenter, AlignRight, AlignJustify, Quote, Heading2,
@@ -195,6 +196,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
       GrammarChecker,
       TableKit.configure({ table: { resizable: true } }),
       ResizableImage,
+      CitationNode,
       AutoComplete.configure({
         getEnabled: () => autocompleteEnabledRef.current,
         onSuggest: (contextText, signal) => {
@@ -444,8 +446,18 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
     // Delete the '@filter' typed text, leaving cursor at atPos
     editor.chain().focus().deleteRange({ from: atPos, to: curPos }).run();
 
-    // Check for an adjacent citation group immediately before the insertion point.
-    // If this reference number is already there, skip insertion (no duplicate).
+    // Check for an adjacent CitationNode immediately before the cursor that already contains this num.
+    const nodeBefore = editor.state.doc.resolve(atPos).nodeBefore;
+    if (nodeBefore?.type.name === 'citation') {
+      const existingNums: number[] = nodeBefore.attrs.nums ?? [];
+      if (existingNums.includes(num)) {
+        setCitationPicker(null);
+        setCitationFilter('');
+        return;
+      }
+    }
+
+    // Also check legacy [N] text groups for backward compat
     const textBefore = editor.state.doc.textBetween(Math.max(0, atPos - 50), atPos, '\n');
     const adjacentMatch = textBefore.match(/\[([\d,\-]+)\]\s*$/);
     if (adjacentMatch && expandCitationNums(adjacentMatch[1]).includes(num)) {
@@ -454,7 +466,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
       return;
     }
 
-    editor.chain().focus().insertContent(`[${num}]`).run();
+    (editor.chain().focus() as any).insertCitation(source.id, num).run();
     setCitationPicker(null);
     setCitationFilter('');
   };
@@ -652,6 +664,12 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
       let targetPos: number | null = null;
       editor.state.doc.descendants((node, pos) => {
         if (targetPos !== null) return false;
+        // CitationNode atom: check nums attribute
+        if (node.type.name === 'citation') {
+          const nums: number[] = node.attrs.nums ?? [];
+          if (nums.includes(num)) { targetPos = pos; return false; }
+        }
+        // Legacy plain-text citations: [1], [1-3], [1,2]
         if (node.isText && node.text) {
           const pat = /\[([\d,\-]+)\]/g;
           let m;

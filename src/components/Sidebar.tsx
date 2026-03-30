@@ -1,20 +1,19 @@
 import { useState, useRef, useEffect, useMemo, createElement } from 'react';
 import { AgentType, Message, Suggestion, HistoryItem, SuggestionSeverity, AISettings, AttachedImage } from '../types';
-import { Send, Sparkles, Check, X, MessageSquare, History as HistoryIcon, Info, Clock, CheckCheck, XCircle, Filter, ChevronDown, ChevronUp, BookOpen, Trash2, FileText, UploadCloud, FolderOpen, BookMarked, Plus, List, AlertTriangle, CheckCircle2, Library, Search, ExternalLink, Copy, Zap, RefreshCw, ImagePlus, Square, ArrowRight, Hash } from 'lucide-react';
+import { Send, Sparkles, Check, X, MessageSquare, History as HistoryIcon, Info, CheckCheck, XCircle, Filter, ChevronDown, ChevronUp, BookOpen, Trash2, FileText, UploadCloud, FolderOpen, BookMarked, Plus, List, AlertTriangle, CheckCircle2, Library, Search, ExternalLink, Copy, Zap, RefreshCw, ImagePlus, Square, ArrowRight, Hash } from 'lucide-react';
 import { SemanticSearchResult, ManuscriptSource } from '../types';
 import { searchSimilarManuscripts, resultToBibtex, doiToUrl } from '../services/manuscriptSearch';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import * as pdfjsLib from 'pdfjs-dist';
+import { wrap } from 'comlink';
+import type { PdfWorkerApi } from '../workers/pdfWorker';
+import type { DocxWorkerApi } from '../workers/docxWorker';
 import { Cite } from '@citation-js/core';
 import '@citation-js/plugin-bibtex';
-import localforage from 'localforage';
+import { useSourceStore } from '../stores/useSourceStore';
 import { digestSourceForManuscript, digestApiSource, analyzeSourceAgainstManuscript, AGENT_INFO, AGENT_ICONS, localModelSupportsVision } from '../services/ai';
 import { detectOrphanedCitations, formatBibliography, BIB_STYLE_LABELS, type BibStyle, type CitationAnalysis, countCitationOccurrences } from '../services/citations';
-
-// Use bundled worker via Vite's URL import for Electron compatibility
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).href;
 
 interface SidebarProps {
   suggestions: Suggestion[];
@@ -139,13 +138,25 @@ export default function Sidebar({
   onScrollToCitation,
   documentHTML = '',
 }: SidebarProps) {
+  // ─── Zustand source store ────────────────────────────────────────────────────
+  const { sources, addSources, updateSource, clearSources } = useSourceStore();
   const [input, setInput] = useState('');
   const [rebuttalTexts, setRebuttalTexts] = useState<Record<string, string>>({});
   const [showSourcePicker, setShowSourcePicker] = useState(false);
   const [attachedSourceIds, setAttachedSourceIds] = useState<Set<string>>(new Set(['__full__']));
   const sourcePickerRef = useRef<HTMLDivElement>(null);
   const [activeTab, setActiveTabLocal] = useState<'chat' | 'suggestions' | 'history' | 'sources' | 'outline'>('chat');
-  const [sources, setSources] = useState<ManuscriptSource[]>([]);
+
+  // ─── Web Workers (Comlink) ───────────────────────────────────────────────────
+  const pdfWorkerRef = useRef<ReturnType<typeof wrap<PdfWorkerApi>> | null>(null);
+  const docxWorkerRef = useRef<ReturnType<typeof wrap<DocxWorkerApi>> | null>(null);
+  useEffect(() => {
+    const rawPdf = new Worker(new URL('../workers/pdfWorker.ts', import.meta.url), { type: 'module' });
+    const rawDocx = new Worker(new URL('../workers/docxWorker.ts', import.meta.url), { type: 'module' });
+    pdfWorkerRef.current = wrap<PdfWorkerApi>(rawPdf);
+    docxWorkerRef.current = wrap<DocxWorkerApi>(rawDocx);
+    return () => { rawPdf.terminate(); rawDocx.terminate(); };
+  }, []);
   // Pending PDF match confirmations: sourceId → { results, matchIndex }
   const [pendingPdfMatches, setPendingPdfMatches] = useState<Record<string, { results: SemanticSearchResult[]; matchIndex: number }>>({});
   // API source cards: which tab is active ('summary' default) + which are currently being digested
@@ -196,50 +207,27 @@ export default function Sidebar({
   const [bibStyle, setBibStyle] = useState<BibStyle>('apa');
   const [insertingBib, setInsertingBib] = useState(false);
 
+  // Notify App.tsx of source changes (kept for backward compatibility while App.tsx is migrated)
   useEffect(() => {
-    localforage.getItem('manuscript-sources').then((saved: any) => {
-      if (saved && Array.isArray(saved)) setSources(saved);
-    }).catch(console.error);
-  }, []);
-
-  useEffect(() => {
-    localforage.setItem('manuscript-sources', sources).catch(console.error);
     onSourcesChange?.(sources);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sources]);
 
-  const cleanPdfText = (raw: string): string => {
-    return raw
-      .replace(/\r\n/g, '\n')
-      // Fix hyphenated line-breaks: "word-\nword" → "wordword"
-      .replace(/(\w)-\n(\w)/g, '$1$2')
-      // Remove pure page-number lines and "Page N [of M]" lines
-      .replace(/^[ \t]*(\d{1,4}|[Pp]age\s+\d+(\s+of\s+\d+)?)[ \t]*$/gm, '')
-      // Remove "Downloaded from …" noise
-      .replace(/^.*[Dd]ownloaded\s+from\s+.*$/gm, '')
-      // Remove copyright / rights-reserved lines
-      .replace(/^.*©\s*\d{4}.*$/gm, '')
-      .replace(/^.*[Aa]ll\s+rights\s+reserved.*$/gm, '')
-      // Remove standalone DOI lines (often footer noise)
-      .replace(/^[ \t]*[Dd][Oo][Ii]:\s*10\.\S+[ \t]*$/gm, '')
-      // Remove lines ≤ 3 chars (stray letters / bullets)
-      .replace(/^.{0,3}$/gm, '')
-      // Collapse 3+ blank lines → 2
-      .replace(/\n{3,}/g, '\n\n')
-      .trim();
-  };
-
   const extractTextFromPDF = async (file: File): Promise<string> => {
-    const arrayBuffer = await file.arrayBuffer();
-    const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
-    const pdf = await loadingTask.promise;
+    if (pdfWorkerRef.current) {
+      return pdfWorkerRef.current.extractText(await file.arrayBuffer());
+    }
+    // Fallback: inline extraction if worker not ready
+    const pdfjsLib = await import('pdfjs-dist');
+    pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).href;
+    const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
     let text = '';
     for (let i = 1; i <= pdf.numPages; i++) {
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
-      const pageText = content.items.map((item: any) => item.str).join(' ');
-      text += pageText + '\n\n';
+      text += content.items.map((item: any) => item.str).join(' ') + '\n\n';
     }
-    return cleanPdfText(text);
+    return text.trim();
   };
 
   const processFiles = async (files: File[]) => {
@@ -263,10 +251,16 @@ export default function Sidebar({
           new Cite(text);
           newSources.push({ id: Date.now().toString() + Math.random(), name: file.name, type: 'bib' as const, text });
         } else if (nameLower.endsWith('.docx')) {
-          const mammoth = await import('mammoth');
-          const arrayBuffer = await file.arrayBuffer();
-          const result = await mammoth.extractRawText({ arrayBuffer });
-          newSources.push({ id: Date.now().toString() + Math.random(), name: file.name, type: 'text' as const, text: result.value });
+          let text: string;
+          if (docxWorkerRef.current) {
+            text = await docxWorkerRef.current.extractText(await file.arrayBuffer());
+          } else {
+            // Fallback if worker not ready
+            const mammoth = await import('mammoth');
+            const result = await mammoth.extractRawText({ arrayBuffer: await file.arrayBuffer() });
+            text = result.value;
+          }
+          newSources.push({ id: Date.now().toString() + Math.random(), name: file.name, type: 'text' as const, text });
         } else if (nameLower.endsWith('.txt') || nameLower.endsWith('.md')) {
           const text = await file.text();
           newSources.push({ id: Date.now().toString() + Math.random(), name: file.name, type: 'text' as const, text });
@@ -278,7 +272,7 @@ export default function Sidebar({
     setParsingFileName(null);
 
     if (newSources.length > 0) {
-      setSources(prev => [...newSources, ...prev]);
+      addSources(newSources);
       // Auto-digest PDFs and text documents
       if (aiSettings) {
         for (const src of newSources) {
@@ -287,7 +281,7 @@ export default function Sidebar({
             setParsingFileName(`Digesting ${src.name}...`);
             try {
               const digest = await digestApiSource(src.text, src.name, aiSettings);
-              setSources(prev => prev.map(s => s.id === src.id ? { ...s, digest } : s));
+              updateSource(src.id, { digest });
               // Search using digest text only — cleaner signal than raw PDF content
               if (digest && digest.length > 30) {
                 const digestQuery = digest.replace(/\*\*[^*]+\*\*:?/g, '').replace(/\s+/g, ' ').trim().slice(0, 700);
@@ -352,12 +346,10 @@ export default function Sidebar({
   useEffect(() => {
     if (!externalApiSources?.length) return;
 
-    // Deduplicate by DOI
-    setSources(prev => {
-      const existingDois = new Set(prev.map(s => s.apiMeta?.doi).filter(Boolean));
-      const toAdd = externalApiSources.filter(s => !s.apiMeta?.doi || !existingDois.has(s.apiMeta.doi));
-      return toAdd.length ? [...toAdd, ...prev] : prev;
-    });
+    // Deduplicate by DOI against existing store sources
+    const existingDois = new Set(sources.map(s => s.apiMeta?.doi).filter(Boolean));
+    const toAdd = externalApiSources.filter(s => !s.apiMeta?.doi || !existingDois.has(s.apiMeta.doi));
+    if (toAdd.length) addSources(toAdd);
     onExternalSourcesMerged?.();
 
     // Fire-and-forget digest for each new source
@@ -365,9 +357,7 @@ export default function Sidebar({
       for (const src of externalApiSources) {
         setDigestingApiIds(prev => new Set([...prev, src.id]));
         digestApiSource(src.text, src.name, aiSettings)
-          .then(digest => {
-            setSources(prev => prev.map(s => s.id === src.id ? { ...s, digest } : s));
-          })
+          .then(digest => { updateSource(src.id, { digest }); })
           .catch(() => {})
           .finally(() => {
             setDigestingApiIds(prev => { const next = new Set(prev); next.delete(src.id); return next; });
@@ -380,7 +370,7 @@ export default function Sidebar({
   // Clear all sources when a new manuscript is started
   useEffect(() => {
     if (!clearSourcesTrigger) return; // 0 = initial mount, skip
-    setSources([]);
+    clearSources();
     setPendingPdfMatches({});
   }, [clearSourcesTrigger]);
 
@@ -554,7 +544,7 @@ export default function Sidebar({
         {([
           { key: 'chat' as const, icon: <MessageSquare size={14} />, label: 'Chat' },
           { key: 'suggestions' as const, icon: <Sparkles size={14} />, label: 'Review' },
-          { key: 'history' as const, icon: <Clock size={14} />, label: 'History' },
+          { key: 'history' as const, icon: <HistoryIcon size={14} />, label: 'History' },
           { key: 'sources' as const, icon: <BookOpen size={14} />, label: 'Sources' },
           { key: 'outline' as const, icon: <List size={14} />, label: 'Outline' },
         ]).map(tab => (
@@ -1112,12 +1102,12 @@ export default function Sidebar({
                                   apiMeta: r,
                                   queryText: globalSearchQuery.trim(),
                                 };
-                                setSources(prev => [src, ...prev]);
+                                addSources([src]);
                                 // Fire-and-forget digest
                                 if (aiSettings) {
                                   setDigestingApiIds(prev => new Set([...prev, src.id]));
                                   digestApiSource(src.text, src.name, aiSettings)
-                                    .then(digest => setSources(prev => prev.map(s => s.id === src.id ? { ...s, digest } : s)))
+                                    .then(digest => updateSource(src.id, { digest }))
                                     .catch(() => {})
                                     .finally(() => setDigestingApiIds(prev => { const n = new Set(prev); n.delete(src.id); return n; }));
                                 }
@@ -1439,7 +1429,7 @@ export default function Sidebar({
                       <button
                         className="p-1.5 rounded-lg hover:bg-stone-100 transition-colors shrink-0" style={{ color: 'var(--text-muted)' }}
                         onClick={() => {
-                          setSources(s => s.filter(src => src.id !== source.id));
+                          useSourceStore.getState().removeSource(source.id);
                           setPendingPdfMatches(prev => { const { [source.id]: _, ...rest } = prev; return rest; });
                         }}
                       >
@@ -1513,10 +1503,7 @@ export default function Sidebar({
                                 <div className="flex gap-1.5 pt-0.5">
                                   <button
                                     onClick={() => {
-                                      setSources(prev => prev.map(s => s.id === source.id
-                                        ? { ...s, name: result.title, apiMeta: result }
-                                        : s
-                                      ));
+                                      updateSource(source.id, { name: result.title, apiMeta: result });
                                       setPendingPdfMatches(prev => { const { [source.id]: _, ...rest } = prev; return rest; });
                                     }}
                                     className="flex-1 py-1 rounded text-[10px] font-semibold text-white bg-emerald-600 hover:bg-emerald-500 transition-colors"

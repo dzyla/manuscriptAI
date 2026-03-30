@@ -3,7 +3,8 @@ import Editor, { EditorRef } from './components/Editor';
 import Sidebar from './components/Sidebar';
 import SettingsModal from './components/SettingsModal';
 import PostDraftingView from './components/PostDraftingView';
-import { AgentType, Message, Suggestion, HistoryItem, AISettings, ManuscriptSource, AttachedImage } from './types';
+import VersionHistoryPopup from './components/VersionHistoryPopup';
+import { AgentType, Message, Suggestion, HistoryItem, AISettings, ManuscriptSource, AttachedImage, VersionSnapshot } from './types';
 import { searchSimilarManuscripts } from './services/manuscriptSearch';
 import { expandCitationNums, formatCitationGroup, mergeAdjacentCitations } from './services/citations';
 import { analyzeText, chatWithAgent, chatWithManuscript, resolveConflicts, runJudgeAgent, rebutSuggestion, manuscriptSummary, rewriteSection, transformWithInstruction, analyzeSourceAgainstManuscript, verifyClaimAgainstSources, AGENT_INFO, AGENT_ICONS, estimateTokens } from './services/ai';
@@ -11,9 +12,11 @@ import { Sparkles, FileText, Settings, Download, Keyboard, Eye, Moon, Sun, Chevr
 import { saveAs } from 'file-saver';
 import * as mammoth from 'mammoth';
 import TurndownService from 'turndown';
-import localforage from 'localforage';
-
-const AUTOSAVE_KEY = 'manuscript-ai-editor-autosave';
+import { useDocumentStore } from './stores/useDocumentStore';
+import { useAIStore } from './stores/useAIStore';
+import { useSourceStore } from './stores/useSourceStore';
+import { db } from './db/manuscriptDb';
+import { migrateLegacyCitations } from './utils/migrateCitations';
 
 const stripHtml = (html: string) => html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
 
@@ -25,41 +28,44 @@ function AgentIcon({ agent, size = 12 }: { agent: AgentType; size?: number }) {
 }
 
 export default function App() {
+  // ─── Zustand stores ────────────────────────────────────────────────────────
+  const {
+    title, content, saveState, citationRegistry,
+    setTitle, setContent, setSaveState,
+    insertCitation: storeInsertCitation,
+    removeCitation: storeRemoveCitation,
+    renumberCitations: storeRenumberCitations,
+    resetDocument, persist: persistDocument, initialize: initDocument,
+  } = useDocumentStore();
+
+  const {
+    aiSettings, isAnalyzing, suggestions, messages, history, analysisProgress,
+    setAiSettings, setIsAnalyzing, setAnalysisProgress,
+    addSuggestions, setSuggestions, removeSuggestion, clearSuggestions, updateSuggestion,
+    addMessage, setMessages, updateMessageSuggestions,
+    addHistoryItem, removeHistoryItem, setHistory,
+    initialize: initAI,
+    persistSuggestions, persistMessages, persistHistory,
+  } = useAIStore();
+
+  const {
+    sources, pendingApiSources,
+    setPendingApiSources, clearPendingApiSources,
+    initialize: initSources, persist: persistSources,
+    clearSources,
+  } = useSourceStore();
+
+  // ─── Refs (imperative handles, not shared state) ───────────────────────────
   const fileInputRef = useRef<HTMLInputElement>(null);
   const editorRef = useRef<EditorRef>(null);
-  const sourcesRef = useRef<ManuscriptSource[]>([]);
   const abortRef = useRef<AbortController | null>(null);
-  const [pendingApiSources, setPendingApiSources] = useState<ManuscriptSource[]>([]);
+
+  // ─── UI-only state (stays local, not in stores) ────────────────────────────
   const [clearSourcesTrigger, setClearSourcesTrigger] = useState(0);
-  const [citationRegistry, setCitationRegistry] = useState<Record<string, number>>({});
-  const citationCounter = useRef(0);
-  const [sidebarSources, setSidebarSources] = useState<ManuscriptSource[]>([]);
-  const [title, setTitle] = useState('Untitled Manuscript');
-  const [content, setContent] = useState('<p>Start writing your manuscript here, or click "New Manuscript" to begin with an IMRAD template.</p>');
-  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
-  const [messages, setMessages] = useState<Message[]>([
-    { id: '1', role: 'assistant', content: 'Welcome! I\'m your AI Manuscript Manager. Click "Analyze All" to get feedback from our specialized agents — Language Surgeon, Reviewer 2, and Clarity & Impact — or chat with any agent individually.', agent: 'manager' }
-  ]);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [history, setHistory] = useState<HistoryItem[]>([]);
   const [highlightedSuggestionId, setHighlightedSuggestionId] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isPostDraftingOpen, setIsPostDraftingOpen] = useState(false);
   const [isDistractionFree, setIsDistractionFree] = useState(false);
-  const [aiSettings, setAiSettings] = useState<AISettings>({
-    provider: 'local',
-    geminiApiKey: '',
-    openaiApiKey: '',
-    anthropicApiKey: '',
-    geminiModel: 'gemini-3.1-pro-preview',
-    openaiModel: 'gpt-5.4-mini',
-    anthropicModel: 'claude-sonnet-4-6',
-    localBaseUrl: 'http://localhost:1234/v1/chat/completions',
-    localApiKey: '',
-    localModel: 'local-model'
-  });
-  const [saveState, setSaveState] = useState<'Draft' | 'Saved' | 'Auto-saved'>('Draft');
-  const [analysisProgress, setAnalysisProgress] = useState<{ agent: string; total: number; done: number } | null>(null);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
@@ -126,36 +132,39 @@ export default function App() {
     setTimeout(() => setToast(null), 5000);
   }, []);
 
-  // Auto-save every 30s (uses IndexedDB via localforage — no size limit)
+  // Initialize all stores on mount (loads from Dexie, migrating from localforage if needed)
+  useEffect(() => {
+    Promise.all([initDocument(), initAI(), initSources()]).then(() => {
+      // After loading, apply citation migration to content if needed
+      const { content: loadedContent, citationRegistry: reg } = useDocumentStore.getState();
+      if (Object.keys(reg).length > 0 && !loadedContent.includes('data-citation-node')) {
+        const migrated = migrateLegacyCitations(loadedContent, reg);
+        if (migrated !== loadedContent) {
+          useDocumentStore.getState().setContent(migrated);
+          editorRef.current?.setContent(migrated);
+        }
+      }
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Auto-save every 30s to Dexie (granular — only changed tables are written)
   useEffect(() => {
     const interval = setInterval(async () => {
-      const workspace = { title, content, suggestions, history, messages, aiSettings };
       try {
-        await localforage.setItem(AUTOSAVE_KEY, workspace);
+        await persistDocument();
+        await persistSuggestions();
+        await persistMessages();
+        await persistHistory();
+        await persistSources();
         if (saveState === 'Draft') setSaveState('Auto-saved');
       } catch (e) {
         showToast('Auto-save failed. Use "Save Workspace" to download a backup file.', 'error');
       }
     }, 30000);
     return () => clearInterval(interval);
-  }, [title, content, suggestions, history, messages, aiSettings, saveState]);
-
-  // Load auto-save on mount
-  useEffect(() => {
-    localforage.getItem<any>(AUTOSAVE_KEY).then(data => {
-      if (data?.content) {
-        setTitle(data.title || 'Untitled Manuscript');
-        setContent(data.content);
-        setSuggestions(data.suggestions || []);
-        setHistory(data.history || []);
-        setMessages(data.messages || []);
-        if (data.aiSettings) setAiSettings(data.aiSettings);
-        setSaveState('Auto-saved');
-      }
-    }).catch(err => console.error('Failed to load auto-save', err));
-  }, []);
-
-  useEffect(() => { setSaveState('Draft'); }, [content, title]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [saveState]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -177,34 +186,35 @@ export default function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [content, title, suggestions, history, messages]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleNewManuscript = async () => {
     if (content.replace(/<[^>]*>/g, '').trim().length > 20) {
       if (!window.confirm('Start a new manuscript? Any unsaved changes will be lost.')) return;
     }
     const newContent = '<h2>Abstract</h2><p></p><h2>Introduction</h2><p></p><h2>Methods</h2><p></p><h2>Results</h2><p></p><h2>Discussion</h2><p></p><h2>Conclusion</h2><p></p>';
-    
-    // Reset all state
-    setTitle('Untitled Manuscript');
-    setContent(newContent);
-    setSuggestions([]);
-    setHistory([]);
-    setMessages([
+
+    // Reset all stores
+    resetDocument();
+    useAIStore.getState().setSuggestions([]);
+    useAIStore.getState().setHistory([]);
+    useAIStore.getState().setMessages([
       { id: Date.now().toString(), role: 'assistant', content: 'New manuscript started with IMRAD template! Begin writing in each section, then click "Analyze All" for AI feedback.', agent: 'manager' }
     ]);
-    setSaveState('Draft');
-    setPendingApiSources([]);
+    clearPendingApiSources();
+    clearSources();
     setClearSourcesTrigger(n => n + 1);
-    setCitationRegistry({});
-    citationCounter.current = 0;
-    setSidebarSources([]);
 
-    // Clear autosave so old content doesn't reload
-    await localforage.removeItem(AUTOSAVE_KEY);
-    await localforage.removeItem('manuscript-sources');
+    // Clear Dexie tables
+    await db.documents.delete('current');
+    await db.sources.clear();
+    await db.suggestions.clear();
+    await db.chatHistory.clear();
+    await db.historyItems.clear();
 
-    // Force editor content reset
+    // Set new content after reset
+    setContent(newContent);
     editorRef.current?.setContent(newContent);
 
     showToast('New manuscript created', 'success');
@@ -237,7 +247,8 @@ export default function App() {
       if (specificAgent) {
         setAnalysisProgress({ agent: AGENT_INFO[specificAgent].label, total: 1, done: 0 });
         const result = await analyzeText(plainText, specificAgent, aiSettings, suggestions, (msg) => {
-          setAnalysisProgress(prev => prev ? { ...prev, agent: `${AGENT_INFO[specificAgent].label} — ${msg}` } : null);
+          const prev = useAIStore.getState().analysisProgress;
+          setAnalysisProgress(prev ? { ...prev, agent: `${AGENT_INFO[specificAgent].label} — ${msg}` } : null);
         }, htmlContent, signal);
 
         if (result.status === 'parsing_failed') {
@@ -248,7 +259,7 @@ export default function App() {
 
         if (result.suggestions.length > 0) {
           const resolved = await resolveConflicts(result.suggestions, aiSettings);
-          setSuggestions(prev => [...prev, ...resolved].sort((a, b) => a.startIndex - b.startIndex));
+          addSuggestions(resolved);
           showToast(`${resolved.length} suggestions from ${AGENT_INFO[specificAgent].label}`, 'success');
         }
       } else {
@@ -273,14 +284,14 @@ export default function App() {
 
         if (combinedSuggestions.length > 0) {
           const resolved = await resolveConflicts(combinedSuggestions, aiSettings);
-          setSuggestions(prev => [...prev, ...resolved].sort((a, b) => a.startIndex - b.startIndex));
+          addSuggestions(resolved);
           totalNew = resolved.length;
           // Run judge agent in the background to remove overlapping lower-impact suggestions
           const resolvedIds = new Set(resolved.map(s => s.id));
           runJudgeAgent(resolved, aiSettings).then(judged => {
             if (judged.length < resolved.length) {
               const judgedIds = new Set(judged.map(s => s.id));
-              setSuggestions(prev => prev.filter(s => !resolvedIds.has(s.id) || judgedIds.has(s.id)));
+              setSuggestions(useAIStore.getState().suggestions.filter(s => !resolvedIds.has(s.id) || judgedIds.has(s.id)));
               showToast(`Judge selected ${judged.length} best suggestions (${resolved.length - judged.length} overlapping removed)`, 'info');
             }
           }).catch(() => {});
@@ -313,7 +324,7 @@ export default function App() {
 
   const handleSendMessage = async (text: string, agent: AgentType, attachedSources?: Array<{ name: string; text: string }>, images?: AttachedImage[]) => {
     const userMsg: Message = { id: Date.now().toString(), role: 'user', content: text, images };
-    setMessages(prev => [...prev, userMsg]);
+    addMessage(userMsg);
 
     // Resolve manuscript scope: __full__ sends full text, __section__ sends current section only
     const fullText = stripHtml(editorRef.current?.getHTML() || content);
@@ -342,27 +353,28 @@ export default function App() {
         ? await chatWithManuscript(text, manuscriptArg, aiSettings, sourcesWithContext.length > 0 ? sourcesWithContext : undefined, images, signal)
         : await chatWithAgent(text, manuscriptArg, agent, aiSettings, sourcesWithContext.length > 0 ? sourcesWithContext : undefined, images, signal);
       const suggestions: Suggestion[] | undefined = 'suggestions' in result ? (result as any).suggestions : undefined;
+      const newSugs: Suggestion[] | undefined = 'suggestions' in result ? (result as any).suggestions : undefined;
       const assistantMsg: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
         content: result.text || "I couldn't process that request. Check your LLM connection.",
         agent,
-        suggestions,
+        suggestions: newSugs,
       };
-      setMessages(prev => [...prev, assistantMsg]);
-      if (suggestions && suggestions.length > 0) {
-        const resolved = await resolveConflicts(suggestions, aiSettings);
-        setSuggestions(prev => [...prev, ...resolved].sort((a, b) => a.startIndex - b.startIndex));
+      addMessage(assistantMsg);
+      if (newSugs && newSugs.length > 0) {
+        const resolved = await resolveConflicts(newSugs, aiSettings);
+        addSuggestions(resolved);
       }
     } catch (error: any) {
       if (error?.name === 'AbortError') return; // stopped by user
       console.error("Chat failed", error);
-      setMessages(prev => [...prev, {
+      addMessage({
         id: (Date.now() + 1).toString(),
         role: 'assistant',
         content: `Error: ${error instanceof Error ? error.message : 'Failed to reach LLM'}`,
         agent
-      }]);
+      });
     } finally {
       abortRef.current = null;
       setIsAnalyzing(false);
@@ -412,7 +424,7 @@ export default function App() {
       id: Date.now().toString(), role: 'user',
       content: `Analyze the "${sectionTitle}" section for clarity, scientific rigor, and flow.`,
     };
-    setMessages(prev => [...prev, userMsg]);
+    addMessage(userMsg);
     setIsAnalyzing(true);
     try {
       const result = await chatWithManuscript(
@@ -420,7 +432,7 @@ export default function App() {
         `[Section: ${sectionTitle}]\n\n${textToAnalyze}`,
         aiSettings,
       );
-      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), role: 'assistant', content: result.text, agent: 'manuscript-ai' as AgentType }]);
+      addMessage({ id: (Date.now() + 1).toString(), role: 'assistant', content: result.text, agent: 'manuscript-ai' as AgentType });
     } catch (err) {
       console.error('Section analysis failed', err);
     } finally {
@@ -429,88 +441,27 @@ export default function App() {
   };
 
   const handleInsertCitation = (sourceId: string): number => {
-    if (citationRegistry[sourceId]) return citationRegistry[sourceId];
-    const num = ++citationCounter.current;
-    setCitationRegistry(prev => ({ ...prev, [sourceId]: num }));
-    // Merge adjacent groups after the editor commits the inserted text
-    setTimeout(() => {
-      const html = editorRef.current?.getHTML();
-      if (html) {
-        const merged = mergeAdjacentCitations(html);
-        if (merged !== html) { editorRef.current?.setContent(merged); setContent(merged); }
-      }
-    }, 150);
-    return num;
+    return storeInsertCitation(sourceId);
   };
 
   const renumberCitations = useCallback(() => {
     const html = editorRef.current?.getHTML();
     if (!html) return;
-    setCitationRegistry(prev => {
-      if (Object.keys(prev).length === 0) return prev;
-      const numToId: Record<number, string> = {};
-      for (const [id, num] of Object.entries(prev)) numToId[num] = id;
-      // Scan all citation groups (handles [N], [N-M], [A,B,...])
-      const seenIds: string[] = [];
-      const seenNums = new Set<number>();
-      const pat = /\[([\d,\-]+)\]/g;
-      let m;
-      while ((m = pat.exec(html)) !== null) {
-        for (const n of expandCitationNums(m[1])) {
-          if (numToId[n] && !seenNums.has(n)) { seenNums.add(n); seenIds.push(numToId[n]); }
-        }
-      }
-      for (const id of Object.keys(prev)) {
-        if (!seenIds.includes(id)) seenIds.push(id);
-      }
-      const newReg: Record<string, number> = {};
-      seenIds.forEach((id, i) => { newReg[id] = i + 1; });
-      // Remap every citation group, then merge adjacent groups and compress ranges
-      const remapped = html.replace(/\[([\d,\-]+)\]/g, (_, inner) => {
-        const nums = [...new Set(expandCitationNums(inner).map(n => {
-          const id = numToId[n];
-          return id && newReg[id] ? newReg[id] : n;
-        }))].sort((a, b) => a - b);
-        return formatCitationGroup(nums);
-      });
-      const newHtml = mergeAdjacentCitations(remapped);
+    const { newHtml } = storeRenumberCitations(html);
+    if (newHtml !== html) {
       editorRef.current?.setContent(newHtml);
       setContent(newHtml);
-      citationCounter.current = seenIds.length;
-      return newReg;
-    });
-  }, []);
+    }
+  }, [storeRenumberCitations, setContent]);
 
   const removeCitation = useCallback((sourceId: string) => {
-    setCitationRegistry(prev => {
-      const { [sourceId]: removed, ...rest } = prev;
-      if (!removed) return prev;
-      const html = editorRef.current?.getHTML() || '';
-      // Strip the number from every group that contains it; remove empty groups
-      const stripped = html.replace(/\[([\d,\-]+)\]/g, (_, inner) => {
-        const nums = expandCitationNums(inner).filter(n => n !== removed);
-        return nums.length > 0 ? formatCitationGroup(nums) : '';
-      });
-      // Renumber remaining
-      const sorted = Object.entries(rest).sort((a, b) => a[1] - b[1]);
-      const newReg: Record<string, number> = {};
-      sorted.forEach(([id], i) => { newReg[id] = i + 1; });
-      const numToId: Record<number, string> = {};
-      for (const [id, num] of Object.entries(rest)) numToId[num] = id;
-      const remapped = stripped.replace(/\[([\d,\-]+)\]/g, (_, inner) => {
-        const nums = [...new Set(expandCitationNums(inner).map(n => {
-          const id = numToId[n];
-          return id && newReg[id] ? newReg[id] : n;
-        }))].sort((a, b) => a - b);
-        return nums.length > 0 ? formatCitationGroup(nums) : '';
-      });
-      const newHtml = mergeAdjacentCitations(remapped);
+    const html = editorRef.current?.getHTML() || '';
+    const { newHtml } = storeRemoveCitation(sourceId, html);
+    if (newHtml !== html) {
       editorRef.current?.setContent(newHtml);
       setContent(newHtml);
-      citationCounter.current = sorted.length;
-      return newReg;
-    });
-  }, []);
+    }
+  }, [storeRemoveCitation, setContent]);
 
   const handleScrollToCitation = useCallback((num: number) => {
     editorRef.current?.scrollToCitation(num);
@@ -549,7 +500,7 @@ export default function App() {
   };
 
   const handleVerifyClaim = async (selectedText: string) => {
-    const digestedSources = sourcesRef.current.filter(
+    const digestedSources = sources.filter(
       s => (s.type === 'pdf' && s.digest) || s.type === 'api'
     );
     if (digestedSources.length === 0) {
@@ -559,11 +510,11 @@ export default function App() {
     }
     setSidebarTab('chat');
     const userMsg: Message = { id: Date.now().toString(), role: 'user', content: `Verify this claim against uploaded sources:\n"${selectedText}"` };
-    setMessages(prev => [...prev, userMsg]);
+    addMessage(userMsg);
     setIsAnalyzing(true);
     try {
       const result = await verifyClaimAgainstSources(selectedText, digestedSources, aiSettings);
-      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), role: 'assistant', content: result, agent: 'literature-reviewer' as AgentType }]);
+      addMessage({ id: (Date.now() + 1).toString(), role: 'assistant', content: result, agent: 'literature-reviewer' as AgentType });
     } catch (err) {
       showToast(`Verification failed: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error');
     } finally {
@@ -586,7 +537,7 @@ export default function App() {
     }
 
     const newContent = editorRef.current?.getHTML() || content;
-    setHistory(prev => [...prev, {
+    addHistoryItem({
       id: Date.now().toString(),
       timestamp: Date.now(),
       oldContent: syncedOldContent,
@@ -594,18 +545,13 @@ export default function App() {
       originalText: suggestion.originalText,
       suggestedText: suggestion.suggestedText,
       suggestionId: suggestion.id,
-      agent: suggestion.agent
-    }]);
+      agent: suggestion.agent,
+    });
 
-    setSuggestions(prev => prev.filter(s => s.id !== suggestion.id));
-    setMessages(prev => prev.map(msg => ({
-      ...msg,
-      suggestions: msg.suggestions?.filter(s => s.id !== suggestion.id)
-    })));
+    removeSuggestion(suggestion.id);
   };
 
   const handleAcceptAll = () => {
-    // Accept one by one so each one finds the right text
     const currentSuggestions = [...suggestions];
     for (const s of currentSuggestions) {
       handleAcceptSuggestion(s);
@@ -614,17 +560,12 @@ export default function App() {
   };
 
   const handleRejectAll = () => {
-    setSuggestions([]);
-    setMessages(prev => prev.map(msg => ({ ...msg, suggestions: [] })));
+    clearSuggestions();
     showToast('All suggestions cleared', 'info');
   };
 
   const handleRejectSuggestion = (suggestion: Suggestion) => {
-    setSuggestions(prev => prev.filter(s => s.id !== suggestion.id));
-    setMessages(prev => prev.map(msg => ({
-      ...msg,
-      suggestions: msg.suggestions?.filter(s => s.id !== suggestion.id)
-    })));
+    removeSuggestion(suggestion.id);
   };
 
   const handleRebuttal = async (suggestionId: string, feedback: string) => {
@@ -635,12 +576,7 @@ export default function App() {
       const plainText = stripHtml(editorRef.current?.getHTML() || content);
       const newSugs = await rebutSuggestion(suggestion, feedback, plainText, aiSettings);
       if (newSugs?.length) {
-        setSuggestions(prev => {
-          const copy = [...prev];
-          const idx = copy.findIndex(s => s.id === suggestionId);
-          if (idx !== -1) copy[idx] = newSugs[0];
-          return copy.sort((a, b) => a.startIndex - b.startIndex);
-        });
+        updateSuggestion(suggestionId, newSugs[0]);
         showToast('Suggestion refined', 'success');
       }
     } catch (e) {
@@ -658,7 +594,7 @@ export default function App() {
         setContent(item.oldContent);
         editorRef.current?.setContent(item.oldContent);
       }
-      setHistory(prev => prev.filter(h => h.id !== historyId));
+      removeHistoryItem(historyId);
       showToast('Change reverted', 'info');
     }
   };
@@ -677,15 +613,14 @@ export default function App() {
       role: 'user',
       content: `[Selected text]: "${selectedText.substring(0, 200)}${selectedText.length > 200 ? '...' : ''}"\n\n${instruction}`
     };
-    setMessages(prev => [...prev, userMsg]);
-    
+    addMessage(userMsg);
+
     try {
-      // Use chat for a richer, contextual response
       const chatResult = await chatWithAgent(
         `${instruction}\n\nFocus on this specific text:\n"${selectedText}"`,
         fullText, agent, aiSettings
       );
-      
+
       const assistantMsg: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
@@ -693,21 +628,21 @@ export default function App() {
         agent,
         suggestions: chatResult.suggestions || []
       };
-      setMessages(prev => [...prev, assistantMsg]);
-      
+      addMessage(assistantMsg);
+
       if (chatResult.suggestions && chatResult.suggestions.length > 0) {
         const resolved = await resolveConflicts(chatResult.suggestions, aiSettings);
-        setSuggestions(prev => [...prev, ...resolved].sort((a, b) => a.startIndex - b.startIndex));
+        addSuggestions(resolved);
         showToast(`${resolved.length} suggestions from ${AGENT_INFO[agent].label}`, 'success');
       }
     } catch (error) {
       console.error('Selection query failed:', error);
-      setMessages(prev => [...prev, {
+      addMessage({
         id: (Date.now() + 1).toString(),
         role: 'assistant',
         content: `Error: ${error instanceof Error ? error.message : 'Unknown'}`,
         agent
-      }]);
+      });
       showToast(`Error: ${error instanceof Error ? error.message : 'Unknown'}`, 'error');
     } finally {
       setIsAnalyzing(false);
@@ -732,7 +667,7 @@ export default function App() {
         category: 'clarity',
         section: 'Transform',
       };
-      setSuggestions(prev => [suggestion, ...prev]);
+      addSuggestions([suggestion]);
       setSidebarTab('suggestions');
       showToast('Suggestion ready — review in Suggestions tab', 'success');
     } catch (error) {
@@ -759,7 +694,7 @@ export default function App() {
         category: 'clarity',
         section: 'Rewrite',
       };
-      setSuggestions(prev => [suggestion, ...prev]);
+      addSuggestions([suggestion]);
       setSidebarTab('suggestions');
       setHighlightedSuggestionId(suggestion.id);
       setTimeout(() => setHighlightedSuggestionId(null), 2000);
@@ -783,7 +718,8 @@ export default function App() {
       content: analysisText,
       agent: 'literature-reviewer',
     };
-    setMessages(prev => [...prev, userMsg, assistantMsg]);
+    addMessage(userMsg);
+    addMessage(assistantMsg);
     setSidebarTab('chat');
     showToast(`Literature analysis of "${sourceName}" ready`, 'success');
   };
@@ -799,36 +735,29 @@ export default function App() {
       role: 'user',
       content: 'Please provide a comprehensive manuscript summary and identify the biggest gaps.'
     };
-    setMessages(prev => [...prev, userMsg]);
-    
+    addMessage(userMsg);
+
     try {
       const plainText = stripHtml(editorRef.current?.getHTML() || content);
-      
+
       if (plainText.length < 50) {
         showToast('Write more text first for a meaningful summary.', 'info');
         setIsAnalyzing(false);
         setAnalysisProgress(null);
         return;
       }
-      
+
       const summary = await manuscriptSummary(plainText, aiSettings);
-      
-      const assistantMsg: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: summary,
-        agent: 'manager'
-      };
-      setMessages(prev => [...prev, assistantMsg]);
+      addMessage({ id: (Date.now() + 1).toString(), role: 'assistant', content: summary, agent: 'manager' });
       showToast('Manuscript summary generated', 'success');
     } catch (error) {
       console.error('Summary failed:', error);
-      setMessages(prev => [...prev, {
+      addMessage({
         id: (Date.now() + 1).toString(),
         role: 'assistant',
         content: `Failed to generate summary: ${error instanceof Error ? error.message : 'Unknown error'}`,
         agent: 'manager'
-      }]);
+      });
       showToast('Summary generation failed', 'error');
     } finally {
       setIsAnalyzing(false);
@@ -864,10 +793,10 @@ export default function App() {
         setIsAnalyzing(false);
       }
     } else {
-      const sources = await localforage.getItem('manuscript-sources').catch(() => []);
+      const exportedSources = await db.sources.toArray().catch(() => []);
       // Strip API keys before export — never serialize credentials into a shareable file
       const { geminiApiKey: _g, openaiApiKey: _o, anthropicApiKey: _a, localApiKey: _l, ...safeSettings } = aiSettings;
-      const workspace = { title, content: currentContent, suggestions, history, messages, aiSettings: safeSettings, sources };
+      const workspace = { title, content: currentContent, suggestions, history, messages, aiSettings: safeSettings, sources: exportedSources };
       saveAs(new Blob([JSON.stringify(workspace, null, 2)], { type: 'application/json' }), 'workspace.json');
       setSaveState('Saved');
     }
@@ -889,16 +818,26 @@ export default function App() {
       try {
         const data = JSON.parse(e.target?.result as string);
         if (data.content !== undefined) {
+          const reg: Record<string, number> = data.citationRegistry || {};
+          // Apply citation migration if the content has legacy [N] patterns
+          let loadedContent = data.content;
+          if (Object.keys(reg).length > 0 && !loadedContent.includes('data-citation-node')) {
+            loadedContent = migrateLegacyCitations(loadedContent, reg);
+          }
           setTitle(data.title || 'Untitled Manuscript');
-          setContent(data.content);
+          setContent(loadedContent);
           setSuggestions(data.suggestions || []);
           setHistory(data.history || []);
-          setMessages(data.messages || []);
+          setMessages(data.messages && data.messages.length > 0 ? data.messages : useAIStore.getState().messages);
           if (data.aiSettings) setAiSettings(data.aiSettings);
-          if (data.sources) await localforage.setItem('manuscript-sources', data.sources);
+          if (data.sources?.length) {
+            useSourceStore.getState().setSources(data.sources);
+            await useSourceStore.getState().persist();
+          }
           setSaveState('Saved');
-          // Force editor reset
-          editorRef.current?.setContent(data.content);
+          editorRef.current?.setContent(loadedContent);
+          // Persist to Dexie
+          await persistDocument();
           showToast('Workspace loaded', 'success');
         }
       } catch (err) {
@@ -913,6 +852,14 @@ export default function App() {
   const handleSuggestionClick = (suggestionId: string) => {
     setHighlightedSuggestionId(suggestionId);
     setTimeout(() => setHighlightedSuggestionId(null), 1500);
+  };
+
+  const handleRestoreSnapshot = (snapshot: VersionSnapshot) => {
+    setTitle(snapshot.title);
+    setContent(snapshot.content);
+    editorRef.current?.setContent(snapshot.content);
+    showToast(`Restored snapshot: "${snapshot.name}"`, 'success');
+    setSidebarTab('chat');
   };
 
   const wordCount = stripHtml(content).split(/\s+/).filter(w => w.length > 0).length;
@@ -1000,12 +947,13 @@ export default function App() {
             <input
               value={title}
               onChange={(e) => setTitle(e.target.value)}
+              onBlur={() => persistDocument()}
               className="text-sm font-semibold tracking-tight bg-transparent focus:outline-none focus:ring-1 rounded px-1.5 -mx-1.5 py-0.5 min-w-0 flex-shrink"
               style={{ color: 'var(--text-primary)', maxWidth: '200px' }}
               placeholder="Untitled Manuscript"
             />
             <span className={`text-[9px] px-2 py-0.5 rounded-md uppercase font-bold tracking-widest transition-colors shrink-0 ${
-              saveState === 'Saved' ? 'bg-emerald-50 text-emerald-600 border border-emerald-200' : 
+              saveState === 'Saved' ? 'bg-emerald-50 text-emerald-600 border border-emerald-200' :
               saveState === 'Auto-saved' ? 'bg-blue-50 text-blue-500 border border-blue-200' :
               'text-stone-400 border'
             }`}
@@ -1013,6 +961,11 @@ export default function App() {
             >
               {saveState}
             </span>
+            <VersionHistoryPopup
+              currentTitle={title}
+              currentContent={content}
+              onRestore={handleRestoreSnapshot}
+            />
             <span className="text-[11px] font-medium shrink-0 hidden sm:inline" style={{ color: 'var(--text-muted)' }}>
               {wordCount} words
             </span>
@@ -1141,7 +1094,7 @@ export default function App() {
           <Editor
             ref={editorRef}
             content={content}
-            onChange={setContent}
+            onChange={(html) => setContent(html)}
             suggestions={suggestions}
             onSuggestionClick={handleSuggestionClick}
             onSelectionQuery={handleSelectionQuery}
@@ -1150,7 +1103,7 @@ export default function App() {
             onAnalyzeSection={handleAnalyzeSection}
             onVerifyClaim={handleVerifyClaim}
             onSearchSimilar={handleSearchSimilar}
-            sources={sidebarSources}
+            sources={sources}
             citationRegistry={citationRegistry}
             onInsertCitation={handleInsertCitation}
             isDistractionFree={isDistractionFree}
@@ -1212,12 +1165,12 @@ export default function App() {
             manuscriptHtml={content}
             onScrollToSection={(heading) => editorRef.current?.scrollToHeading(heading)}
             onAnalyzeSection={handleAnalyzeSection}
-            onSourcesChange={(sources) => { sourcesRef.current = sources; setSidebarSources(sources); }}
+            onSourcesChange={() => {}} // sources managed by useSourceStore
             aiSettings={aiSettings}
             onAnalyzeSource={handleAnalyzeSource}
             contentZoom={zoom}
             externalApiSources={pendingApiSources.length ? pendingApiSources : undefined}
-            onExternalSourcesMerged={() => setPendingApiSources([])}
+            onExternalSourcesMerged={clearPendingApiSources}
             clearSourcesTrigger={clearSourcesTrigger}
             citationRegistry={citationRegistry}
             onRenumberCitations={renumberCitations}
@@ -1232,7 +1185,7 @@ export default function App() {
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         settings={aiSettings}
-        onUpdateSettings={setAiSettings}
+        onUpdateSettings={(s) => { setAiSettings(s); localStorage.setItem('manuscript-ai-settings', JSON.stringify(s)); }}
       />
       <PostDraftingView
         isOpen={isPostDraftingOpen}
