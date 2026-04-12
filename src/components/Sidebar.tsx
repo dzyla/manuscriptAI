@@ -7,8 +7,36 @@ import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { wrap } from 'comlink';
-import type { PdfWorkerApi } from '../workers/pdfWorker';
 import type { DocxWorkerApi } from '../workers/docxWorker';
+
+// Lazy-initialize pdfjs once on the main thread. pdfjs then spawns its OWN
+// real worker internally — which works reliably because import.meta.url
+// resolves correctly in the main-thread context.
+let _pdfjsLib: typeof import('pdfjs-dist') | null = null;
+async function getPdfjsLib() {
+  if (!_pdfjsLib) {
+    _pdfjsLib = await import('pdfjs-dist');
+    _pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+      'pdfjs-dist/build/pdf.worker.min.mjs',
+      import.meta.url,
+    ).href;
+  }
+  return _pdfjsLib;
+}
+
+function cleanPdfText(raw: string): string {
+  return raw
+    .replace(/\r\n/g, '\n')
+    .replace(/(\w)-\n(\w)/g, '$1$2')
+    .replace(/^[ \t]*(\d{1,4}|[Pp]age\s+\d+(\s+of\s+\d+)?)[ \t]*$/gm, '')
+    .replace(/^.*[Dd]ownloaded\s+from\s+.*$/gm, '')
+    .replace(/^.*©\s*\d{4}.*$/gm, '')
+    .replace(/^.*[Aa]ll\s+rights\s+reserved.*$/gm, '')
+    .replace(/^[ \t]*[Dd][Oo][Ii]:\s*10\.\S+[ \t]*$/gm, '')
+    .replace(/^[ \t]*$/gm, '')  // remove blank/whitespace-only lines
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
 import { Cite } from '@citation-js/core';
 import '@citation-js/plugin-bibtex';
 import { useSourceStore } from '../stores/useSourceStore';
@@ -148,14 +176,13 @@ export default function Sidebar({
   const [activeTab, setActiveTabLocal] = useState<'chat' | 'suggestions' | 'history' | 'sources' | 'outline'>('chat');
 
   // ─── Web Workers (Comlink) ───────────────────────────────────────────────────
-  const pdfWorkerRef = useRef<ReturnType<typeof wrap<PdfWorkerApi>> | null>(null);
+  // PDF parsing runs on the main thread (pdfjs spawns its own internal worker).
+  // DOCX parsing still uses a Comlink worker to keep mammoth off the main thread.
   const docxWorkerRef = useRef<ReturnType<typeof wrap<DocxWorkerApi>> | null>(null);
   useEffect(() => {
-    const rawPdf = new Worker(new URL('../workers/pdfWorker.ts', import.meta.url), { type: 'module' });
     const rawDocx = new Worker(new URL('../workers/docxWorker.ts', import.meta.url), { type: 'module' });
-    pdfWorkerRef.current = wrap<PdfWorkerApi>(rawPdf);
     docxWorkerRef.current = wrap<DocxWorkerApi>(rawDocx);
-    return () => { rawPdf.terminate(); rawDocx.terminate(); };
+    return () => { rawDocx.terminate(); };
   }, []);
   // Pending PDF match confirmations: sourceId → { results, matchIndex }
   const [pendingPdfMatches, setPendingPdfMatches] = useState<Record<string, { results: SemanticSearchResult[]; matchIndex: number }>>({});
@@ -215,20 +242,16 @@ export default function Sidebar({
   }, [sources]);
 
   const extractTextFromPDF = async (file: File): Promise<string> => {
-    if (pdfWorkerRef.current) {
-      return pdfWorkerRef.current.extractText(await file.arrayBuffer());
-    }
-    // Fallback: inline extraction if worker not ready
-    const pdfjsLib = await import('pdfjs-dist');
-    pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).href;
-    const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
-    let text = '';
+    const pdfjsLib = await getPdfjsLib();
+    const data = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(data) }).promise;
+    let raw = '';
     for (let i = 1; i <= pdf.numPages; i++) {
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
-      text += content.items.map((item: any) => item.str).join(' ') + '\n\n';
+      raw += content.items.map((item: any) => item.str).join(' ') + '\n\n';
     }
-    return text.trim();
+    return cleanPdfText(raw);
   };
 
   const processFiles = async (files: File[]) => {
