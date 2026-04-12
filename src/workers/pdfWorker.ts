@@ -1,11 +1,12 @@
 import * as pdfjsLib from 'pdfjs-dist';
+import { WorkerMessageHandler } from 'pdfjs-dist/build/pdf.worker.min.mjs';
 import { expose } from 'comlink';
 
 // This file runs in a Worker context — no DOM, no React.
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-  'pdfjs-dist/build/pdf.worker.min.mjs',
-  import.meta.url
-).href;
+// Inject the WorkerMessageHandler into globalThis so pdfjs uses it directly
+// instead of trying to spawn a nested worker (which hangs in this context).
+// pdfjs v5 checks globalThis.pdfjsWorker?.WorkerMessageHandler as its fake-worker path.
+(globalThis as any).pdfjsWorker = { WorkerMessageHandler };
 
 function cleanPdfText(raw: string): string {
   return raw
