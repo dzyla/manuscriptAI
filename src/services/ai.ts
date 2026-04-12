@@ -1324,6 +1324,199 @@ Return the abstract.`;
   }
 }
 
+// ─── Abstract Extraction Agent (AEA) ─────────────────────────────────────────
+
+/**
+ * Two-stage abstract extraction:
+ * 1. Heuristic: regex scan of the first 4000 chars for an abstract section heading.
+ *    If found, isolate that paragraph to give the LLM a clean, focused excerpt.
+ * 2. LLM: clean and normalise the candidate (or fall back to full first-3000 chars).
+ */
+export async function extractPdfAbstractAea(
+  sourceText: string,
+  sourceName: string,
+  settings: AISettings
+): Promise<string> {
+  if (!sourceText || sourceText.trim().length < 20) {
+    return 'PDF text could not be extracted. Try re-uploading the file.';
+  }
+
+  const isLocal = settings.provider === 'local';
+  const scanRegion = sourceText.slice(0, 4000);
+  const titleRegion = sourceText.slice(0, 300);
+
+  // Stage 1 — heuristic isolation
+  // Matches OCR artifacts like "A b s t r a c t", "ABSTRACT", "Abstract.", etc.
+  const abstractHeadingRe = /\b(A[\s\-]?B[\s\-]?S[\s\-]?T[\s\-]?R[\s\-]?A[\s\-]?C[\s\-]?T|abstract)\b/i;
+  const nextSectionRe = /\n\s*(introduction|background|keywords?|methods?|materials?|results?|discussion|conclusion|1[.\s]|2[.\s])/i;
+
+  let heuristicCandidate: string | null = null;
+
+  const headingMatch = abstractHeadingRe.exec(scanRegion);
+  if (headingMatch) {
+    const afterHeading = scanRegion.slice(headingMatch.index + headingMatch[0].length);
+    const nextMatch = nextSectionRe.exec(afterHeading);
+    const rawCandidate = nextMatch
+      ? afterHeading.slice(0, nextMatch.index).trim()
+      : afterHeading.slice(0, 1500).trim();
+    if (rawCandidate.length > 50) {
+      heuristicCandidate = rawCandidate;
+    }
+  }
+
+  // Stage 2 — LLM clean and normalise
+  const systemPrompt = `You are given a raw OCR extract from a scientific paper.
+Your ONLY task: return the abstract as clean continuous prose.
+
+Rules (strictly follow all):
+- If given an abstract candidate, clean it: fix OCR artifacts, join broken words, remove line noise, correct spacing.
+- If given full paper text with no clear abstract, write one in 3–5 sentences covering: research question, approach, key findings, significance.
+- Do NOT summarise beyond what the text explicitly supports. Do NOT invent findings.
+- Plain continuous prose only. No bullet points, no numbered lists, no headings.
+- No meta-commentary. Do not write "The abstract is:" or "This paper presents:".
+- Academic register, concise, no filler phrases.
+- Return ONLY the abstract text. Nothing else.
+- If the text is completely unintelligible, return exactly: Abstract not available.`;
+
+  let prompt: string;
+  if (heuristicCandidate) {
+    const maxInput = isLocal ? 1500 : 2000;
+    prompt = `Paper: "${sourceName}"
+Title region: "${titleRegion.trim()}"
+
+Abstract candidate (from OCR):
+"""
+${heuristicCandidate.slice(0, maxInput)}
+"""
+
+Clean and return the abstract.`;
+  } else {
+    const maxInput = isLocal ? 2000 : 3000;
+    prompt = `Paper: "${sourceName}"
+
+Text (beginning of document — no clear abstract heading found):
+"""
+${scanRegion.slice(0, maxInput)}
+"""
+
+Extract or write the abstract.`;
+  }
+
+  try {
+    const response = await callLLM(prompt, settings, systemPrompt, false, undefined, undefined, 400);
+    return response?.trim() || 'Abstract not available.';
+  } catch (_) {
+    return 'Abstract not available.';
+  }
+}
+
+// ─── PDF→Database Scoring Agent ──────────────────────────────────────────────
+
+export interface PdfMatchScore {
+  index: number;   // 0-based index into the candidates array passed in
+  score: number;   // 0–100
+  reason: string;  // ≤15 words
+}
+
+/**
+ * Score a list of SemanticSearchResult candidates against a PDF source.
+ *
+ * Step 1 — lightweight heuristic pre-score (title word overlap + year match).
+ *           Keeps the top 5 candidates for the LLM step.
+ * Step 2 — single LLM call returns JSON scores for the top 5.
+ *
+ * Returns an array of PdfMatchScore sorted by score descending, aligned to the
+ * original candidates array by index.  Falls back to heuristic order on any error.
+ */
+export async function scorePdfMatches(
+  pdfName: string,
+  abstractOrDigest: string,
+  candidates: Array<{ title: string; authors: string; journal: string; year?: number | null; abstract?: string }>,
+  settings: AISettings
+): Promise<PdfMatchScore[]> {
+  if (!candidates.length) return [];
+
+  // ── Heuristic pre-score ───────────────────────────────────────────────────
+  const stopWords = new Set(['a','an','the','of','in','on','at','to','for','and','or','with','by','from','is','are','was','were','that','this','these','those']);
+
+  function tokenise(s: string): Set<string> {
+    return new Set(
+      s.toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .filter(w => w.length > 2 && !stopWords.has(w))
+    );
+  }
+
+  function jaccard(a: Set<string>, b: Set<string>): number {
+    const intersection = [...a].filter(x => b.has(x)).length;
+    const union = new Set([...a, ...b]).size;
+    return union === 0 ? 0 : intersection / union;
+  }
+
+  // Extract year from PDF filename (first 4-digit year found)
+  const yearInName = pdfName.match(/\b(19|20)\d{2}\b/)?.[0];
+  const nameYearNum = yearInName ? parseInt(yearInName, 10) : null;
+
+  const nameTokens = tokenise(pdfName.replace(/\.\w+$/, ''));
+
+  const heuristicScored = candidates.map((c, idx) => {
+    const titleTokens = tokenise(c.title);
+    const titleOverlap = jaccard(nameTokens, titleTokens) * 0.6;
+    const yearBoost = nameYearNum && c.year === nameYearNum ? 0.3 : 0;
+    const lengthBonus = (c.journal || c.abstract) ? 0.1 : 0;
+    return { idx, score: titleOverlap + yearBoost + lengthBonus };
+  });
+
+  heuristicScored.sort((a, b) => b.score - a.score);
+  const top5 = heuristicScored.slice(0, 5);
+
+  // ── LLM scoring ──────────────────────────────────────────────────────────
+  const systemPrompt = `You are a research paper matching assistant.
+Given a PDF description and up to 5 database candidates, score each 0–100 for how likely it is the same paper.
+Consider: topic, methodology, findings, year, author/journal signals.
+Return ONLY valid JSON array: [{"index":1,"score":85,"reason":"brief reason max 15 words"},...]
+Include all candidates provided. Higher score = better match.`;
+
+  const candidateLines = top5.map(({ idx }, rank) => {
+    const c = candidates[idx];
+    const excerptRaw = (c as any).abstract ?? '';
+    const excerpt = excerptRaw ? ` "${excerptRaw.slice(0, 150)}"` : '';
+    return `[${rank + 1}] ${c.title} | ${c.authors.slice(0, 60)} | ${c.journal} ${c.year ?? ''}${excerpt}`;
+  }).join('\n');
+
+  const prompt = `PDF filename: "${pdfName}"
+Abstract/summary: "${abstractOrDigest.slice(0, 500)}"
+
+Candidates:
+${candidateLines}
+
+Return JSON scores for all ${top5.length} candidates (use the [N] number as the "index" value).`;
+
+  try {
+    const raw = await callLLM(prompt, settings, systemPrompt, false, undefined, undefined, 300);
+    if (!raw) throw new Error('empty');
+
+    // Extract JSON array from response (LLM may wrap it in markdown)
+    const jsonMatch = raw.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) throw new Error('no json');
+
+    const parsed: Array<{ index: number; score: number; reason: string }> = JSON.parse(jsonMatch[0]);
+
+    // Map back from 1-based [N] rank to original candidate index
+    return parsed
+      .map(item => ({
+        index: top5[item.index - 1]?.idx ?? item.index - 1,
+        score: Math.min(100, Math.max(0, item.score)),
+        reason: item.reason ?? '',
+      }))
+      .sort((a, b) => b.score - a.score);
+  } catch (_) {
+    // Fallback: heuristic order, no scores shown (score = -1 signals no LLM score)
+    return top5.map(({ idx }) => ({ index: idx, score: -1, reason: '' }));
+  }
+}
+
 export async function rewriteSection(sectionText: string, manuscriptContext: string, settings: AISettings): Promise<string> {
   const truncatedContext = truncateText(manuscriptContext, settings.provider === 'local' ? 800 : 2000);
 

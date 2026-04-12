@@ -793,7 +793,8 @@ export default function App() {
         setIsAnalyzing(false);
       }
     } else {
-      const exportedSources = await db.sources.toArray().catch(() => []);
+      // Read directly from memory state — always current, no race with the Dexie write interval
+      const exportedSources = useSourceStore.getState().sources;
       // Strip API keys before export — never serialize credentials into a shareable file
       const { geminiApiKey: _g, openaiApiKey: _o, anthropicApiKey: _a, localApiKey: _l, ...safeSettings } = aiSettings;
       const workspace = { title, content: currentContent, suggestions, history, messages, aiSettings: safeSettings, sources: exportedSources };
