@@ -162,6 +162,7 @@ export default function Sidebar({
   // API source cards: which tab is active ('summary' default) + which are currently being digested
   const [sourceActiveTabs, setSourceActiveTabs] = useState<Record<string, 'summary' | 'abstract'>>({});
   const [digestingApiIds, setDigestingApiIds] = useState<Set<string>>(new Set());
+  const [reDigestingIds, setReDigestingIds] = useState<Set<string>>(new Set());
   const [isDragging, setIsDragging] = useState(false);
   const [isParsing, setIsParsing] = useState(false);
   const [parsingFileName, setParsingFileName] = useState<string | null>(null);
@@ -373,6 +374,16 @@ export default function Sidebar({
     clearSources();
     setPendingPdfMatches({});
   }, [clearSourcesTrigger]);
+
+  const handleReDigestSource = async (source: ManuscriptSource) => {
+    if (!aiSettings || reDigestingIds.has(source.id)) return;
+    setReDigestingIds(prev => new Set([...prev, source.id]));
+    try {
+      const digest = await digestApiSource(source.text ?? '', source.name, aiSettings);
+      updateSource(source.id, { digest });
+    } catch (_) {}
+    setReDigestingIds(prev => { const next = new Set(prev); next.delete(source.id); return next; });
+  };
 
   const handleInsertBibliography = (bibSourceText: string, onInsert: (html: string) => void) => {
     setInsertingBib(true);
@@ -1573,7 +1584,7 @@ export default function Sidebar({
                           </div>
 
                           {/* Tabs */}
-                          <div className="flex border-b mx-3" style={{ borderColor: 'var(--border)' }}>
+                          <div className="flex items-center border-b mx-3" style={{ borderColor: 'var(--border)' }}>
                             {(['summary', 'abstract'] as const).map(tab => (
                               <button
                                 key={tab}
@@ -1587,15 +1598,26 @@ export default function Sidebar({
                                 {tab}
                               </button>
                             ))}
+                            {aiSettings && activeTab === 'summary' && (
+                              <button
+                                onClick={() => handleReDigestSource(source)}
+                                disabled={reDigestingIds.has(source.id) || digestingApiIds.has(source.id)}
+                                className="ml-auto p-0.5 rounded hover:bg-stone-100 transition-colors disabled:opacity-40"
+                                title="Regenerate AI summary"
+                                style={{ color: 'var(--text-muted)' }}
+                              >
+                                <RefreshCw size={10} className={reDigestingIds.has(source.id) ? 'animate-spin' : ''} />
+                              </button>
+                            )}
                           </div>
 
                           {/* Tab content */}
                           <div className="px-3 pt-2 pb-3">
                             {activeTab === 'summary' ? (
-                              isDigesting ? (
+                              (isDigesting || reDigestingIds.has(source.id)) ? (
                                 <div className="flex items-center gap-2 p-2 rounded-lg text-[10px]" style={{ background: 'rgba(139,92,246,0.06)', color: 'var(--text-muted)' }}>
                                   <Sparkles size={11} className="animate-spin text-violet-400 shrink-0" />
-                                  Generating summary…
+                                  {reDigestingIds.has(source.id) ? 'Regenerating summary…' : 'Generating summary…'}
                                 </div>
                               ) : source.digest ? (
                                 <div className="text-[11px] leading-relaxed p-2 rounded-lg" style={{ background: 'var(--surface-2)', color: 'var(--text-secondary)' }}>
@@ -1738,18 +1760,42 @@ export default function Sidebar({
                         )}
                       </div>
                     )}
-                    {source.digest && source.type !== 'api' && (
+                    {source.type !== 'api' && (source.digest || aiSettings) && (
                       <div className="px-3 pb-3">
-                        <div className="text-[10px] font-bold uppercase tracking-widest mb-1" style={{ color: 'var(--text-muted)' }}>AI Summary</div>
-                        <div className="text-[11px] leading-relaxed p-2 rounded-lg" style={{ background: 'var(--surface-2)', color: 'var(--text-secondary)' }}>
-                          <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
-                            ul: ({...props}) => <ul className="list-disc pl-4 space-y-0.5" {...props} />,
-                            li: ({...props}) => <li {...props} />,
-                            p: ({...props}) => <p className="mb-1" {...props} />,
-                          }}>
-                            {source.digest}
-                          </ReactMarkdown>
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>AI Summary</div>
+                          {aiSettings && (
+                            <button
+                              onClick={() => handleReDigestSource(source)}
+                              disabled={reDigestingIds.has(source.id) || digestingId === source.id}
+                              className="p-0.5 rounded hover:bg-stone-100 transition-colors disabled:opacity-40"
+                              title="Regenerate AI summary"
+                              style={{ color: 'var(--text-muted)' }}
+                            >
+                              <RefreshCw size={10} className={reDigestingIds.has(source.id) ? 'animate-spin' : ''} />
+                            </button>
+                          )}
                         </div>
+                        {reDigestingIds.has(source.id) ? (
+                          <div className="flex items-center gap-2 p-2 rounded-lg text-[10px]" style={{ background: 'var(--surface-2)', color: 'var(--text-muted)' }}>
+                            <Sparkles size={11} className="animate-spin shrink-0" style={{ color: 'var(--accent-blue)' }} />
+                            Regenerating summary…
+                          </div>
+                        ) : source.digest ? (
+                          <div className="text-[11px] leading-relaxed p-2 rounded-lg" style={{ background: 'var(--surface-2)', color: 'var(--text-secondary)' }}>
+                            <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+                              ul: ({...props}) => <ul className="list-disc pl-4 space-y-0.5" {...props} />,
+                              li: ({...props}) => <li {...props} />,
+                              p: ({...props}) => <p className="mb-1" {...props} />,
+                            }}>
+                              {source.digest}
+                            </ReactMarkdown>
+                          </div>
+                        ) : (
+                          <p className="text-[10px] italic" style={{ color: 'var(--text-muted)' }}>
+                            No summary yet. Click <RefreshCw size={9} className="inline" /> to generate.
+                          </p>
+                        )}
                       </div>
                     )}
                   </div>
