@@ -1286,25 +1286,30 @@ Provide a structured digest:
 }
 
 export async function extractPdfAbstract(sourceText: string, sourceName: string, settings: AISettings): Promise<string> {
-  if (!sourceText || sourceText.trim().length < 100) {
-    return 'Abstract not available — the PDF text could not be extracted. Try re-uploading the file.';
+  if (!sourceText || sourceText.trim().length < 20) {
+    return 'PDF text could not be extracted. Try re-uploading the file.';
   }
 
   const isLocal = settings.provider === 'local';
-  // Abstract is always near the top; take the first portion for efficiency.
+  // Abstract is always near the top of a paper; the first portion is enough.
   const excerpt = truncateText(sourceText, isLocal ? 3000 : 6000);
 
-  const systemPrompt = `You are a research assistant. Your job is to extract the abstract from a scientific paper.
+  const systemPrompt = `You are a research assistant extracting or writing the abstract for a scientific paper.
 
-Rules:
-1. Look for a section labelled "Abstract" and return its text, cleaned of OCR artefacts (fix run-together words, extra spaces, broken hyphens).
-2. If no "Abstract" heading is present, infer the abstract from the opening summary paragraph(s) that describe the study's purpose, methods, and findings.
-3. Return ONLY the abstract text itself — no headings, no labels, no commentary, no preamble.
-4. If after careful reading you genuinely cannot identify any abstract or summary, return exactly: Abstract not available.`;
+Your task, in order of preference:
+1. If the text contains an abstract (it may appear right after the title and authors without any heading), extract and return it, correcting OCR artefacts such as run-together words, broken hyphens, and extra spaces.
+2. If no abstract is present, write one in 3–5 sentences based on the paper's content: state the research question, the approach, the key findings, and the significance.
+3. Only if the text is completely unintelligible or contains no scientific content at all, return exactly: Abstract not available.
+
+Style rules — apply to both extracted and generated abstracts:
+- Plain continuous prose. No bullet points, no numbered lists.
+- No meta-commentary ("This paper investigates…" is fine; "The abstract is as follows:" is not).
+- Academic register, concise, no filler phrases.
+- Return ONLY the abstract text. Nothing else.`;
 
   const prompt = `Paper: "${sourceName}"
 
-Full text (beginning):
+Text (beginning of document):
 """
 ${excerpt}
 """

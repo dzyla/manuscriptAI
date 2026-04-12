@@ -1811,10 +1811,14 @@ export default function Sidebar({
                                 onClick={() => {
                                   setPdfSourceTabs(prev => ({ ...prev, [source.id]: tab }));
                                   // Lazy-extract abstract on first click if not yet fetched,
-                                  // or if the stored result is a stale failure from a prior bad parse.
-                                  const stale = source.abstractText === 'Abstract not available.' && (source.text?.trim().length ?? 0) > 100;
-                                  if (tab === 'abstract' && (!source.abstractText || stale) && !isExtractingAbstract) {
-                                    if (stale) updateSource(source.id, { abstractText: undefined });
+                                  // or if the stored result is any prior failure string and the
+                                  // source now has real text (e.g. PDF re-uploaded after parsing fix).
+                                  const isFailure = !source.abstractText ||
+                                    source.abstractText.startsWith('Abstract not available') ||
+                                    source.abstractText.startsWith('PDF text could not');
+                                  const hasText = (source.text?.trim().length ?? 0) > 20;
+                                  if (tab === 'abstract' && isFailure && hasText && !isExtractingAbstract) {
+                                    updateSource(source.id, { abstractText: undefined });
                                     handleExtractAbstract(source);
                                   }
                                 }}
