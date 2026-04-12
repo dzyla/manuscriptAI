@@ -1286,9 +1286,7 @@ Provide a structured digest:
 }
 
 export async function extractPdfAbstract(sourceText: string, sourceName: string, settings: AISettings): Promise<string> {
-  if (!sourceText || sourceText.trim().length < 20) {
-    return 'PDF text could not be extracted. Try re-uploading the file.';
-  }
+
 
   const isLocal = settings.provider === 'local';
   // Abstract is always near the top of a paper; the first portion is enough.
