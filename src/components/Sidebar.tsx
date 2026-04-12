@@ -1810,8 +1810,11 @@ export default function Sidebar({
                                 key={tab}
                                 onClick={() => {
                                   setPdfSourceTabs(prev => ({ ...prev, [source.id]: tab }));
-                                  // Lazy-extract abstract on first click if not yet fetched
-                                  if (tab === 'abstract' && !source.abstractText && !isExtractingAbstract) {
+                                  // Lazy-extract abstract on first click if not yet fetched,
+                                  // or if the stored result is a stale failure from a prior bad parse.
+                                  const stale = source.abstractText === 'Abstract not available.' && (source.text?.trim().length ?? 0) > 100;
+                                  if (tab === 'abstract' && (!source.abstractText || stale) && !isExtractingAbstract) {
+                                    if (stale) updateSource(source.id, { abstractText: undefined });
                                     handleExtractAbstract(source);
                                   }
                                 }}

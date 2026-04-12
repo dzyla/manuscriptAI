@@ -1286,24 +1286,33 @@ Provide a structured digest:
 }
 
 export async function extractPdfAbstract(sourceText: string, sourceName: string, settings: AISettings): Promise<string> {
+  if (!sourceText || sourceText.trim().length < 100) {
+    return 'Abstract not available — the PDF text could not be extracted. Try re-uploading the file.';
+  }
+
   const isLocal = settings.provider === 'local';
-  const truncated = truncateText(sourceText, isLocal ? 4000 : 8000);
+  // Abstract is always near the top; take the first portion for efficiency.
+  const excerpt = truncateText(sourceText, isLocal ? 3000 : 6000);
 
-  const systemPrompt = `You are a research assistant that extracts or reconstructs the abstract of a scientific paper from its full text.
-Return ONLY the abstract text — no labels, no preamble, no commentary.
-If the abstract is explicitly present in the text, reproduce it verbatim (correcting only obvious OCR errors).
-If it cannot be found or the document does not appear to be a scientific paper, reply with exactly: "Abstract not available."`;
+  const systemPrompt = `You are a research assistant. Your job is to extract the abstract from a scientific paper.
 
-  const prompt = `Document: "${sourceName}"
+Rules:
+1. Look for a section labelled "Abstract" and return its text, cleaned of OCR artefacts (fix run-together words, extra spaces, broken hyphens).
+2. If no "Abstract" heading is present, infer the abstract from the opening summary paragraph(s) that describe the study's purpose, methods, and findings.
+3. Return ONLY the abstract text itself — no headings, no labels, no commentary, no preamble.
+4. If after careful reading you genuinely cannot identify any abstract or summary, return exactly: Abstract not available.`;
 
+  const prompt = `Paper: "${sourceName}"
+
+Full text (beginning):
 """
-${truncated}
+${excerpt}
 """
 
-Extract or reconstruct the abstract from the document above.`;
+Return the abstract.`;
 
   try {
-    const response = await callLLM(prompt, settings, systemPrompt, false, undefined, undefined, 400);
+    const response = await callLLM(prompt, settings, systemPrompt, false, undefined, undefined, 600);
     return response?.trim() || 'Abstract not available.';
   } catch (_) {
     return 'Abstract not available.';
