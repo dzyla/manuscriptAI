@@ -2,9 +2,10 @@ import * as pdfjsLib from 'pdfjs-dist';
 import { expose } from 'comlink';
 
 // This file runs in a Worker context — no DOM, no React.
-// Disable pdfjs's own nested worker: we're already in a Web Worker,
-// so pdfjs must run in-thread (fake worker) to avoid hanging on nested workers.
-pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+  'pdfjs-dist/build/pdf.worker.min.mjs',
+  import.meta.url
+).href;
 
 function cleanPdfText(raw: string): string {
   return raw
