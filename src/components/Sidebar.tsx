@@ -40,7 +40,7 @@ function cleanPdfText(raw: string): string {
 import { Cite } from '@citation-js/core';
 import '@citation-js/plugin-bibtex';
 import { useSourceStore } from '../stores/useSourceStore';
-import { digestSourceForManuscript, digestApiSource, analyzeSourceAgainstManuscript, AGENT_INFO, AGENT_ICONS, localModelSupportsVision } from '../services/ai';
+import { digestSourceForManuscript, digestApiSource, extractPdfAbstract, analyzeSourceAgainstManuscript, AGENT_INFO, AGENT_ICONS, localModelSupportsVision } from '../services/ai';
 import { detectOrphanedCitations, formatBibliography, BIB_STYLE_LABELS, type BibStyle, type CitationAnalysis, countCitationOccurrences } from '../services/citations';
 
 interface SidebarProps {
@@ -190,6 +190,8 @@ export default function Sidebar({
   const [sourceActiveTabs, setSourceActiveTabs] = useState<Record<string, 'summary' | 'abstract'>>({});
   const [digestingApiIds, setDigestingApiIds] = useState<Set<string>>(new Set());
   const [reDigestingIds, setReDigestingIds] = useState<Set<string>>(new Set());
+  const [pdfSourceTabs, setPdfSourceTabs] = useState<Record<string, 'summary' | 'abstract'>>({});
+  const [extractingAbstractIds, setExtractingAbstractIds] = useState<Set<string>>(new Set());
   const [isDragging, setIsDragging] = useState(false);
   const [isParsing, setIsParsing] = useState(false);
   const [parsingFileName, setParsingFileName] = useState<string | null>(null);
@@ -397,6 +399,18 @@ export default function Sidebar({
     clearSources();
     setPendingPdfMatches({});
   }, [clearSourcesTrigger]);
+
+  const handleExtractAbstract = async (source: ManuscriptSource) => {
+    if (!aiSettings || extractingAbstractIds.has(source.id)) return;
+    setExtractingAbstractIds(prev => new Set([...prev, source.id]));
+    try {
+      const abstractText = await extractPdfAbstract(source.text ?? '', source.name, aiSettings);
+      updateSource(source.id, { abstractText });
+    } catch (_) {
+      updateSource(source.id, { abstractText: 'Abstract not available.' });
+    }
+    setExtractingAbstractIds(prev => { const next = new Set(prev); next.delete(source.id); return next; });
+  };
 
   const handleReDigestSource = async (source: ManuscriptSource) => {
     if (!aiSettings || reDigestingIds.has(source.id)) return;
@@ -1783,44 +1797,96 @@ export default function Sidebar({
                         )}
                       </div>
                     )}
-                    {source.type !== 'api' && (source.digest || aiSettings) && (
-                      <div className="px-3 pb-3">
-                        <div className="flex items-center justify-between mb-1">
-                          <div className="text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>AI Summary</div>
-                          {aiSettings && (
+                    {source.type !== 'api' && aiSettings && (() => {
+                      const pdfTab = pdfSourceTabs[source.id] ?? 'summary';
+                      const isRedigesting = reDigestingIds.has(source.id) || digestingId === source.id;
+                      const isExtractingAbstract = extractingAbstractIds.has(source.id);
+                      return (
+                        <div>
+                          {/* Tabs row */}
+                          <div className="flex items-center border-b border-t mx-3" style={{ borderColor: 'var(--border)' }}>
+                            {(['summary', 'abstract'] as const).map(tab => (
+                              <button
+                                key={tab}
+                                onClick={() => {
+                                  setPdfSourceTabs(prev => ({ ...prev, [source.id]: tab }));
+                                  // Lazy-extract abstract on first click if not yet fetched
+                                  if (tab === 'abstract' && !source.abstractText && !isExtractingAbstract) {
+                                    handleExtractAbstract(source);
+                                  }
+                                }}
+                                className={`px-3 py-1 text-[10px] font-semibold capitalize transition-colors ${
+                                  pdfTab === tab
+                                    ? 'border-b-2 -mb-px border-blue-500 text-blue-700'
+                                    : 'text-stone-400 hover:text-stone-600'
+                                }`}
+                              >
+                                {tab}
+                              </button>
+                            ))}
+                            {/* Refresh button — context-sensitive to active tab */}
                             <button
-                              onClick={() => handleReDigestSource(source)}
-                              disabled={reDigestingIds.has(source.id) || digestingId === source.id}
-                              className="p-0.5 rounded hover:bg-stone-100 transition-colors disabled:opacity-40"
-                              title="Regenerate AI summary"
+                              onClick={() => {
+                                if (pdfTab === 'summary') {
+                                  handleReDigestSource(source);
+                                } else {
+                                  updateSource(source.id, { abstractText: undefined });
+                                  handleExtractAbstract(source);
+                                }
+                              }}
+                              disabled={pdfTab === 'summary' ? isRedigesting : isExtractingAbstract}
+                              className="ml-auto p-0.5 rounded hover:bg-stone-100 transition-colors disabled:opacity-40"
+                              title={pdfTab === 'summary' ? 'Regenerate AI summary' : 'Re-extract abstract'}
                               style={{ color: 'var(--text-muted)' }}
                             >
-                              <RefreshCw size={10} className={reDigestingIds.has(source.id) ? 'animate-spin' : ''} />
+                              <RefreshCw size={10} className={(pdfTab === 'summary' ? isRedigesting : isExtractingAbstract) ? 'animate-spin' : ''} />
                             </button>
-                          )}
+                          </div>
+
+                          {/* Tab content */}
+                          <div className="px-3 pt-2 pb-3">
+                            {pdfTab === 'summary' ? (
+                              isRedigesting ? (
+                                <div className="flex items-center gap-2 p-2 rounded-lg text-[10px]" style={{ background: 'var(--surface-2)', color: 'var(--text-muted)' }}>
+                                  <Sparkles size={11} className="animate-spin shrink-0" style={{ color: 'var(--accent-blue)' }} />
+                                  Regenerating summary…
+                                </div>
+                              ) : source.digest ? (
+                                <div className="text-[11px] leading-relaxed p-2 rounded-lg" style={{ background: 'var(--surface-2)', color: 'var(--text-secondary)' }}>
+                                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+                                    ul: ({...props}) => <ul className="list-disc pl-4 space-y-0.5" {...props} />,
+                                    li: ({...props}) => <li {...props} />,
+                                    p: ({...props}) => <p className="mb-1 last:mb-0" {...props} />,
+                                  }}>
+                                    {source.digest}
+                                  </ReactMarkdown>
+                                </div>
+                              ) : (
+                                <p className="text-[10px] italic" style={{ color: 'var(--text-muted)' }}>
+                                  No summary yet. Click <RefreshCw size={9} className="inline" /> to generate.
+                                </p>
+                              )
+                            ) : (
+                              /* Abstract tab */
+                              isExtractingAbstract ? (
+                                <div className="flex items-center gap-2 p-2 rounded-lg text-[10px]" style={{ background: 'var(--surface-2)', color: 'var(--text-muted)' }}>
+                                  <Sparkles size={11} className="animate-spin shrink-0" style={{ color: 'var(--accent-blue)' }} />
+                                  Extracting abstract…
+                                </div>
+                              ) : source.abstractText ? (
+                                <div className="text-[11px] leading-relaxed p-2 rounded-lg" style={{ background: 'var(--surface-2)', color: 'var(--text-secondary)' }}>
+                                  {source.abstractText}
+                                </div>
+                              ) : (
+                                <p className="text-[10px] italic" style={{ color: 'var(--text-muted)' }}>
+                                  Click <RefreshCw size={9} className="inline" /> to extract abstract from the document.
+                                </p>
+                              )
+                            )}
+                          </div>
                         </div>
-                        {reDigestingIds.has(source.id) ? (
-                          <div className="flex items-center gap-2 p-2 rounded-lg text-[10px]" style={{ background: 'var(--surface-2)', color: 'var(--text-muted)' }}>
-                            <Sparkles size={11} className="animate-spin shrink-0" style={{ color: 'var(--accent-blue)' }} />
-                            Regenerating summary…
-                          </div>
-                        ) : source.digest ? (
-                          <div className="text-[11px] leading-relaxed p-2 rounded-lg" style={{ background: 'var(--surface-2)', color: 'var(--text-secondary)' }}>
-                            <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
-                              ul: ({...props}) => <ul className="list-disc pl-4 space-y-0.5" {...props} />,
-                              li: ({...props}) => <li {...props} />,
-                              p: ({...props}) => <p className="mb-1" {...props} />,
-                            }}>
-                              {source.digest}
-                            </ReactMarkdown>
-                          </div>
-                        ) : (
-                          <p className="text-[10px] italic" style={{ color: 'var(--text-muted)' }}>
-                            No summary yet. Click <RefreshCw size={9} className="inline" /> to generate.
-                          </p>
-                        )}
-                      </div>
-                    )}
+                      );
+                    })()}
                   </div>
                 ))}
               </div>

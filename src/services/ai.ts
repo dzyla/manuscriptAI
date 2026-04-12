@@ -1285,6 +1285,31 @@ Provide a structured digest:
   }
 }
 
+export async function extractPdfAbstract(sourceText: string, sourceName: string, settings: AISettings): Promise<string> {
+  const isLocal = settings.provider === 'local';
+  const truncated = truncateText(sourceText, isLocal ? 4000 : 8000);
+
+  const systemPrompt = `You are a research assistant that extracts or reconstructs the abstract of a scientific paper from its full text.
+Return ONLY the abstract text — no labels, no preamble, no commentary.
+If the abstract is explicitly present in the text, reproduce it verbatim (correcting only obvious OCR errors).
+If it cannot be found or the document does not appear to be a scientific paper, reply with exactly: "Abstract not available."`;
+
+  const prompt = `Document: "${sourceName}"
+
+"""
+${truncated}
+"""
+
+Extract or reconstruct the abstract from the document above.`;
+
+  try {
+    const response = await callLLM(prompt, settings, systemPrompt, false, undefined, undefined, 400);
+    return response?.trim() || 'Abstract not available.';
+  } catch (_) {
+    return 'Abstract not available.';
+  }
+}
+
 export async function rewriteSection(sectionText: string, manuscriptContext: string, settings: AISettings): Promise<string> {
   const truncatedContext = truncateText(manuscriptContext, settings.provider === 'local' ? 800 : 2000);
 

@@ -17,6 +17,7 @@ export interface ManuscriptSource {
   type: 'pdf' | 'bib' | 'api' | 'text';
   text: string;
   digest?: string;
+  abstractText?: string;   // LLM-extracted abstract for pdf/text sources
   apiMeta?: SemanticSearchResult;
   queryText?: string;
 }
