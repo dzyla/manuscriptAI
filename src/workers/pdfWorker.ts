@@ -1,10 +1,12 @@
 import * as pdfjsLib from 'pdfjs-dist';
 
-// Disable pdfjsLib's own sub-worker. When pdfjs runs inside a Worker,
-// its internal WorkerMessageHandler conflicts with any message-passing
-// framework. Setting workerSrc to '' tells pdfjs to run synchronously
-// in the current context instead of spawning another worker.
-pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+// pdfjs-dist v5 requires an explicit workerSrc. Using new URL(..., import.meta.url)
+// lets Vite statically resolve and bundle the worker asset, so the path is
+// correct in both dev and production (including the /manuscriptAI/ base on GitHub Pages).
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+  'pdfjs-dist/build/pdf.worker.mjs',
+  import.meta.url
+).href;
 
 function cleanPdfText(raw: string): string {
   return raw
