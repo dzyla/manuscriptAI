@@ -9,30 +9,6 @@ import remarkGfm from 'remark-gfm';
 import { wrap } from 'comlink';
 import type { DocxWorkerApi } from '../workers/docxWorker';
 
-// Use Vite's ?url import to resolve the pdfjs worker path at build time.
-// This is more reliable than new URL(..., import.meta.url) under Vite's
-// dev server and build pipeline.
-import * as pdfjsLib from 'pdfjs-dist';
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
-
-function getPdfjsLib() {
-  pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
-  return pdfjsLib;
-}
-
-function cleanPdfText(raw: string): string {
-  return raw
-    .replace(/\r\n/g, '\n')
-    .replace(/(\w)-\n(\w)/g, '$1$2')
-    .replace(/^[ \t]*(\d{1,4}|[Pp]age\s+\d+(\s+of\s+\d+)?)[ \t]*$/gm, '')
-    .replace(/^.*[Dd]ownloaded\s+from\s+.*$/gm, '')
-    .replace(/^.*©\s*\d{4}.*$/gm, '')
-    .replace(/^.*[Aa]ll\s+rights\s+reserved.*$/gm, '')
-    .replace(/^[ \t]*[Dd][Oo][Ii]:\s*10\.\S+[ \t]*$/gm, '')
-    .replace(/^[ \t]*$/gm, '')  // remove blank/whitespace-only lines
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
 import { Cite } from '@citation-js/core';
 import '@citation-js/plugin-bibtex';
 import { useSourceStore } from '../stores/useSourceStore';
@@ -239,21 +215,28 @@ export default function Sidebar({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sources]);
 
-  const extractTextFromPDF = async (file: File): Promise<string> => {
-    const lib = getPdfjsLib();
-    const data = await file.arrayBuffer();
-    const pdf = await lib.getDocument({ data: new Uint8Array(data) }).promise;
-    let raw = '';
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      const content = await page.getTextContent();
-      // Join items with space; preserve line breaks between items that end without one
-      const pageText = content.items
-        .map((item: any) => item.str)
-        .join(' ');
-      raw += pageText + '\n\n';
-    }
-    return cleanPdfText(raw);
+  type PdfWorkerResult = { type: 'result'; text: string } | { type: 'error'; message: string };
+
+  const extractTextFromPDF = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      file.arrayBuffer().then(data => {
+        const worker = new Worker(
+          new URL('../workers/pdfWorker.ts', import.meta.url),
+          { type: 'module' }
+        );
+        worker.onmessage = (e: MessageEvent<PdfWorkerResult>) => {
+          worker.terminate();
+          if (e.data.type === 'result') resolve(e.data.text);
+          else reject(new Error(e.data.message));
+        };
+        worker.onerror = (err) => {
+          worker.terminate();
+          reject(new Error(err.message));
+        };
+        // Transfer the ArrayBuffer to the worker (zero-copy)
+        worker.postMessage({ type: 'extract', payload: data }, [data]);
+      }).catch(reject);
+    });
   };
 
   const processFiles = async (files: File[]) => {
