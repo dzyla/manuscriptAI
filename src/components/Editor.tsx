@@ -389,30 +389,29 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
     }
 
     // Image is clicked but nothing selected — derive context from AST.
+    // For a NodeSelection (click on atom node), selection.from is the node's position.
     const doc = editor.state.doc;
+    const imagePos = from; // from === to here, equals the NodeSelection anchor
+    const clickedNode = doc.nodeAt(imagePos);
+    if (!clickedNode || clickedNode.type.name !== 'resizableImage') return '';
 
-    // Find the image node position.
-    let imagePos: number | null = null;
-    doc.descendants((node, pos) => {
-      if (imagePos !== null) return false;
-      if (node.type.name === 'resizableImage') { imagePos = pos; return false; }
-      return true;
-    });
-    if (imagePos === null) return '';
-
-    // Pass 1 (caption-aware): find nearest paragraph whose text starts with "figure".
-    let bestCaption = '';
-    let bestDist = Infinity;
+    // Pass 1 (caption-aware): look for adjacent "Figure X…" paragraphs.
+    let captionBefore = '';
+    let captionAfter = '';
     doc.descendants((node, pos) => {
       if (node.type.name !== 'paragraph') return true;
       const text = node.textContent.trim();
-      if (/^figure/i.test(text)) {
-        const dist = Math.abs(pos - imagePos!);
-        if (dist < bestDist) { bestDist = dist; bestCaption = text; }
+      if (!/^figure/i.test(text)) return true;
+      const nodeEnd = pos + node.nodeSize;
+      if (nodeEnd <= imagePos) {
+        captionBefore = text; // keep overwriting — last before image wins (nearest)
+      } else if (pos > imagePos && !captionAfter) {
+        captionAfter = text; // first after image wins (nearest)
       }
       return true;
     });
-    if (bestCaption) return bestCaption;
+    const caption = captionAfter || captionBefore;
+    if (caption) return caption;
 
     // Pass 2 (surrounding paragraphs): nearest preceding + following paragraph.
     let preceding = '';
@@ -424,7 +423,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
       const nodeEnd = pos + node.nodeSize;
       if (nodeEnd <= imagePos!) {
         preceding = text; // keep overwriting — last one before image wins
-      } else if (pos >= imagePos! && !following) {
+      } else if (pos > imagePos && !following) {
         following = text; // first one after image
       }
       return true;
