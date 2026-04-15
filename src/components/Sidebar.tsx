@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useMemo, createElement } from 'react';
 import { AgentType, Message, Suggestion, HistoryItem, SuggestionSeverity, AISettings, AttachedImage } from '../types';
 import { Send, Sparkles, Check, X, MessageSquare, History as HistoryIcon, Info, CheckCheck, XCircle, Filter, ChevronDown, ChevronUp, BookOpen, Trash2, FileText, UploadCloud, FolderOpen, BookMarked, Plus, List, AlertTriangle, CheckCircle2, Library, Search, ExternalLink, Copy, Zap, RefreshCw, ImagePlus, Square, ArrowRight, Hash } from 'lucide-react';
-import { SemanticSearchResult, ManuscriptSource } from '../types';
+import { SemanticSearchResult, ManuscriptSource, PdfMatchScore } from '../types';
 import { searchSimilarManuscripts, resultToBibtex, doiToUrl } from '../services/manuscriptSearch';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
@@ -9,38 +9,10 @@ import remarkGfm from 'remark-gfm';
 import { wrap } from 'comlink';
 import type { DocxWorkerApi } from '../workers/docxWorker';
 
-// Lazy-initialize pdfjs once on the main thread. pdfjs then spawns its OWN
-// real worker internally — which works reliably because import.meta.url
-// resolves correctly in the main-thread context.
-let _pdfjsLib: typeof import('pdfjs-dist') | null = null;
-async function getPdfjsLib() {
-  if (!_pdfjsLib) {
-    _pdfjsLib = await import('pdfjs-dist');
-    _pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-      'pdfjs-dist/build/pdf.worker.min.mjs',
-      import.meta.url,
-    ).href;
-  }
-  return _pdfjsLib;
-}
-
-function cleanPdfText(raw: string): string {
-  return raw
-    .replace(/\r\n/g, '\n')
-    .replace(/(\w)-\n(\w)/g, '$1$2')
-    .replace(/^[ \t]*(\d{1,4}|[Pp]age\s+\d+(\s+of\s+\d+)?)[ \t]*$/gm, '')
-    .replace(/^.*[Dd]ownloaded\s+from\s+.*$/gm, '')
-    .replace(/^.*©\s*\d{4}.*$/gm, '')
-    .replace(/^.*[Aa]ll\s+rights\s+reserved.*$/gm, '')
-    .replace(/^[ \t]*[Dd][Oo][Ii]:\s*10\.\S+[ \t]*$/gm, '')
-    .replace(/^[ \t]*$/gm, '')  // remove blank/whitespace-only lines
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
 import { Cite } from '@citation-js/core';
 import '@citation-js/plugin-bibtex';
 import { useSourceStore } from '../stores/useSourceStore';
-import { digestSourceForManuscript, digestApiSource, extractPdfAbstract, analyzeSourceAgainstManuscript, AGENT_INFO, AGENT_ICONS, localModelSupportsVision } from '../services/ai';
+import { digestSourceForManuscript, digestApiSource, extractPdfAbstractAea, scorePdfMatches, analyzeSourceAgainstManuscript, AGENT_INFO, AGENT_ICONS, localModelSupportsVision } from '../services/ai';
 import { detectOrphanedCitations, formatBibliography, BIB_STYLE_LABELS, type BibStyle, type CitationAnalysis, countCitationOccurrences } from '../services/citations';
 
 interface SidebarProps {
@@ -184,8 +156,8 @@ export default function Sidebar({
     docxWorkerRef.current = wrap<DocxWorkerApi>(rawDocx);
     return () => { rawDocx.terminate(); };
   }, []);
-  // Pending PDF match confirmations: sourceId → { results, matchIndex }
-  const [pendingPdfMatches, setPendingPdfMatches] = useState<Record<string, { results: SemanticSearchResult[]; matchIndex: number }>>({});
+  // Pending PDF match confirmations: sourceId → { results, matchIndex, scores? }
+  const [pendingPdfMatches, setPendingPdfMatches] = useState<Record<string, { results: SemanticSearchResult[]; matchIndex: number; scores?: PdfMatchScore[] }>>({});
   // API source cards: which tab is active ('summary' default) + which are currently being digested
   const [sourceActiveTabs, setSourceActiveTabs] = useState<Record<string, 'summary' | 'abstract'>>({});
   const [digestingApiIds, setDigestingApiIds] = useState<Set<string>>(new Set());
@@ -243,17 +215,33 @@ export default function Sidebar({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sources]);
 
-  const extractTextFromPDF = async (file: File): Promise<string> => {
-    const pdfjsLib = await getPdfjsLib();
-    const data = await file.arrayBuffer();
-    const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(data) }).promise;
-    let raw = '';
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      const content = await page.getTextContent();
-      raw += content.items.map((item: any) => item.str).join(' ') + '\n\n';
-    }
-    return cleanPdfText(raw);
+  type PdfWorkerResult = { type: 'result'; text: string } | { type: 'error'; message: string };
+
+  const extractTextFromPDF = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      file.arrayBuffer().then(data => {
+        const worker = new Worker(
+          new URL('../workers/pdfWorker.ts', import.meta.url),
+          { type: 'module' }
+        );
+        worker.onmessage = (e: MessageEvent<PdfWorkerResult>) => {
+          worker.terminate();
+          if (e.data.type === 'result') resolve(e.data.text);
+          else reject(new Error(e.data.message));
+        };
+        worker.onerror = (err: ErrorEvent) => {
+          worker.terminate();
+          reject(new Error(err.message ?? String(err)));
+        };
+        // Transfer the ArrayBuffer to the worker (zero-copy)
+        try {
+          worker.postMessage({ type: 'extract', payload: data }, [data]);
+        } catch (err) {
+          worker.terminate();
+          reject(err);
+        }
+      }).catch(reject);
+    });
   };
 
   const processFiles = async (files: File[]) => {
@@ -270,6 +258,9 @@ export default function Sidebar({
       try {
         if (nameLower.endsWith('.pdf')) {
           const text = await extractTextFromPDF(file);
+          if (!text || text.trim().length === 0) {
+            throw new Error(`No text found in "${file.name}" — is it a scanned image-only PDF?`);
+          }
           const id = Date.now().toString() + Math.random();
           newSources.push({ id, name: file.name, type: 'pdf' as const, text, queryText: undefined });
         } else if (nameLower.endsWith('.bib')) {
@@ -299,29 +290,66 @@ export default function Sidebar({
 
     if (newSources.length > 0) {
       addSources(newSources);
-      // Auto-digest PDFs and text documents
+      // Full pipeline for PDFs and text documents:
+      // digest → Abstract Extraction Agent → DB search → scoring agent
       if (aiSettings) {
         for (const src of newSources) {
           if (src.type === 'pdf' || src.type === 'text') {
-            setDigestingId(src.id);
+            const srcId = src.id;
+
+            // Step 1 — Digest
+            setDigestingId(srcId);
             setParsingFileName(`Digesting ${src.name}...`);
+            let digest = '';
             try {
-              const digest = await digestApiSource(src.text, src.name, aiSettings);
-              updateSource(src.id, { digest });
-              // Search using digest text only — cleaner signal than raw PDF content
-              if (digest && digest.length > 30) {
-                const digestQuery = digest.replace(/\*\*[^*]+\*\*:?/g, '').replace(/\s+/g, ' ').trim().slice(0, 700);
-                const srcId = src.id;
-                searchSimilarManuscripts(digestQuery, 10)
-                  .then(results => {
-                    if (results.length > 0) {
-                      setPendingPdfMatches(prev => ({ ...prev, [srcId]: { results: results.slice(0, 10), matchIndex: 0 } }));
-                    }
-                  })
-                  .catch(() => {});
-              }
+              digest = await digestApiSource(src.text, src.name, aiSettings);
+              updateSource(srcId, { digest });
             } catch (_) {}
             setDigestingId(null);
+
+            // Step 2 — Abstract Extraction Agent (AEA)
+            setParsingFileName(`Extracting abstract for ${src.name}...`);
+            let abstractText = '';
+            try {
+              abstractText = await extractPdfAbstractAea(src.text, src.name, aiSettings);
+              updateSource(srcId, { abstractText });
+            } catch (_) {}
+
+            // Step 3 — Database search (prefer abstract over digest for query)
+            setParsingFileName(`Searching database for ${src.name}...`);
+            const searchQuery = (abstractText && abstractText.length > 50 && !abstractText.startsWith('Abstract not available'))
+              ? abstractText.slice(0, 700)
+              : digest.replace(/\*\*[^*]+\*\*:?/g, '').replace(/\s+/g, ' ').trim().slice(0, 700);
+
+            if (searchQuery.length >= 3) {
+              try {
+                const results = await searchSimilarManuscripts(searchQuery, 10);
+                if (results.length > 0) {
+                  const top10 = results.slice(0, 10);
+                  // Set results immediately so the UI shows while scoring runs
+                  setPendingPdfMatches(prev => ({ ...prev, [srcId]: { results: top10, matchIndex: 0 } }));
+
+                  // Step 4 — Scoring agent (async, updates UI when done)
+                  const queryForScoring = (abstractText && !abstractText.startsWith('Abstract not available'))
+                    ? abstractText
+                    : digest;
+                  scorePdfMatches(src.name, queryForScoring, top10, aiSettings)
+                    .then(scores => {
+                      if (scores.length > 0) {
+                        // Re-order results by score, update matchIndex to 0
+                        const ordered = scores.map(s => top10[s.index]).filter(Boolean);
+                        setPendingPdfMatches(prev => {
+                          const existing = prev[srcId];
+                          if (!existing) return prev;
+                          return { ...prev, [srcId]: { results: ordered, matchIndex: 0, scores } };
+                        });
+                      }
+                    })
+                    .catch(() => {});
+                }
+              } catch (_) {}
+            }
+
             setParsingFileName(null);
           }
         }
@@ -404,7 +432,7 @@ export default function Sidebar({
     if (!aiSettings || extractingAbstractIds.has(source.id)) return;
     setExtractingAbstractIds(prev => new Set([...prev, source.id]));
     try {
-      const abstractText = await extractPdfAbstract(source.text ?? '', source.name, aiSettings);
+      const abstractText = await extractPdfAbstractAea(source.text ?? '', source.name, aiSettings);
       updateSource(source.id, { abstractText });
     } catch (_) {
       updateSource(source.id, { abstractText: 'Abstract not available.' });
@@ -1499,7 +1527,26 @@ export default function Sidebar({
                         searchSimilarManuscripts(q, 10)
                           .then(results => {
                             if (results.length > 0) {
-                              setPendingPdfMatches(prev => ({ ...prev, [srcId]: { results: results.slice(0, 10), matchIndex: 0 } }));
+                              const top10 = results.slice(0, 10);
+                              setPendingPdfMatches(prev => ({ ...prev, [srcId]: { results: top10, matchIndex: 0 } }));
+                              // Run scoring agent if AI settings available
+                              if (aiSettings) {
+                                const queryForScoring = source.abstractText && !source.abstractText.startsWith('Abstract not available')
+                                  ? source.abstractText
+                                  : source.digest ?? q;
+                                scorePdfMatches(source.name, queryForScoring, top10, aiSettings)
+                                  .then(scores => {
+                                    if (scores.length > 0) {
+                                      const ordered = scores.map(s => top10[s.index]).filter(Boolean);
+                                      setPendingPdfMatches(prev => {
+                                        const existing = prev[srcId];
+                                        if (!existing) return prev;
+                                        return { ...prev, [srcId]: { results: ordered, matchIndex: 0, scores } };
+                                      });
+                                    }
+                                  })
+                                  .catch(() => {});
+                              }
                             }
                           })
                           .catch(() => {})
@@ -1533,12 +1580,28 @@ export default function Sidebar({
                             const match = pendingPdfMatches[source.id];
                             const result = match.results[match.matchIndex];
                             if (!result) return null;
+                            // Find score entry for the current result (scores are already in display order)
+                            const currentScore = match.scores?.[match.matchIndex];
+                            const hasScore = currentScore && currentScore.score >= 0;
                             return (
                               <div className="p-2.5 rounded-lg border space-y-1.5" style={{ background: 'var(--surface-2)', borderColor: 'var(--border)' }}>
-                                <p className="text-[10px] font-bold text-amber-700 flex items-center gap-1">
-                                  <Zap size={10} />
-                                  Is this your paper? ({match.matchIndex + 1}/{match.results.length})
-                                </p>
+                                <div className="flex items-center justify-between gap-2">
+                                  <p className="text-[10px] font-bold text-amber-700 flex items-center gap-1">
+                                    <Zap size={10} />
+                                    Is this your paper? ({match.matchIndex + 1}/{match.results.length})
+                                  </p>
+                                  {hasScore && (
+                                    <span
+                                      className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full shrink-0"
+                                      style={{
+                                        background: currentScore.score >= 70 ? 'var(--accent-green-soft, #d1fae5)' : currentScore.score >= 40 ? 'var(--accent-yellow-soft, #fef9c3)' : 'var(--surface-3, #f1f5f9)',
+                                        color: currentScore.score >= 70 ? '#065f46' : currentScore.score >= 40 ? '#713f12' : 'var(--text-muted)',
+                                      }}
+                                    >
+                                      {currentScore.score}/100
+                                    </span>
+                                  )}
+                                </div>
                                 <p className="text-[11px] font-semibold leading-tight" style={{ color: 'var(--text-primary)' }}>
                                   {result.title}
                                 </p>
@@ -1548,6 +1611,11 @@ export default function Sidebar({
                                 <p className="text-[10px] italic" style={{ color: 'var(--text-tertiary)' }}>
                                   {result.journal}{result.year ? `, ${result.year}` : ''}
                                 </p>
+                                {hasScore && currentScore.reason && (
+                                  <p className="text-[10px] italic" style={{ color: 'var(--text-muted)' }}>
+                                    {currentScore.reason}
+                                  </p>
+                                )}
                                 <div className="flex gap-1.5 pt-0.5">
                                   <button
                                     onClick={() => {

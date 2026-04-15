@@ -1,6 +1,5 @@
 import { create } from 'zustand';
 import { db } from '../db/manuscriptDb';
-import { expandCitationNums, formatCitationGroup, mergeAdjacentCitations } from '../services/citations';
 import type { DocumentRow } from '../types';
 
 interface DocumentState {
@@ -22,16 +21,16 @@ interface DocumentState {
   insertCitation: (sourceId: string) => number;
 
   /**
-   * Remove a source citation from the registry. Returns new HTML and new registry
-   * after stripping and renumbering. Caller must apply the new HTML to the editor.
+   * Remove a source citation from the registry. Accepts the ordered list of source IDs
+   * (from AST traversal). Returns the new registry. Caller applies changes to the editor.
    */
-  removeCitation: (sourceId: string, currentHtml: string) => { newHtml: string; newRegistry: Record<string, number> };
+  removeCitation: (sourceId: string, orderedSourceIds: string[]) => Record<string, number>;
 
   /**
-   * Scan the HTML for citation patterns and assign sequential numbers in order of
-   * appearance. Returns new HTML (remapped numbers) and the new registry.
+   * Assign sequential numbers to sources in the given order (from AST traversal).
+   * Returns the new registry. Caller applies changes to the editor.
    */
-  renumberCitations: (currentHtml: string) => { newHtml: string; newRegistry: Record<string, number> };
+  renumberCitations: (orderedSourceIds: string[]) => Record<string, number>;
 
   /** Reset to blank document state. */
   resetDocument: () => void;
@@ -65,77 +64,22 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     return num;
   },
 
-  removeCitation: (sourceId, currentHtml) => {
-    const { citationRegistry } = get();
-    const removed = citationRegistry[sourceId];
-    if (!removed) return { newHtml: currentHtml, newRegistry: citationRegistry };
-
-    const { [sourceId]: _removed, ...rest } = citationRegistry;
-
-    // Strip the number from every group that contains it
-    const stripped = currentHtml.replace(/\[([\d,\-]+)\]/g, (_, inner) => {
-      const nums = expandCitationNums(inner).filter(n => n !== removed);
-      return nums.length > 0 ? formatCitationGroup(nums) : '';
-    });
-
-    // Renumber remaining in original order
-    const sorted = Object.entries(rest).sort((a, b) => a[1] - b[1]);
+  removeCitation: (sourceId, orderedSourceIds) => {
+    const filtered = orderedSourceIds.filter(id => id !== sourceId);
     const newRegistry: Record<string, number> = {};
-    sorted.forEach(([id], i) => { newRegistry[id] = i + 1; });
-
-    const numToId: Record<number, string> = {};
-    for (const [id, num] of Object.entries(rest)) numToId[num] = id;
-
-    const remapped = stripped.replace(/\[([\d,\-]+)\]/g, (_, inner) => {
-      const nums = [...new Set(expandCitationNums(inner).map(n => {
-        const id = numToId[n];
-        return id && newRegistry[id] ? newRegistry[id] : n;
-      }))].sort((a, b) => a - b);
-      return nums.length > 0 ? formatCitationGroup(nums) : '';
-    });
-
-    const newHtml = mergeAdjacentCitations(remapped);
-    set({ citationRegistry: newRegistry, citationCounter: sorted.length });
-    return { newHtml, newRegistry };
+    filtered.forEach((id, i) => { newRegistry[id] = i + 1; });
+    set({ citationRegistry: newRegistry, citationCounter: filtered.length });
+    return newRegistry;
   },
 
-  renumberCitations: (currentHtml) => {
-    const { citationRegistry } = get();
-    if (Object.keys(citationRegistry).length === 0) {
-      return { newHtml: currentHtml, newRegistry: citationRegistry };
+  renumberCitations: (orderedSourceIds) => {
+    if (orderedSourceIds.length === 0) {
+      return {};
     }
-
-    const numToId: Record<number, string> = {};
-    for (const [id, num] of Object.entries(citationRegistry)) numToId[num] = id;
-
-    // Scan appearance order
-    const seenIds: string[] = [];
-    const seenNums = new Set<number>();
-    const pat = /\[([\d,\-]+)\]/g;
-    let m;
-    while ((m = pat.exec(currentHtml)) !== null) {
-      for (const n of expandCitationNums(m[1])) {
-        if (numToId[n] && !seenNums.has(n)) { seenNums.add(n); seenIds.push(numToId[n]); }
-      }
-    }
-    // Append any sources not yet in order
-    for (const id of Object.keys(citationRegistry)) {
-      if (!seenIds.includes(id)) seenIds.push(id);
-    }
-
     const newRegistry: Record<string, number> = {};
-    seenIds.forEach((id, i) => { newRegistry[id] = i + 1; });
-
-    const remapped = currentHtml.replace(/\[([\d,\-]+)\]/g, (_, inner) => {
-      const nums = [...new Set(expandCitationNums(inner).map(n => {
-        const id = numToId[n];
-        return id && newRegistry[id] ? newRegistry[id] : n;
-      }))].sort((a, b) => a - b);
-      return formatCitationGroup(nums);
-    });
-    const newHtml = mergeAdjacentCitations(remapped);
-    set({ citationRegistry: newRegistry, citationCounter: seenIds.length });
-    return { newHtml, newRegistry };
+    orderedSourceIds.forEach((id, i) => { newRegistry[id] = i + 1; });
+    set({ citationRegistry: newRegistry, citationCounter: orderedSourceIds.length });
+    return newRegistry;
   },
 
   resetDocument: () => set({

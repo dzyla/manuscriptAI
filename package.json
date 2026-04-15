@@ -34,6 +34,7 @@
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
     "file-saver": "^2.0.5",
+    "gpt-tokenizer": "^3.4.0",
     "localforage": "^1.10.0",
     "lucide-react": "^0.546.0",
     "mammoth": "^1.12.0",

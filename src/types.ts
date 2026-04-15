@@ -22,6 +22,13 @@ export interface ManuscriptSource {
   queryText?: string;
 }
 
+/** Score entry from the PDF→database scoring agent */
+export interface PdfMatchScore {
+  index: number;   // 0-based index into the candidates array
+  score: number;   // 0–100, or -1 if only heuristic order (no LLM score)
+  reason: string;  // ≤15 words from LLM, empty if heuristic-only
+}
+
 export type AIProvider = 'gemini' | 'openai' | 'anthropic' | 'local';
 
 export type SuggestionSeverity = 'critical' | 'major' | 'minor' | 'style';

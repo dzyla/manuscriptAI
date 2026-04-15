@@ -445,23 +445,18 @@ export default function App() {
   };
 
   const renumberCitations = useCallback(() => {
-    const html = editorRef.current?.getHTML();
-    if (!html) return;
-    const { newHtml } = storeRenumberCitations(html);
-    if (newHtml !== html) {
-      editorRef.current?.setContent(newHtml);
-      setContent(newHtml);
-    }
-  }, [storeRenumberCitations, setContent]);
+    if (!editorRef.current) return;
+    const orderedIds = editorRef.current.getCitationOrder();
+    const newRegistry = storeRenumberCitations(orderedIds);
+    editorRef.current.updateCitations(newRegistry);
+  }, [storeRenumberCitations]);
 
   const removeCitation = useCallback((sourceId: string) => {
-    const html = editorRef.current?.getHTML() || '';
-    const { newHtml } = storeRemoveCitation(sourceId, html);
-    if (newHtml !== html) {
-      editorRef.current?.setContent(newHtml);
-      setContent(newHtml);
-    }
-  }, [storeRemoveCitation, setContent]);
+    if (!editorRef.current) return;
+    const orderedIds = editorRef.current.getCitationOrder();
+    const newRegistry = storeRemoveCitation(sourceId, orderedIds);
+    editorRef.current.updateCitations(newRegistry);
+  }, [storeRemoveCitation]);
 
   const handleScrollToCitation = useCallback((num: number) => {
     editorRef.current?.scrollToCitation(num);
@@ -793,7 +788,8 @@ export default function App() {
         setIsAnalyzing(false);
       }
     } else {
-      const exportedSources = await db.sources.toArray().catch(() => []);
+      // Read directly from memory state — always current, no race with the Dexie write interval
+      const exportedSources = useSourceStore.getState().sources;
       // Strip API keys before export — never serialize credentials into a shareable file
       const { geminiApiKey: _g, openaiApiKey: _o, anthropicApiKey: _a, localApiKey: _l, ...safeSettings } = aiSettings;
       const workspace = { title, content: currentContent, suggestions, history, messages, aiSettings: safeSettings, sources: exportedSources };

@@ -26,18 +26,30 @@ export const useSourceStore = create<SourceState>((set, get) => ({
   pendingApiSources: [],
 
   setSources: (sources) => set({ sources }),
-  addSources: (newSources) => set((state) => {
-    const existingIds = new Set(state.sources.map(s => s.id));
-    const unique = newSources.filter(s => !existingIds.has(s.id));
-    return { sources: [...state.sources, ...unique] };
-  }),
-  updateSource: (id, patch) => set((state) => ({
-    sources: state.sources.map(s => s.id === id ? { ...s, ...patch } : s),
-  })),
-  removeSource: (id) => set((state) => ({
-    sources: state.sources.filter(s => s.id !== id),
-  })),
-  clearSources: () => set({ sources: [] }),
+  addSources: (newSources) => {
+    set((state) => {
+      const existingIds = new Set(state.sources.map(s => s.id));
+      const unique = newSources.filter(s => !existingIds.has(s.id));
+      return { sources: [...state.sources, ...unique] };
+    });
+    get().persist();
+  },
+  updateSource: (id, patch) => {
+    set((state) => ({
+      sources: state.sources.map(s => s.id === id ? { ...s, ...patch } : s),
+    }));
+    get().persist();
+  },
+  removeSource: (id) => {
+    set((state) => ({
+      sources: state.sources.filter(s => s.id !== id),
+    }));
+    get().persist();
+  },
+  clearSources: () => {
+    set({ sources: [] });
+    get().persist();
+  },
   setPendingApiSources: (pendingApiSources) => set({ pendingApiSources }),
   clearPendingApiSources: () => set({ pendingApiSources: [] }),
 
