@@ -1,5 +1,6 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import OpenAI from "openai";
+import { encode } from 'gpt-tokenizer';
 import { AgentType, Suggestion, AISettings, AttachedImage } from "../types";
 import { Clipboard, PenLine, FlaskConical, Beaker, BookMarked, MessageCircle, Quote } from 'lucide-react';
 
@@ -568,7 +569,7 @@ function chunkTextForLocal(text: string, maxChunkChars: number = 2000, htmlConte
 }
 
 export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
+  return encode(text).length;
 }
 
 async function callLLM(prompt: string, settings: AISettings, systemPrompt: string, jsonMode: boolean = false, images?: AttachedImage[], signal?: AbortSignal, maxTokens?: number): Promise<string> {
