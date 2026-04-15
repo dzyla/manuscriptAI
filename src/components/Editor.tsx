@@ -22,6 +22,7 @@ import {
 import { getThesaurus, generateCompletion } from '../services/ai';
 import { AISettings } from '../types';
 import { AutoComplete } from '../extensions/AutoComplete';
+import { NodeSelection } from 'prosemirror-state';
 import { expandCitationNums } from '../services/citations';
 
 interface EditorProps {
@@ -375,60 +376,61 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
 
   const getImageContext = (): string => {
     if (!editor) return '';
-    const { from, to } = editor.state.selection;
+    const sel = editor.state.selection;
 
-    // If the user has explicitly selected text spanning the image, use that.
-    if (from !== to) {
-      const parts: string[] = [];
-      editor.state.doc.nodesBetween(from, to, node => {
-        if (node.type.name === 'resizableImage') return false;
-        if (node.isText && node.text) parts.push(node.text);
+    // When the user clicks an image, TipTap creates a NodeSelection.
+    if (sel instanceof NodeSelection) {
+      const doc = editor.state.doc;
+      const imagePos = sel.from;
+      const clickedNode = doc.nodeAt(imagePos);
+      if (!clickedNode || clickedNode.type.name !== 'resizableImage') return '';
+
+      // Pass 1 (caption-aware): look for adjacent "Figure X…" paragraphs.
+      let captionBefore = '';
+      let captionAfter = '';
+      doc.descendants((node, pos) => {
+        if (node.type.name !== 'paragraph') return true;
+        const text = node.textContent.trim();
+        if (!/^figure/i.test(text)) return true;
+        const nodeEnd = pos + node.nodeSize;
+        if (nodeEnd <= imagePos) {
+          captionBefore = text; // keep overwriting — last before image wins (nearest)
+        } else if (pos > imagePos && !captionAfter) {
+          captionAfter = text; // first after image wins (nearest)
+        }
         return true;
       });
-      return parts.join(' ').replace(/\s+/g, ' ').trim();
+      const caption = captionAfter || captionBefore;
+      if (caption) return caption;
+
+      // Pass 2 (surrounding paragraphs): nearest preceding + following paragraph.
+      let preceding = '';
+      let following = '';
+      doc.descendants((node, pos) => {
+        if (node.type.name !== 'paragraph') return true;
+        const text = node.textContent.trim();
+        if (!text) return true;
+        const nodeEnd = pos + node.nodeSize;
+        if (nodeEnd <= imagePos) {
+          preceding = text;
+        } else if (pos > imagePos && !following) {
+          following = text; // first one after image
+        }
+        return true;
+      });
+      return [preceding, following].filter(Boolean).join('\n').trim();
     }
 
-    // Image is clicked but nothing selected — derive context from AST.
-    // For a NodeSelection (click on atom node), selection.from is the node's position.
-    const doc = editor.state.doc;
-    const imagePos = from; // from === to here, equals the NodeSelection anchor
-    const clickedNode = doc.nodeAt(imagePos);
-    if (!clickedNode || clickedNode.type.name !== 'resizableImage') return '';
-
-    // Pass 1 (caption-aware): look for adjacent "Figure X…" paragraphs.
-    let captionBefore = '';
-    let captionAfter = '';
-    doc.descendants((node, pos) => {
-      if (node.type.name !== 'paragraph') return true;
-      const text = node.textContent.trim();
-      if (!/^figure/i.test(text)) return true;
-      const nodeEnd = pos + node.nodeSize;
-      if (nodeEnd <= imagePos) {
-        captionBefore = text; // keep overwriting — last before image wins (nearest)
-      } else if (pos > imagePos && !captionAfter) {
-        captionAfter = text; // first after image wins (nearest)
-      }
+    // Text selection path — user dragged over image + surrounding text.
+    const { from, to } = sel;
+    if (from === to) return '';
+    const parts: string[] = [];
+    editor.state.doc.nodesBetween(from, to, node => {
+      if (node.type.name === 'resizableImage') return false;
+      if (node.isText && node.text) parts.push(node.text);
       return true;
     });
-    const caption = captionAfter || captionBefore;
-    if (caption) return caption;
-
-    // Pass 2 (surrounding paragraphs): nearest preceding + following paragraph.
-    let preceding = '';
-    let following = '';
-    doc.descendants((node, pos) => {
-      if (node.type.name !== 'paragraph') return true;
-      const text = node.textContent.trim();
-      if (!text) return true;
-      const nodeEnd = pos + node.nodeSize;
-      if (nodeEnd <= imagePos!) {
-        preceding = text; // keep overwriting — last one before image wins
-      } else if (pos > imagePos && !following) {
-        following = text; // first one after image
-      }
-      return true;
-    });
-    return [preceding, following].filter(Boolean).join('\n').trim();
+    return parts.join(' ').replace(/\s+/g, ' ').trim();
   };
 
   // Sync content from parent

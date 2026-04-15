@@ -101,10 +101,7 @@ export const CitationNode = Node.create({
               const newNums = sourceIds
                 .map((id: string) => registry[id])
                 .filter((n: number | undefined): n is number => n !== undefined);
-              if (
-                newNums.length > 0 &&
-                JSON.stringify(newNums) !== JSON.stringify(node.attrs.nums)
-              ) {
+              if (JSON.stringify(newNums) !== JSON.stringify(node.attrs.nums)) {
                 tr.setNodeMarkup(pos, undefined, { ...node.attrs, nums: newNums });
               }
             });

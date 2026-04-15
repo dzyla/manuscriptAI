@@ -14,6 +14,8 @@ function cleanPdfText(raw: string): string {
     .replace(/^.*[Dd]ownloaded\s+from\s+.*$/gm, '')
     .replace(/^.*©\s*\d{4}.*$/gm, '')
     .replace(/^.*[Aa]ll\s+rights\s+reserved.*$/gm, '')
+    .replace(/^[ \t]*$/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
 
