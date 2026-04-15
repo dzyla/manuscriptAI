@@ -57,6 +57,8 @@ export interface EditorRef {
   getCurrentSectionText: () => string | null;
   scrollToHeading: (headingText: string) => void;
   scrollToCitation: (num: number) => void;
+  getCitationOrder: () => string[];
+  updateCitations: (registry: Record<string, number>) => void;
 }
 
 const findTextPosition = (doc: any, searchText: string): { from: number; to: number } | null => {
@@ -371,23 +373,63 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
     (editor.chain().focus() as any).insertResizableImage({ src: dataUrl, alt: file.name, width: '100%', align: 'center' }).run();
   };
 
-  /**
-   * Returns context text only when the user has explicitly selected text that
-   * spans the image (e.g. dragged over the figure + its legend).
-   * Never auto-extracts nearby paragraphs — that caused unexpected text in chat.
-   */
   const getImageContext = (): string => {
     if (!editor) return '';
     const { from, to } = editor.state.selection;
-    // Only provide context for a real multi-node selection (not a plain NodeSelection)
-    if (from === to) return '';
-    const parts: string[] = [];
-    editor.state.doc.nodesBetween(from, to, node => {
-      if (node.type.name === 'resizableImage') return false;
-      if (node.isText && node.text) parts.push(node.text);
+
+    // If the user has explicitly selected text spanning the image, use that.
+    if (from !== to) {
+      const parts: string[] = [];
+      editor.state.doc.nodesBetween(from, to, node => {
+        if (node.type.name === 'resizableImage') return false;
+        if (node.isText && node.text) parts.push(node.text);
+        return true;
+      });
+      return parts.join(' ').replace(/\s+/g, ' ').trim();
+    }
+
+    // Image is clicked but nothing selected — derive context from AST.
+    const doc = editor.state.doc;
+
+    // Find the image node position.
+    let imagePos: number | null = null;
+    doc.descendants((node, pos) => {
+      if (imagePos !== null) return false;
+      if (node.type.name === 'resizableImage') { imagePos = pos; return false; }
       return true;
     });
-    return parts.join(' ').replace(/\s+/g, ' ').trim();
+    if (imagePos === null) return '';
+
+    // Pass 1 (caption-aware): find nearest paragraph whose text starts with "figure".
+    let bestCaption = '';
+    let bestDist = Infinity;
+    doc.descendants((node, pos) => {
+      if (node.type.name !== 'paragraph') return true;
+      const text = node.textContent.trim();
+      if (/^figure/i.test(text)) {
+        const dist = Math.abs(pos - imagePos!);
+        if (dist < bestDist) { bestDist = dist; bestCaption = text; }
+      }
+      return true;
+    });
+    if (bestCaption) return bestCaption;
+
+    // Pass 2 (surrounding paragraphs): nearest preceding + following paragraph.
+    let preceding = '';
+    let following = '';
+    doc.descendants((node, pos) => {
+      if (node.type.name !== 'paragraph') return true;
+      const text = node.textContent.trim();
+      if (!text) return true;
+      const nodeEnd = pos + node.nodeSize;
+      if (nodeEnd <= imagePos!) {
+        preceding = text; // keep overwriting — last one before image wins
+      } else if (pos >= imagePos! && !following) {
+        following = text; // first one after image
+      }
+      return true;
+    });
+    return [preceding, following].filter(Boolean).join('\n').trim();
   };
 
   // Sync content from parent
@@ -696,6 +738,24 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
           }
         }, 50);
       }
+    },
+    getCitationOrder: () => {
+      if (!editor) return [];
+      const seen = new Set<string>();
+      const order: string[] = [];
+      editor.state.doc.descendants((node) => {
+        if (node.type.name !== 'citation') return true;
+        const sourceIds: string[] = node.attrs.sourceIds ?? [];
+        for (const id of sourceIds) {
+          if (!seen.has(id)) { seen.add(id); order.push(id); }
+        }
+        return true;
+      });
+      return order;
+    },
+    updateCitations: (registry: Record<string, number>) => {
+      if (!editor) return;
+      editor.commands.updateAllCitationNums(registry);
     },
   }));
 
