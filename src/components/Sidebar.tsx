@@ -229,12 +229,17 @@ export default function Sidebar({
           if (e.data.type === 'result') resolve(e.data.text);
           else reject(new Error(e.data.message));
         };
-        worker.onerror = (err) => {
+        worker.onerror = (err: ErrorEvent) => {
           worker.terminate();
-          reject(new Error(err.message));
+          reject(new Error(err.message ?? String(err)));
         };
         // Transfer the ArrayBuffer to the worker (zero-copy)
-        worker.postMessage({ type: 'extract', payload: data }, [data]);
+        try {
+          worker.postMessage({ type: 'extract', payload: data }, [data]);
+        } catch (err) {
+          worker.terminate();
+          reject(err);
+        }
       }).catch(reject);
     });
   };
