@@ -8,6 +8,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { wrap } from 'comlink';
 import type { DocxWorkerApi } from '../workers/docxWorker';
+import { extractTextFromPDF } from '../workers/pdfWorker';
 
 import { Cite } from '@citation-js/core';
 import '@citation-js/plugin-bibtex';
@@ -215,34 +216,6 @@ export default function Sidebar({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sources]);
 
-  type PdfWorkerResult = { type: 'result'; text: string } | { type: 'error'; message: string };
-
-  const extractTextFromPDF = (file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      file.arrayBuffer().then(data => {
-        const worker = new Worker(
-          new URL('../workers/pdfWorker.ts', import.meta.url),
-          { type: 'module' }
-        );
-        worker.onmessage = (e: MessageEvent<PdfWorkerResult>) => {
-          worker.terminate();
-          if (e.data.type === 'result') resolve(e.data.text);
-          else reject(new Error(e.data.message));
-        };
-        worker.onerror = (err: ErrorEvent) => {
-          worker.terminate();
-          reject(new Error(err.message ?? String(err)));
-        };
-        // Transfer the ArrayBuffer to the worker (zero-copy)
-        try {
-          worker.postMessage({ type: 'extract', payload: data }, [data]);
-        } catch (err) {
-          worker.terminate();
-          reject(err);
-        }
-      }).catch(reject);
-    });
-  };
 
   const processFiles = async (files: File[]) => {
     const supported = ['.pdf', '.bib', '.txt', '.md', '.docx'];
