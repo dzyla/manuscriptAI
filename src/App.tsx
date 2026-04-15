@@ -445,23 +445,18 @@ export default function App() {
   };
 
   const renumberCitations = useCallback(() => {
-    const html = editorRef.current?.getHTML();
-    if (!html) return;
-    const { newHtml } = storeRenumberCitations(html);
-    if (newHtml !== html) {
-      editorRef.current?.setContent(newHtml);
-      setContent(newHtml);
-    }
-  }, [storeRenumberCitations, setContent]);
+    if (!editorRef.current) return;
+    const orderedIds = editorRef.current.getCitationOrder();
+    const newRegistry = storeRenumberCitations(orderedIds);
+    editorRef.current.updateCitations(newRegistry);
+  }, [storeRenumberCitations]);
 
   const removeCitation = useCallback((sourceId: string) => {
-    const html = editorRef.current?.getHTML() || '';
-    const { newHtml } = storeRemoveCitation(sourceId, html);
-    if (newHtml !== html) {
-      editorRef.current?.setContent(newHtml);
-      setContent(newHtml);
-    }
-  }, [storeRemoveCitation, setContent]);
+    if (!editorRef.current) return;
+    const orderedIds = editorRef.current.getCitationOrder();
+    const newRegistry = storeRemoveCitation(sourceId, orderedIds);
+    editorRef.current.updateCitations(newRegistry);
+  }, [storeRemoveCitation]);
 
   const handleScrollToCitation = useCallback((num: number) => {
     editorRef.current?.scrollToCitation(num);
