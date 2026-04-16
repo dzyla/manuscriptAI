@@ -471,6 +471,7 @@ export default function App() {
     const figureId = crypto.randomUUID();
     const num = storeInsertFigure(figureId);
     editorRef.current?.insertFigureLabelNode(figureId, num);
+    // Defer so TipTap commits the inserted node before we walk getFigureOrder()
     setTimeout(() => {
       const orderedIds = editorRef.current?.getFigureOrder() ?? [];
       const newRegistry = storeRenumberFigures(orderedIds);

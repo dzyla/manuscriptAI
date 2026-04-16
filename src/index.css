@@ -348,11 +348,14 @@ mark {
   font-size: 0.85em;
   font-weight: 600;
   background: rgba(16, 185, 129, 0.12);
-  color: #065f46;
+  color: var(--accent-teal, #065f46);
   border: 1px solid rgba(16, 185, 129, 0.25);
   cursor: default;
   user-select: none;
   white-space: nowrap;
+}
+[data-theme='dark'] .figure-label {
+  color: var(--accent-teal-light, #6ee7b7);
 }
 
 /* TipTap Table styles */
