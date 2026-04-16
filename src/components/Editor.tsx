@@ -17,13 +17,14 @@ import {
   Bold, Italic, Underline as UnderlineIcon, List, ListOrdered,
   AlignLeft, AlignCenter, AlignRight, AlignJustify, Quote, Heading2,
   Heading3, Undo, Redo, Clock, Sparkles, PenLine, FlaskConical, Beaker, Send, MessageSquare, BookOpen, RefreshCw, FileSearch, Search,
-  Table as TableIcon, ImagePlus, Menu, X, ScanEye, Trash2, ShieldCheck, Eye as EyeIcon, Wand2, Loader2
+  Table as TableIcon, ImagePlus, Menu, X, ScanEye, Trash2, ShieldCheck, Eye as EyeIcon, Wand2, Loader2, ArrowRight
 } from 'lucide-react';
 import { getThesaurus, generateCompletion } from '../services/ai';
 import { AISettings } from '../types';
 import { AutoComplete } from '../extensions/AutoComplete';
 import { NodeSelection } from 'prosemirror-state';
-import { expandCitationNums } from '../services/citations';
+import { expandCitationNums, fetchCrossrefDoi, looksLikeDoi } from '../services/citations';
+import { useSourceStore } from '../stores/useSourceStore';
 
 interface EditorProps {
   content: string;
@@ -180,6 +181,9 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
   const [askInputValue, setAskInputValue] = useState('');
   const askInputRef = useRef<HTMLInputElement>(null);
   const [autocompleteEnabled, setAutocompleteEnabled] = useState(false);
+  const { sources: allSources, addSources } = useSourceStore();
+  const [doiPickerState, setDoiPickerState] = useState<'idle' | 'loading' | 'error'>('idle');
+  const [doiPickerError, setDoiPickerError] = useState<string | null>(null);
   const [autocompleteLoading, setAutocompleteLoading] = useState(false);
   const autocompleteEnabledRef = useRef(false);
   const aiSettingsRef = useRef<AISettings | undefined>(aiSettings);
@@ -277,7 +281,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
 
     const handleAtKey = (e: KeyboardEvent) => {
       if (showCitationPickerRef.current) {
-        if (e.key === 'Escape') { setCitationPicker(null); setCitationFilter(''); }
+        if (e.key === 'Escape') { setCitationPicker(null); setCitationFilter(''); setDoiPickerState('idle'); setDoiPickerError(null); }
         return;
       }
       if (e.key === '@') {
@@ -501,6 +505,8 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
       if (existingNums.includes(num)) {
         setCitationPicker(null);
         setCitationFilter('');
+        setDoiPickerState('idle');
+        setDoiPickerError(null);
         return;
       }
     }
@@ -511,13 +517,37 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
     if (adjacentMatch && expandCitationNums(adjacentMatch[1]).includes(num)) {
       setCitationPicker(null);
       setCitationFilter('');
+      setDoiPickerState('idle');
+      setDoiPickerError(null);
       return;
     }
 
     (editor.chain().focus() as any).insertCitation(source.id, num).run();
     setCitationPicker(null);
     setCitationFilter('');
+    setDoiPickerState('idle');
+    setDoiPickerError(null);
   };
+
+  const handleInsertDoi = useCallback(async (doi: string) => {
+    setDoiPickerState('loading');
+    setDoiPickerError(null);
+    let failed = false;
+    try {
+      let source = allSources.find(s => s.apiMeta?.doi?.toLowerCase() === doi.toLowerCase());
+      if (!source) {
+        source = await fetchCrossrefDoi(doi);
+        addSources([source]);
+      }
+      handleInsertCitation(source);
+    } catch (err) {
+      failed = true;
+      setDoiPickerState('error');
+      setDoiPickerError(err instanceof Error ? err.message : 'DOI lookup failed.');
+    } finally {
+      if (!failed) setDoiPickerState('idle');
+    }
+  }, [allSources, addSources, handleInsertCitation]);
 
   const filteredCitationSources = useMemo(() => {
     if (!sources) return [];
@@ -1343,8 +1373,48 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
             <BookOpen size={10} style={{ color: 'var(--accent-blue)' }} />
             <p className="text-[10px] font-bold uppercase tracking-wider" style={{ color: 'var(--text-secondary)' }}>Insert Citation</p>
           </div>
-          {filteredCitationSources.length === 0 ? (
-            <p className="px-3 py-3 text-[11px]" style={{ color: 'var(--text-muted)' }}>No sources — upload PDFs or find similar papers first.</p>
+
+          {/* DOI detection row — shown when typed text looks like a DOI */}
+          {looksLikeDoi(citationFilter) && (
+            <div className="border-b" style={{ borderColor: 'var(--border)' }}>
+              {doiPickerState === 'error' ? (
+                <div className="px-3 py-2">
+                  <p className="text-[11px]" style={{ color: '#ef4444' }}>{doiPickerError}</p>
+                  <button
+                    className="text-[10px] mt-1 underline"
+                    style={{ color: 'var(--text-muted)' }}
+                    onMouseDown={e => { e.preventDefault(); setDoiPickerError(null); setDoiPickerState('idle'); }}
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              ) : (
+                <button
+                  className="w-full text-left px-3 py-2 transition-colors flex items-center gap-2"
+                  style={{ background: 'rgba(59,111,212,0.06)' }}
+                  onMouseEnter={e => (e.currentTarget.style.background = 'rgba(59,111,212,0.12)')}
+                  onMouseLeave={e => (e.currentTarget.style.background = 'rgba(59,111,212,0.06)')}
+                  onMouseDown={e => { e.preventDefault(); handleInsertDoi(citationFilter); }}
+                  disabled={doiPickerState === 'loading'}
+                >
+                  {doiPickerState === 'loading' ? (
+                    <Sparkles size={12} className="animate-spin shrink-0" style={{ color: 'var(--accent-blue)' }} />
+                  ) : (
+                    <ArrowRight size={12} className="shrink-0" style={{ color: 'var(--accent-blue)' }} />
+                  )}
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+                      {doiPickerState === 'loading' ? 'Looking up DOI…' : 'Look up DOI via Crossref'}
+                    </p>
+                    <p className="text-[10px] truncate font-mono" style={{ color: 'var(--text-muted)' }}>{citationFilter}</p>
+                  </div>
+                </button>
+              )}
+            </div>
+          )}
+
+          {filteredCitationSources.length === 0 && !looksLikeDoi(citationFilter) ? (
+            <p className="px-3 py-3 text-[11px]" style={{ color: 'var(--text-muted)' }}>No sources — upload PDFs, search, or type a DOI like 10.1234/xxx.</p>
           ) : (
             <div className="max-h-64 overflow-y-auto">
               {filteredCitationSources.map(src => {
@@ -1376,7 +1446,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
             </div>
           )}
           <div className="px-3 py-1.5 border-t" style={{ borderColor: 'var(--border)', background: 'var(--surface-2)' }}>
-            <p className="text-[9px]" style={{ color: 'var(--text-muted)' }}>Press Esc to close</p>
+            <p className="text-[9px]" style={{ color: 'var(--text-muted)' }}>Press Esc to close · Type a DOI (10.xxxx/…) to look up</p>
           </div>
         </div>,
         document.body
