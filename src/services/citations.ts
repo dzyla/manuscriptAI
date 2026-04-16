@@ -2,6 +2,8 @@ import { Cite } from '@citation-js/core';
 import '@citation-js/plugin-bibtex';
 import '@citation-js/plugin-csl';
 
+import type { ManuscriptSource } from '../types';
+
 export interface CitationEntry {
   key: string;
   authorYear: string; // "Smith, 2023" — used for matching and display
@@ -201,4 +203,77 @@ export function countCitationOccurrences(html: string, num: number): number {
     if (expandCitationNums(m[1]).includes(num)) count++;
   }
   return count;
+}
+
+// ─── Crossref DOI lookup ──────────────────────────────────────────────────────
+
+/**
+ * Fetch metadata for a DOI from the Crossref public REST API.
+ * Returns a ManuscriptSource ready to add to the source store.
+ * Throws a descriptive error on 404 or network failure.
+ */
+export async function fetchCrossrefDoi(doi: string): Promise<ManuscriptSource> {
+  const url = `https://api.crossref.org/works/${encodeURIComponent(doi.trim())}`;
+  let res: Response;
+  try {
+    res = await fetch(url, { headers: { 'User-Agent': 'ManuscriptAIEditor/1.0 (mailto:user@example.com)' } });
+  } catch {
+    throw new Error('Network error — could not reach Crossref. Check your connection.');
+  }
+  if (res.status === 404) throw new Error(`DOI not found: ${doi}`);
+  if (!res.ok) throw new Error(`Crossref returned ${res.status} for DOI: ${doi}`);
+
+  const json = await res.json();
+  const work = json.message as Record<string, any>;
+
+  const title: string = Array.isArray(work.title) && work.title.length > 0
+    ? String(work.title[0])
+    : doi;
+
+  const authors: string = Array.isArray(work.author)
+    ? work.author
+        .map((a: any) => [a.family, a.given].filter(Boolean).join(', '))
+        .join('; ')
+    : '';
+
+  const year: number | null =
+    work.published?.['date-parts']?.[0]?.[0] ??
+    work['published-print']?.['date-parts']?.[0]?.[0] ??
+    work['published-online']?.['date-parts']?.[0]?.[0] ??
+    null;
+
+  const journal: string = Array.isArray(work['container-title']) && work['container-title'].length > 0
+    ? String(work['container-title'][0])
+    : '';
+
+  // Crossref abstracts often include JATS XML tags — strip them
+  const rawAbstract: string = typeof work.abstract === 'string' ? work.abstract : '';
+  const abstract = rawAbstract.replace(/<[^>]*>/g, '').trim();
+
+  const doiStr: string = typeof work.DOI === 'string' ? work.DOI : doi;
+
+  const fullText = [title, authors, journal, abstract].filter(Boolean).join('\n');
+
+  return {
+    id: crypto.randomUUID(),
+    name: title.substring(0, 80),
+    type: 'api',
+    text: fullText,
+    abstractText: abstract || undefined,
+    apiMeta: {
+      title,
+      authors,
+      journal,
+      doi: doiStr,
+      abstract,
+      year,
+      score: 1,
+      source: 'Crossref',
+    },
+  };
+}
+
+/** Returns true if the string looks like a DOI (starts with 10. prefix) */
+export function looksLikeDoi(text: string): boolean {
+  return /^10\.\d{4,}\/\S{3,}/.test(text.trim());
 }
