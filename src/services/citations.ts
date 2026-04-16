@@ -216,7 +216,7 @@ export async function fetchCrossrefDoi(doi: string): Promise<ManuscriptSource> {
   const url = `https://api.crossref.org/works/${encodeURIComponent(doi.trim())}`;
   let res: Response;
   try {
-    res = await fetch(url, { headers: { 'User-Agent': 'ManuscriptAIEditor/1.0 (mailto:user@example.com)' } });
+    res = await fetch(url, { headers: { 'User-Agent': 'ManuscriptAIEditor/1.0' } });
   } catch {
     throw new Error('Network error — could not reach Crossref. Check your connection.');
   }
@@ -224,7 +224,10 @@ export async function fetchCrossrefDoi(doi: string): Promise<ManuscriptSource> {
   if (!res.ok) throw new Error(`Crossref returned ${res.status} for DOI: ${doi}`);
 
   const json = await res.json();
-  const work = json.message as Record<string, any>;
+  const work = json?.message as Record<string, any>;
+  if (!work || typeof work !== 'object') {
+    throw new Error('Unexpected response format from Crossref.');
+  }
 
   const title: string = Array.isArray(work.title) && work.title.length > 0
     ? String(work.title[0])
