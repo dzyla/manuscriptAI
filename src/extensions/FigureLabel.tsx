@@ -47,7 +47,7 @@ export const FigureLabel = Node.create({
         default: 1,
         parseHTML: (el: Element) => {
           const v = el.getAttribute('data-figure-num');
-          const n = parseInt(v ?? '1');
+          const n = parseInt(v ?? '1', 10);
           return isNaN(n) ? 1 : n;
         },
         renderHTML: (attrs) => ({ 'data-figure-num': String(attrs.num) }),
