@@ -914,6 +914,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
       {/* Enhanced Bubble Menu — formatting + AI actions when text is selected */}
       <BubbleMenu
         editor={editor}
+        options={{ placement: 'top', offset: 10 }}
         shouldShow={({ editor: e, from, to }) => {
           if (e.isActive('resizableImage')) return false;
           // Suppress text menu if selection spans an image node
