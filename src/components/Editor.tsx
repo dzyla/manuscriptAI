@@ -221,11 +221,10 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
       const { from, to } = editor.state.selection;
       const hasSelection = from !== to;
       setShowSelectionBar(hasSelection);
-      selectedTextRef.current = hasSelection ? editor.state.doc.textBetween(from, to, ' ') : '';
+      const selectedText = hasSelection ? editor.state.doc.textBetween(from, to, ' ') : '';
+      selectedTextRef.current = selectedText;
       setSelectionWordCount(
-        hasSelection
-          ? editor.state.doc.textBetween(from, to, ' ').trim().split(/\s+/).filter(Boolean).length
-          : 0
+        hasSelection ? selectedText.trim().split(/\s+/).filter(Boolean).length : 0
       );
       if (!hasSelection) {
         setThesaurusWord(null);
@@ -530,8 +529,8 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
 
   const handleThesaurus = useCallback(async () => {
     const text = getSelectedText().trim();
-    const isSingleWord = text && !text.includes(' ') && text.length > 1;
-    if (!isSingleWord) return;
+    const wordCount = text ? text.split(/\s+/).filter(Boolean).length : 0;
+    if (!text || wordCount < 1 || wordCount > 2) return;
     setThesaurusWord(text);
     setThesaurusSynonyms([]);
     setThesaurusLoading(true);
