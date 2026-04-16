@@ -529,25 +529,21 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
     setDoiPickerError(null);
   };
 
-  const handleInsertDoi = useCallback(async (doi: string) => {
+  const handleInsertDoi = async (doi: string) => {
     setDoiPickerState('loading');
     setDoiPickerError(null);
-    let failed = false;
     try {
       let source = allSources.find(s => s.apiMeta?.doi?.toLowerCase() === doi.toLowerCase());
       if (!source) {
         source = await fetchCrossrefDoi(doi);
         addSources([source]);
       }
-      handleInsertCitation(source);
+      handleInsertCitation(source); // closes picker and resets doi state internally
     } catch (err) {
-      failed = true;
       setDoiPickerState('error');
       setDoiPickerError(err instanceof Error ? err.message : 'DOI lookup failed.');
-    } finally {
-      if (!failed) setDoiPickerState('idle');
     }
-  }, [allSources, addSources, handleInsertCitation]);
+  };
 
   const filteredCitationSources = useMemo(() => {
     if (!sources) return [];
@@ -1394,7 +1390,11 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
                   style={{ background: 'rgba(59,111,212,0.06)' }}
                   onMouseEnter={e => (e.currentTarget.style.background = 'rgba(59,111,212,0.12)')}
                   onMouseLeave={e => (e.currentTarget.style.background = 'rgba(59,111,212,0.06)')}
-                  onMouseDown={e => { e.preventDefault(); handleInsertDoi(citationFilter); }}
+                  onMouseDown={e => {
+                    e.preventDefault();
+                    if (doiPickerState !== 'idle') return;
+                    handleInsertDoi(citationFilter);
+                  }}
                   disabled={doiPickerState === 'loading'}
                 >
                   {doiPickerState === 'loading' ? (
@@ -1415,7 +1415,8 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
 
           {filteredCitationSources.length === 0 && !looksLikeDoi(citationFilter) ? (
             <p className="px-3 py-3 text-[11px]" style={{ color: 'var(--text-muted)' }}>No sources — upload PDFs, search, or type a DOI like 10.1234/xxx.</p>
-          ) : (
+          ) : null}
+          {(filteredCitationSources.length > 0 || !looksLikeDoi(citationFilter)) && (
             <div className="max-h-64 overflow-y-auto">
               {filteredCitationSources.map(src => {
                 const num = citationRegistry?.[src.id];
