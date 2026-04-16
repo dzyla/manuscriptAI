@@ -13,11 +13,12 @@ import { AgentType, Suggestion, ManuscriptSource } from '../types';
 import { GrammarChecker } from '../extensions/GrammarChecker';
 import { ResizableImage } from '../extensions/ResizableImage';
 import { CitationNode } from '../extensions/CitationNode';
+import { FigureLabel } from '../extensions/FigureLabel';
 import {
   Bold, Italic, Underline as UnderlineIcon, List, ListOrdered,
   AlignLeft, AlignCenter, AlignRight, AlignJustify, Quote, Heading2,
   Heading3, Undo, Redo, Clock, Sparkles, PenLine, FlaskConical, Beaker, Send, MessageSquare, BookOpen, RefreshCw, FileSearch, Search,
-  Table as TableIcon, ImagePlus, Menu, X, ScanEye, Trash2, ShieldCheck, Eye as EyeIcon, Wand2, Loader2, ArrowRight
+  Table as TableIcon, ImagePlus, Menu, X, ScanEye, Trash2, ShieldCheck, Eye as EyeIcon, Wand2, Loader2, ArrowRight, Hash
 } from 'lucide-react';
 import { getThesaurus, generateCompletion } from '../services/ai';
 import { AISettings } from '../types';
@@ -46,6 +47,7 @@ interface EditorProps {
   currentAgent?: AgentType;
   aiSettings?: AISettings;
   onAnalyzeImage?: (dataUrl: string, prompt: string, contextText?: string) => void;
+  onInsertFigure?: () => void;
 }
 
 export interface EditorRef {
@@ -61,6 +63,9 @@ export interface EditorRef {
   scrollToCitation: (num: number) => void;
   getCitationOrder: () => string[];
   updateCitations: (registry: Record<string, number>) => void;
+  getFigureOrder: () => string[];
+  updateFigures: (registry: Record<string, number>) => void;
+  insertFigureLabelNode: (figureId: string, num: number) => void;
 }
 
 const findTextPosition = (doc: any, searchText: string): { from: number; to: number } | null => {
@@ -151,7 +156,7 @@ const BUBBLE_ACTIONS: { label: string; instruction: string; agent: AgentType; ic
   },
 ];
 
-const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggestions, onSuggestionClick, onSelectionQuery, onTransformSelection, onRewriteSection, onAnalyzeSection, onVerifyClaim, onSearchSimilar, sources, citationRegistry, onInsertCitation, isDistractionFree, editorZoom = 100, editorWidth = 'normal', aiSettings, onAnalyzeImage }, ref) => {
+const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggestions, onSuggestionClick, onSelectionQuery, onTransformSelection, onRewriteSection, onAnalyzeSection, onVerifyClaim, onSearchSimilar, sources, citationRegistry, onInsertCitation, isDistractionFree, editorZoom = 100, editorWidth = 'normal', aiSettings, onAnalyzeImage, onInsertFigure }, ref) => {
   const [isMounted, setIsMounted] = useState(false);
   const [showSelectionBar, setShowSelectionBar] = useState(false);
   const [selectionInstruction, setSelectionInstruction] = useState('');
@@ -205,6 +210,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
       TableKit.configure({ table: { resizable: true } }),
       ResizableImage,
       CitationNode,
+      FigureLabel,
       AutoComplete.configure({
         getEnabled: () => autocompleteEnabledRef.current,
         onSuggest: (contextText, signal) => {
@@ -789,6 +795,26 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
       if (!editor) return;
       editor.commands.updateAllCitationNums(registry);
     },
+    getFigureOrder: () => {
+      if (!editor) return [];
+      const seen = new Set<string>();
+      const order: string[] = [];
+      editor.state.doc.descendants((node) => {
+        if (node.type.name !== 'figureLabel') return true;
+        const figureId: string = node.attrs.figureId ?? '';
+        if (figureId && !seen.has(figureId)) { seen.add(figureId); order.push(figureId); }
+        return true;
+      });
+      return order;
+    },
+    updateFigures: (registry: Record<string, number>) => {
+      if (!editor) return;
+      editor.commands.updateAllFigureNums(registry);
+    },
+    insertFigureLabelNode: (figureId: string, num: number) => {
+      if (!editor) return;
+      editor.chain().focus().insertFigureLabel(figureId, num).run();
+    },
   }));
 
   if (!editor) return null;
@@ -886,6 +912,13 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
             <div className="w-px h-4 mx-0.5 shrink-0" style={{ background: 'var(--border)' }} />
             <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().undo().run(); }} title="Undo"><Undo size={14} /></ToolbarButton>
             <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().redo().run(); }} title="Redo"><Redo size={14} /></ToolbarButton>
+            <div className="w-px h-4 mx-0.5 shrink-0" style={{ background: 'var(--border)' }} />
+            <ToolbarButton
+              onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); if (onInsertFigure) onInsertFigure(); }}
+              title="Insert figure label (auto-numbered)"
+            >
+              <Hash size={14} />
+            </ToolbarButton>
             <div className="w-px h-4 mx-0.5 shrink-0" style={{ background: 'var(--border)' }} />
             <ToolbarButton
               onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); setAutocompleteEnabled(v => !v); }}
