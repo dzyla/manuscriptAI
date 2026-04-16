@@ -121,6 +121,8 @@ export interface DocumentRow {
   saveState: 'Draft' | 'Saved' | 'Auto-saved';
   citationRegistry: Record<string, number>;
   citationCounter: number;
+  figureRegistry: Record<string, number>;
+  figureCounter: number;
   updatedAt: number;
 }
 
