@@ -35,6 +35,8 @@ export default function App() {
     insertCitation: storeInsertCitation,
     removeCitation: storeRemoveCitation,
     renumberCitations: storeRenumberCitations,
+    insertFigure: storeInsertFigure,
+    renumberFigures: storeRenumberFigures,
     resetDocument, persist: persistDocument, initialize: initDocument,
   } = useDocumentStore();
 
@@ -142,6 +144,13 @@ export default function App() {
         if (migrated !== loadedContent) {
           useDocumentStore.getState().setContent(migrated);
           editorRef.current?.setContent(migrated);
+        }
+      }
+      if (editorRef.current) {
+        const orderedFigureIds = editorRef.current.getFigureOrder();
+        if (orderedFigureIds.length > 0) {
+          const newRegistry = storeRenumberFigures(orderedFigureIds);
+          editorRef.current.updateFigures(newRegistry);
         }
       }
     });
@@ -457,6 +466,19 @@ export default function App() {
     const newRegistry = storeRemoveCitation(sourceId, orderedIds);
     editorRef.current.updateCitations(newRegistry);
   }, [storeRemoveCitation]);
+
+  const handleInsertFigure = useCallback(() => {
+    const figureId = crypto.randomUUID();
+    const num = storeInsertFigure(figureId);
+    editorRef.current?.insertFigureLabelNode(figureId, num);
+    setTimeout(() => {
+      const orderedIds = editorRef.current?.getFigureOrder() ?? [];
+      const newRegistry = storeRenumberFigures(orderedIds);
+      editorRef.current?.updateFigures(newRegistry);
+      const newHtml = editorRef.current?.getHTML() ?? '';
+      if (newHtml) setContent(newHtml);
+    }, 50);
+  }, [storeInsertFigure, storeRenumberFigures, setContent]);
 
   const handleScrollToCitation = useCallback((num: number) => {
     editorRef.current?.scrollToCitation(num);
@@ -1108,6 +1130,7 @@ export default function App() {
             currentAgent={currentAgent}
             aiSettings={aiSettings}
             onAnalyzeImage={handleAnalyzeImage}
+            onInsertFigure={handleInsertFigure}
           />
         </main>
 

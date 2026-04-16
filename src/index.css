@@ -340,6 +340,21 @@ mark {
   color: #7ba7ff;
 }
 
+/* FigureLabel node badge */
+.figure-label {
+  display: inline-block;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 0.85em;
+  font-weight: 600;
+  background: rgba(16, 185, 129, 0.12);
+  color: #065f46;
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  cursor: default;
+  user-select: none;
+  white-space: nowrap;
+}
+
 /* TipTap Table styles */
 .ProseMirror table {
   border-collapse: collapse;
