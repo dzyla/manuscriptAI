@@ -159,6 +159,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
   const [thesaurusSynonyms, setThesaurusSynonyms] = useState<string[]>([]);
   const [thesaurusLoading, setThesaurusLoading] = useState(false);
   const [currentSectionTitle, setCurrentSectionTitle] = useState<string | null>(null);
+  const [selectionWordCount, setSelectionWordCount] = useState(0);
   const isExternalUpdate = useRef(false);
   const lastExternalContent = useRef(content);
   const instructionInputRef = useRef<HTMLInputElement>(null);
@@ -221,6 +222,11 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
       const hasSelection = from !== to;
       setShowSelectionBar(hasSelection);
       selectedTextRef.current = hasSelection ? editor.state.doc.textBetween(from, to, ' ') : '';
+      setSelectionWordCount(
+        hasSelection
+          ? editor.state.doc.textBetween(from, to, ' ').trim().split(/\s+/).filter(Boolean).length
+          : 0
+      );
       if (!hasSelection) {
         setThesaurusWord(null);
         setThesaurusSynonyms([]);
@@ -967,28 +973,26 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
               <FileSearch size={11} />
               Verify
             </button>
-            <button
-              onMouseDown={e => { e.preventDefault(); const text = selectedTextRef.current || getSelectedText(); if (text && onSearchSimilar) onSearchSimilar(text); }}
-              className="px-2 py-1.5 rounded hover:bg-stone-800 text-[10px] font-medium flex items-center gap-1 whitespace-nowrap text-violet-400"
-              title="Find similar published manuscripts for this selection"
-            >
-              <Search size={11} />
-              Find Similar
-            </button>
-            {(() => {
-              const sel = getSelectedText().trim();
-              if (!sel || sel.includes(' ') || sel.length <= 1) return null;
-              return (
-                <button
-                  onMouseDown={e => { e.preventDefault(); handleThesaurus(); }}
-                  className="px-2 py-1.5 rounded hover:bg-stone-800 text-[10px] font-medium flex items-center gap-1 whitespace-nowrap text-green-400"
-                  title="Find synonyms"
-                >
-                  <BookOpen size={11} />
-                  Synonyms
-                </button>
-              );
-            })()}
+            {selectionWordCount > 5 && (
+              <button
+                onMouseDown={e => { e.preventDefault(); const text = selectedTextRef.current || getSelectedText(); if (text && onSearchSimilar) onSearchSimilar(text); }}
+                className="px-2 py-1.5 rounded hover:bg-stone-800 text-[10px] font-medium flex items-center gap-1 whitespace-nowrap text-violet-400"
+                title="Find similar published manuscripts for this selection"
+              >
+                <Search size={11} />
+                Find Similar
+              </button>
+            )}
+            {selectionWordCount >= 1 && selectionWordCount <= 2 && (
+              <button
+                onMouseDown={e => { e.preventDefault(); handleThesaurus(); }}
+                className="px-2 py-1.5 rounded hover:bg-stone-800 text-[10px] font-medium flex items-center gap-1 whitespace-nowrap text-green-400"
+                title="Find synonyms / alternatives"
+              >
+                <BookOpen size={11} />
+                Synonyms
+              </button>
+            )}
             <button
               onMouseDown={e => { e.preventDefault(); setShowSelectionBar(true); setTimeout(() => instructionInputRef.current?.focus(), 100); }}
               className="px-2 py-1.5 rounded hover:bg-stone-800 text-[10px] font-medium flex items-center gap-1"
