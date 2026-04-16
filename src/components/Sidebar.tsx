@@ -14,7 +14,7 @@ import { Cite } from '@citation-js/core';
 import '@citation-js/plugin-bibtex';
 import { useSourceStore } from '../stores/useSourceStore';
 import { digestSourceForManuscript, digestApiSource, extractPdfAbstractAea, scorePdfMatches, analyzeSourceAgainstManuscript, AGENT_INFO, AGENT_ICONS, localModelSupportsVision } from '../services/ai';
-import { detectOrphanedCitations, formatBibliography, BIB_STYLE_LABELS, type BibStyle, type CitationAnalysis, countCitationOccurrences, fetchCrossrefDoi, looksLikeDoi } from '../services/citations';
+import { detectOrphanedCitations, formatBibliography, BIB_STYLE_LABELS, type BibStyle, type CitationAnalysis, countCitationOccurrences, fetchCrossrefDoi } from '../services/citations';
 
 interface SidebarProps {
   suggestions: Suggestion[];
@@ -208,7 +208,7 @@ export default function Sidebar({
   };
 
   const handleAddDoi = async () => {
-    const doi = doiInput.trim();
+    const doi = doiInput.trim().replace(/^https?:\/\/doi\.org\//i, '');
     if (!doi) return;
     // Check if DOI already in store
     const existing = sources.find(s => s.apiMeta?.doi?.toLowerCase() === doi.toLowerCase());
