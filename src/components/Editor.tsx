@@ -910,15 +910,15 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
               <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); imageInputRef.current?.click(); }} title="Insert figure / image"><ImagePlus size={14} /></ToolbarButton>
             </div>
             <div className="w-px h-4 mx-0.5 shrink-0" style={{ background: 'var(--border)' }} />
-            <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().undo().run(); }} title="Undo"><Undo size={14} /></ToolbarButton>
-            <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().redo().run(); }} title="Redo"><Redo size={14} /></ToolbarButton>
-            <div className="w-px h-4 mx-0.5 shrink-0" style={{ background: 'var(--border)' }} />
             <ToolbarButton
               onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); if (onInsertFigure) onInsertFigure(); }}
               title="Insert figure label (auto-numbered)"
             >
               <Hash size={14} />
             </ToolbarButton>
+            <div className="w-px h-4 mx-0.5 shrink-0" style={{ background: 'var(--border)' }} />
+            <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().undo().run(); }} title="Undo"><Undo size={14} /></ToolbarButton>
+            <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().redo().run(); }} title="Redo"><Redo size={14} /></ToolbarButton>
             <div className="w-px h-4 mx-0.5 shrink-0" style={{ background: 'var(--border)' }} />
             <ToolbarButton
               onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); setAutocompleteEnabled(v => !v); }}
