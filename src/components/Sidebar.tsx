@@ -14,7 +14,7 @@ import { Cite } from '@citation-js/core';
 import '@citation-js/plugin-bibtex';
 import { useSourceStore } from '../stores/useSourceStore';
 import { digestSourceForManuscript, digestApiSource, extractPdfAbstractAea, scorePdfMatches, analyzeSourceAgainstManuscript, AGENT_INFO, AGENT_ICONS, localModelSupportsVision } from '../services/ai';
-import { detectOrphanedCitations, formatBibliography, BIB_STYLE_LABELS, type BibStyle, type CitationAnalysis, countCitationOccurrences } from '../services/citations';
+import { detectOrphanedCitations, formatBibliography, BIB_STYLE_LABELS, type BibStyle, type CitationAnalysis, countCitationOccurrences, fetchCrossrefDoi, looksLikeDoi } from '../services/citations';
 
 interface SidebarProps {
   suggestions: Suggestion[];
@@ -184,6 +184,9 @@ export default function Sidebar({
   const [refSort, setRefSort] = useState<'order' | 'author' | 'year'>('order');
   const [expandedRefIds, setExpandedRefIds] = useState<Set<string>>(new Set());
   const [visionWarning, setVisionWarning] = useState<string | null>(null);
+  const [doiInput, setDoiInput] = useState('');
+  const [doiLoading, setDoiLoading] = useState(false);
+  const [doiError, setDoiError] = useState<string | null>(null);
 
   const runGlobalSearch = () => {
     const q = globalSearchQuery.trim();
@@ -202,6 +205,28 @@ export default function Sidebar({
         );
       })
       .finally(() => setIsGlobalSearching(false));
+  };
+
+  const handleAddDoi = async () => {
+    const doi = doiInput.trim();
+    if (!doi) return;
+    // Check if DOI already in store
+    const existing = sources.find(s => s.apiMeta?.doi?.toLowerCase() === doi.toLowerCase());
+    if (existing) {
+      setDoiError('This DOI is already in your sources.');
+      return;
+    }
+    setDoiLoading(true);
+    setDoiError(null);
+    try {
+      const source = await fetchCrossrefDoi(doi);
+      addSources([source]);
+      setDoiInput('');
+    } catch (err) {
+      setDoiError(err instanceof Error ? err.message : 'Failed to fetch DOI.');
+    } finally {
+      setDoiLoading(false);
+    }
   };
 
   // Citation management state
@@ -1088,6 +1113,38 @@ export default function Sidebar({
               className="hidden"
               onChange={handleFileInput}
             />
+
+            {/* Add by DOI */}
+            <div className="border rounded-xl overflow-hidden" style={{ borderColor: 'var(--border)' }}>
+              <div className="flex items-center gap-2 px-3 py-2 border-b" style={{ borderColor: 'var(--border)', background: 'var(--surface-1)' }}>
+                <Hash size={12} style={{ color: 'var(--text-muted)' }} />
+                <span className="text-[11px] font-bold" style={{ color: 'var(--text-primary)' }}>Add by DOI</span>
+              </div>
+              <div className="p-3 space-y-1.5">
+                <div className="flex gap-1.5">
+                  <input
+                    value={doiInput}
+                    onChange={e => { setDoiInput(e.target.value); setDoiError(null); }}
+                    onKeyDown={e => { if (e.key === 'Enter') handleAddDoi(); }}
+                    placeholder="10.1234/journal.article"
+                    className="flex-1 text-[11px] px-2.5 py-1.5 border rounded-lg focus:outline-none font-mono"
+                    style={{ borderColor: doiError ? '#f87171' : 'var(--border)', background: 'var(--surface-0)', color: 'var(--text-primary)' }}
+                  />
+                  <button
+                    disabled={doiLoading || !doiInput.trim()}
+                    onClick={handleAddDoi}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors disabled:opacity-40"
+                    style={{ background: 'var(--accent-blue)', color: '#fff' }}
+                  >
+                    {doiLoading ? <Sparkles size={11} className="animate-spin" /> : <Plus size={11} />}
+                    {doiLoading ? '' : 'Add'}
+                  </button>
+                </div>
+                {doiError && (
+                  <p className="text-[10px] px-1" style={{ color: '#ef4444' }}>{doiError}</p>
+                )}
+              </div>
+            </div>
 
             {/* Manual manuscript search */}
             <div className="border rounded-xl overflow-hidden" style={{ borderColor: 'var(--border)' }}>
