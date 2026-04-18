@@ -24,7 +24,7 @@ import { getThesaurus, generateCompletion } from '../services/ai';
 import { AISettings } from '../types';
 import { AutoComplete } from '../extensions/AutoComplete';
 import { NodeSelection } from 'prosemirror-state';
-import { expandCitationNums, fetchCrossrefDoi, looksLikeDoi } from '../services/citations';
+import { expandCitationNums, fetchCrossrefDoi, looksLikeDoi, normalizeDoi } from '../services/citations';
 import { useSourceStore } from '../stores/useSourceStore';
 
 interface EditorProps {
@@ -536,12 +536,13 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
   };
 
   const handleInsertDoi = async (doi: string) => {
+    const bareDoi = normalizeDoi(doi);
     setDoiPickerState('loading');
     setDoiPickerError(null);
     try {
-      let source = allSources.find(s => s.apiMeta?.doi?.toLowerCase() === doi.toLowerCase());
+      let source = allSources.find(s => s.apiMeta?.doi?.toLowerCase() === bareDoi.toLowerCase());
       if (!source) {
-        source = await fetchCrossrefDoi(doi);
+        source = await fetchCrossrefDoi(bareDoi);
         addSources([source]);
       }
       handleInsertCitation(source); // closes picker and resets doi state internally

@@ -276,7 +276,12 @@ export async function fetchCrossrefDoi(doi: string): Promise<ManuscriptSource> {
   };
 }
 
-/** Returns true if the string looks like a DOI (starts with 10. prefix) */
+/** Strips any doi.org URL prefix, returning the bare DOI (e.g. "10.1038/...") */
+export function normalizeDoi(text: string): string {
+  return text.trim().replace(/^https?:\/\/doi\.org\//i, '').replace(/^doi\.org\//i, '');
+}
+
+/** Returns true if the string looks like a DOI (bare or doi.org URL form) */
 export function looksLikeDoi(text: string): boolean {
-  return /^10\.\d{4,}\/\S{3,}/.test(text.trim());
+  return /^10\.\d{4,}\/\S{3,}/.test(normalizeDoi(text));
 }
