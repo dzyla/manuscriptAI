@@ -34,6 +34,7 @@ declare module '@tiptap/core' {
   interface Commands<ReturnType> {
     citation: {
       insertCitation: (sourceId: string, num: number) => ReturnType;
+      insertCitationBatch: (sourceIds: string[], nums: number[]) => ReturnType;
       updateAllCitationNums: (registry: Record<string, number>) => ReturnType;
     };
   }
@@ -89,6 +90,14 @@ export const CitationNode = Node.create({
           return commands.insertContent({
             type: this.name,
             attrs: { sourceIds: [sourceId], nums: [num] },
+          });
+        },
+
+      insertCitationBatch: (sourceIds: string[], nums: number[]) =>
+        ({ commands }) => {
+          return commands.insertContent({
+            type: this.name,
+            attrs: { sourceIds, nums },
           });
         },
 
