@@ -299,10 +299,9 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
         }
         if (e.key === ' ') {
           const filter = citationFilterRef.current;
-          const parts = filter
-            .split(',')
-            .map(p => normalizeDoi(p.trim()))
-            .filter(p => looksLikeDoi(p));
+          const parts = [...new Set(
+            filter.split(',').map(p => normalizeDoi(p.trim())).filter(p => looksLikeDoi(p))
+          )];
           if (parts.length > 0) {
             e.preventDefault();
             if (parts.length === 1) {
@@ -582,6 +581,10 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
     setDoiPickerState('loading');
     setDoiPickerError(null);
 
+    // Snapshot positions before any awaits — editor state may change during fetch
+    const atPos = atInsertPos.current;
+    const curPos = editor.state.selection.from;
+
     const results = await Promise.allSettled(
       dois.map(async (doi) => {
         let source = allSources.find(s => s.apiMeta?.doi?.toLowerCase() === doi.toLowerCase());
@@ -607,8 +610,6 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
     const nums = succeeded.map(s => onInsertCitation(s.id));
     const sourceIds = succeeded.map(s => s.id);
 
-    const atPos = atInsertPos.current;
-    const curPos = editor.state.selection.from;
     editor.chain().focus().deleteRange({ from: atPos, to: curPos }).run();
     (editor.chain().focus() as any).insertCitationBatch(sourceIds, nums).run();
 
@@ -620,9 +621,12 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
 
     if (failedDois.length > 0) {
       console.warn('DOI batch: failed to fetch', failedDois.join(', '));
+      setDoiPickerError(`Inserted ${succeeded.length}; could not fetch: ${failedDois.join(', ')}`);
+      setDoiPickerState('error');
     }
   };
 
+  // No dep array — intentionally runs after every render to keep refs pointing at latest closures
   useEffect(() => {
     handleInsertDoiRef.current = handleInsertDoi;
     handleInsertMultipleDoiRef.current = handleInsertMultipleDoi;
