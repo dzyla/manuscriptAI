@@ -1503,7 +1503,15 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
                   onMouseDown={e => {
                     e.preventDefault();
                     if (doiPickerState !== 'idle') return;
-                    handleInsertDoi(citationFilter);
+                    const parts = citationFilter
+                      .split(',')
+                      .map(p => normalizeDoi(p.trim()))
+                      .filter(p => looksLikeDoi(p));
+                    if (parts.length > 1) {
+                      handleInsertMultipleDoi(parts);
+                    } else {
+                      handleInsertDoi(parts[0] ?? citationFilter);
+                    }
                   }}
                   disabled={doiPickerState === 'loading'}
                 >
@@ -1514,7 +1522,12 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
                   )}
                   <div className="min-w-0">
                     <p className="text-[11px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-                      {doiPickerState === 'loading' ? 'Looking up DOI…' : 'Look up DOI via Crossref'}
+                      {doiPickerState === 'loading'
+                        ? 'Fetching from Crossref…'
+                        : (() => {
+                            const count = citationFilter.split(',').filter(p => looksLikeDoi(normalizeDoi(p.trim()))).length;
+                            return count > 1 ? `Look up ${count} DOIs via Crossref` : 'Look up DOI via Crossref';
+                          })()}
                     </p>
                     <p className="text-[10px] truncate font-mono" style={{ color: 'var(--text-muted)' }}>{citationFilter}</p>
                   </div>
