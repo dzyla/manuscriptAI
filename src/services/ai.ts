@@ -342,6 +342,9 @@ async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: 
     messages,
     temperature: 0.3,
     max_tokens: maxTokens ?? 4096,
+    // Disable extended thinking for models that support the flag (e.g. Qwen3 via LMStudio).
+    // Prevents the model from emitting its reasoning chain in the content field.
+    enable_thinking: false,
   });
 
   const headers: Record<string, string> = {
@@ -358,8 +361,11 @@ async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: 
         const data = await response.json();
         // content may be empty on reasoning models (e.g. nemotron, deepseek-r1) when the
         // thinking chain exhausts the token budget — fall back to reasoning_content in that case
-        const msgContent: string = data.choices?.[0]?.message?.content || '';
+        const rawContent: string = data.choices?.[0]?.message?.content || '';
         const reasoningContent: string = data.choices?.[0]?.message?.reasoning_content || '';
+        // Strip inline thinking blocks emitted by reasoning models (e.g. <think>…</think>,
+        // "Thinking Process: …" preambles). Some LMStudio models embed these in the content field.
+        const msgContent = stripThinkingBlocks(rawContent);
         if (msgContent) return msgContent;
         if (reasoningContent) return reasoningContent;
         if (data.output && Array.isArray(data.output)) {
@@ -380,6 +386,35 @@ async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: 
   }
 
   throw new Error(`Could not connect to local LLM. Tried: ${endpoints.join(', ')}. Last error: ${lastError}`);
+}
+
+/**
+ * Strip inline thinking/reasoning blocks that some local models (e.g. Qwen-thinking,
+ * Gemma-thinking, DeepSeek-R1 variants in LMStudio) embed in the content field.
+ * Handles: <think>…</think>, <thinking>…</thinking>,
+ *          "Thinking Process: … (Self" style preambles, and numbered step preambles.
+ */
+function stripThinkingBlocks(text: string): string {
+  if (!text) return text;
+  let cleaned = text;
+
+  // 1. Remove closed <think>…</think> / <thinking>…</thinking> blocks, then keep the remainder
+  cleaned = cleaned.replace(/<think(?:ing)?>([\s\S]*?)<\/think(?:ing)?>/gi, '').trim();
+
+  // 2. Remove unclosed <think>/<thinking> tag and everything after it (model cut off mid-think)
+  cleaned = cleaned.replace(/<think(?:ing)?>[\s\S]*/i, '').trim();
+
+  // 3. If the response opens with a reasoning preamble label ("Thinking Process:",
+  //    "Thought Process:", "Let me think:", numbered-bold outline, etc.), the whole content
+  //    is the model's chain-of-thought with no usable output.  Discard it entirely so the
+  //    caller can show the appropriate fallback.
+  const THINKING_PREAMBLE = /^(?:Thinking\s+Process:|Thought\s+Process:|Let\s+me\s+think(?:ing)?:|Step-by-step(?:\s+analysis)?:|My\s+(?:thinking|reasoning|analysis):|Analysis:|Here(?:'s|\s+is)\s+my\s+(?:thinking|reasoning|analysis|thought))/i;
+
+  if (THINKING_PREAMBLE.test(cleaned) || /^\d+\.\s+\*\*/.test(cleaned)) {
+    return '';
+  }
+
+  return cleaned;
 }
 
 /**

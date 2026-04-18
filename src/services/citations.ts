@@ -212,18 +212,53 @@ export function countCitationOccurrences(html: string, num: number): number {
  * Returns a ManuscriptSource ready to add to the source store.
  * Throws a descriptive error on 404 or network failure.
  */
+async function crossrefGet(url: string): Promise<{ ok: boolean; status: number; text: string }> {
+  const electronAPI = (window as any).electron as
+    | { netGet?: (u: string, h: Record<string, string>) => Promise<{ ok: boolean; status: number; text: string; error?: string }> }
+    | undefined;
+
+  if (electronAPI?.netGet) {
+    const result = await electronAPI.netGet(url, {});
+    if (result.status === 0) {
+      throw new Error(`Crossref unreachable via Electron net${result.error ? `: ${result.error}` : ' — check your internet connection.'}`);
+    }
+    return result;
+  }
+
+  // Browser path — add a 15 s timeout so a hung connection fails fast
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    return { ok: response.ok, status: response.status, text: await response.text() };
+  } catch (err) {
+    clearTimeout(timer);
+    const detail = err instanceof Error ? err.message : String(err);
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error('Crossref request timed out (>15 s) — the server may be slow or unreachable.');
+    }
+    throw new Error(`Could not reach Crossref — ${detail}`);
+  }
+}
+
 export async function fetchCrossrefDoi(doi: string): Promise<ManuscriptSource> {
   const url = `https://api.crossref.org/works/${encodeURIComponent(doi.trim())}`;
-  let res: Response;
+  let res: { ok: boolean; status: number; text: string };
   try {
-    res = await fetch(url, { headers: { 'User-Agent': 'ManuscriptAIEditor/1.0' } });
-  } catch {
-    throw new Error('Network error — could not reach Crossref. Check your connection.');
+    res = await crossrefGet(url);
+  } catch (err) {
+    throw err instanceof Error ? err : new Error('Could not reach Crossref — check your internet connection.');
   }
   if (res.status === 404) throw new Error(`DOI not found: ${doi}`);
   if (!res.ok) throw new Error(`Crossref returned ${res.status} for DOI: ${doi}`);
 
-  const json = await res.json();
+  let json: any;
+  try {
+    json = JSON.parse(res.text);
+  } catch {
+    throw new Error('Unexpected response format from Crossref.');
+  }
   const work = json?.message as Record<string, any>;
   if (!work || typeof work !== 'object') {
     throw new Error('Unexpected response format from Crossref.');

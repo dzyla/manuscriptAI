@@ -65,4 +65,18 @@ ipcMain.handle('net-post', async (_event, { url, headers, body }: {
   }
 });
 
+// IPC handler: GET requests via Electron net module (bypasses CORS)
+ipcMain.handle('net-get', async (_event, { url, headers }: {
+  url: string;
+  headers: Record<string, string>;
+}) => {
+  try {
+    const response = await net.fetch(url, { method: 'GET', headers });
+    const text = await response.text();
+    return { ok: response.ok, status: response.status, text };
+  } catch (err) {
+    return { ok: false, status: 0, text: '', error: String(err) };
+  }
+});
+
 app.whenReady().then(createWindow);
