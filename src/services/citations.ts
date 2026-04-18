@@ -311,9 +311,12 @@ export async function fetchCrossrefDoi(doi: string): Promise<ManuscriptSource> {
   };
 }
 
-/** Strips any doi.org URL prefix, returning the bare DOI (e.g. "10.1038/...") */
+/** Strips doi.org URL and bare doi: prefixes, returning the bare DOI (e.g. "10.1038/...") */
 export function normalizeDoi(text: string): string {
-  return text.trim().replace(/^https?:\/\/doi\.org\//i, '').replace(/^doi\.org\//i, '');
+  return text.trim()
+    .replace(/^https?:\/\/doi\.org\//i, '')
+    .replace(/^doi\.org\//i, '')
+    .replace(/^doi:/i, '');
 }
 
 /** Returns true if the string looks like a DOI (bare or doi.org URL form) */
