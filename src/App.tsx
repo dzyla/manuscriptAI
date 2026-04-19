@@ -1216,7 +1216,7 @@ export default function App() {
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         settings={aiSettings}
-        onUpdateSettings={(s) => { setAiSettings(s); secureStorage.setItem('manuscript-ai-settings', JSON.stringify(s)); }}
+        onUpdateSettings={(s) => { setAiSettings(s); void secureStorage.setItem('manuscript-ai-settings', JSON.stringify(s)); }}
       />
       <PostDraftingView
         isOpen={isPostDraftingOpen}

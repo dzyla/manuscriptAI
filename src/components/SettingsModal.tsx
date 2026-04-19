@@ -120,8 +120,8 @@ export default function SettingsModal({ isOpen, onClose, settings, onUpdateSetti
                 {activeSection === 'provider' ? (
                   <>
                     {!isEncrypted() && (
-                      <div className="flex items-start gap-2 p-3 rounded-xl text-xs" style={{ background: 'rgba(217,119,6,0.08)', border: '1px solid rgba(217,119,6,0.25)', color: 'rgb(180,100,0)' }}>
-                        <span className="mt-0.5 shrink-0">⚠</span>
+                      <div role="alert" className="flex items-start gap-2 p-3 rounded-xl text-xs" style={{ background: 'rgba(217,119,6,0.08)', border: '1px solid rgba(217,119,6,0.25)', color: 'rgb(180,100,0)' }}>
+                        <span aria-hidden="true" className="mt-0.5 shrink-0">⚠</span>
                         <span>API keys are stored unencrypted in browser localStorage. Use the desktop app for secure key storage.</span>
                       </div>
                     )}
