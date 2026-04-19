@@ -291,41 +291,39 @@ export function localModelSupportsVision(modelName: string): boolean {
 async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: string = "", images?: AttachedImage[], signal?: AbortSignal, maxTokens?: number): Promise<string> {
   let baseUrl = settings.localBaseUrl.trim();
   if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
-  
-  // Build candidate endpoints from the user's configured URL
-  // LM Studio/Ollama use: http://host:port/v1/chat/completions
-  // User might configure: http://host:port, http://host:port/v1, http://host:port/api/v1/chat, etc.
+
+  // Build candidate endpoints.
+  // Priority order matters: OpenAI-compat endpoint first (most servers support it),
+  // then the LM Studio proprietary /api/v1/chat endpoint last.
   const candidateEndpoints: string[] = [];
-  
-  // If URL already contains /chat/completions, use it as-is
+  let lmStudioEndpoint: string | null = null;
+
   if (baseUrl.includes('/chat/completions')) {
     candidateEndpoints.push(baseUrl);
   }
-  
-  // Extract the origin (protocol + host + port)
+
   try {
     const url = new URL(baseUrl);
     const origin = url.origin;
-    // Standard OpenAI-compatible endpoints (most common)
     candidateEndpoints.push(`${origin}/v1/chat/completions`);
     candidateEndpoints.push(`${origin}/api/v1/chat/completions`);
-    // Also try the exact URL the user provided
-    if (!candidateEndpoints.includes(baseUrl)) {
+    // Detect LM Studio proprietary /api/v1/chat endpoint (requires different body format)
+    const lmStudio = `${origin}/api/v1/chat`;
+    lmStudioEndpoint = lmStudio;
+    if (!candidateEndpoints.includes(baseUrl) && baseUrl !== lmStudio) {
       candidateEndpoints.push(baseUrl);
     }
+    candidateEndpoints.push(lmStudio);
   } catch (_) {
     candidateEndpoints.push(baseUrl);
   }
-  
-  // Deduplicate
-  const endpoints = [...new Set(candidateEndpoints)];
-  
-  const messages: any[] = [];
-  if (systemPrompt) {
-    messages.push({ role: 'system', content: systemPrompt });
-  }
 
-  // Build user message — use multimodal content array when images are attached
+  const endpoints = [...new Set(candidateEndpoints)];
+
+  // Build OpenAI-compatible messages array
+  const messages: any[] = [];
+  if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
+
   if (images && images.length > 0) {
     const contentParts: any[] = images.map(img => ({
       type: 'image_url',
@@ -337,16 +335,27 @@ async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: 
     messages.push({ role: 'user', content: prompt });
   }
 
-  const body = JSON.stringify({
+  const resolvedMaxTokens = maxTokens ?? 4096;
+
+  // Standard OpenAI-compatible body
+  const openAIBody = JSON.stringify({
     model: settings.localModel,
     messages,
     temperature: 0.3,
-    max_tokens: maxTokens ?? 4096,
-    // Disable thinking/reasoning mode for models that support these flags.
-    // enable_thinking: false → LM Studio (Qwen3, etc.)
-    // think: false          → Ollama (Gemma, QwQ, etc.)
+    max_tokens: resolvedMaxTokens,
+    // Disable thinking/reasoning mode where the server supports these flags
     enable_thinking: false,
     think: false,
+  });
+
+  // LM Studio proprietary /api/v1/chat body (requires input + system_prompt)
+  const userText = messages.filter(m => m.role !== 'system')
+    .map(m => typeof m.content === 'string' ? m.content : (m.content as any[]).find((p: any) => p.type === 'text')?.text ?? '')
+    .join('\n');
+  const lmStudioBody = JSON.stringify({
+    model: settings.localModel,
+    system_prompt: systemPrompt,
+    input: userText,
   });
 
   const headers: Record<string, string> = {
@@ -354,31 +363,68 @@ async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: 
     ...(settings.localApiKey ? { 'Authorization': `Bearer ${settings.localApiKey}` } : {})
   };
 
+  // Extract usable text from a parsed response object, stripping any thinking blocks.
+  // Returns null when no usable content could be found (caller should try next endpoint).
+  function extractContent(data: any): string | null {
+    // OpenAI-compat: choices[0].message.content
+    const rawContent: string = data.choices?.[0]?.message?.content || '';
+    if (rawContent) {
+      const s = stripThinkingBlocks(rawContent);
+      if (s) return s;
+      // content was non-empty but stripped to nothing (pure thinking) — don't fall back
+      // to reasoning_content because this server uses content for thinking too
+      return null;
+    }
+
+    // reasoning_content: some backends (deepseek-r1, nemotron) put the final answer here
+    // when content is absent. Strip it first — if it's also just thinking, discard.
+    const reasoningContent: string = data.choices?.[0]?.message?.reasoning_content || '';
+    if (reasoningContent) {
+      const s = stripThinkingBlocks(reasoningContent);
+      if (s) return s;
+    }
+
+    // LM Studio /api/v1/chat proprietary shape: output[] with type "message"/"reasoning"
+    if (data.output && Array.isArray(data.output)) {
+      const messageNode = data.output.find((o: any) => o.type === 'message')
+        ?? data.output[data.output.length - 1];
+      if (messageNode?.content) {
+        const s = stripThinkingBlocks(String(messageNode.content));
+        if (s) return s;
+      }
+    }
+
+    // Other non-standard shapes
+    for (const val of [data.reply, data.message?.content, data.content]) {
+      if (!val) continue;
+      const raw = typeof val === 'string' ? val : JSON.stringify(val);
+      const s = stripThinkingBlocks(raw);
+      if (s) return s;
+    }
+
+    return null;
+  }
+
   let lastError = '';
   for (const ep of endpoints) {
+    const isLmStudioChat = ep === lmStudioEndpoint;
+    const body = isLmStudioChat ? lmStudioBody : openAIBody;
     try {
       const response = await fetch(ep, { method: 'POST', headers, body, signal });
 
       if (response.ok) {
         const data = await response.json();
-        // content may be empty on reasoning models (e.g. nemotron, deepseek-r1) when the
-        // thinking chain exhausts the token budget — fall back to reasoning_content in that case
-        const rawContent: string = data.choices?.[0]?.message?.content || '';
-        // Strip inline thinking blocks emitted by reasoning models (e.g. <think>…</think>,
-        // "Thinking Process: …" preambles). Some LMStudio/Ollama models embed these in content.
-        const msgContent = stripThinkingBlocks(rawContent);
-        if (msgContent) return msgContent;
-        // Only fall back to reasoning_content when content was genuinely absent (not when it was
-        // stripped because it was pure thinking — in that case reasoning_content IS the thinking).
-        const reasoningContent: string = data.choices?.[0]?.message?.reasoning_content || '';
-        if (reasoningContent && !rawContent) return reasoningContent;
-        if (data.output && Array.isArray(data.output)) {
-          const messageNode = data.output.find((o: any) => o.type === 'message') || data.output[data.output.length - 1];
-          if (messageNode?.content) return messageNode.content;
+        const content = extractContent(data);
+        if (content) return content;
+
+        // Got a response but all fields were pure thinking — throw so callers can fall back
+        const hadAnyContent = data.choices?.[0]?.message?.content ||
+          data.choices?.[0]?.message?.reasoning_content ||
+          data.reply || data.message?.content || data.content ||
+          (data.output && Array.isArray(data.output) && data.output.length > 0);
+        if (hadAnyContent) {
+          throw new Error('Local LLM returned only reasoning output with no usable content');
         }
-        if (data.reply) return data.reply;
-        if (data.message?.content) return data.message.content;
-        if (data.content) return typeof data.content === 'string' ? data.content : JSON.stringify(data.content);
         return JSON.stringify(data);
       } else {
         lastError = `${ep} returned ${response.status}`;
@@ -408,14 +454,31 @@ function stripThinkingBlocks(text: string): string {
   // 2. Remove unclosed <think>/<thinking> tag and everything after it (model cut off mid-think)
   cleaned = cleaned.replace(/<think(?:ing)?>[\s\S]*/i, '').trim();
 
-  // 3. If the response opens with a reasoning preamble label ("Thinking Process:",
-  //    "Thought Process:", "Let me think:", numbered-bold outline, etc.), the whole content
-  //    is the model's chain-of-thought with no usable output.  Discard it entirely so the
-  //    caller can show the appropriate fallback.
-  const THINKING_PREAMBLE = /^(?:Thinking\s+Process:|Thought\s+Process:|Let\s+me\s+think(?:ing)?:|Step-by-step(?:\s+analysis)?:|My\s+(?:thinking|reasoning|analysis):|Analysis:|Here(?:'s|\s+is)\s+my\s+(?:thinking|reasoning|analysis|thought))/i;
+  if (!cleaned) return '';
 
-  if (THINKING_PREAMBLE.test(cleaned) || /^\d+\.\s+\*\*/.test(cleaned)) {
-    return '';
+  // 3. Handle text-style thinking preambles ("Thinking Process:", numbered bold outlines, etc.).
+  //    Rather than discarding everything, split into paragraphs and skip thinking sections;
+  //    models like Gemma output their reasoning first and the actual answer after.
+  const THINKING_SECTION = /^(?:Thinking\s+Process:|Thought\s+Process:|Let\s+me\s+think(?:ing)?:|Step-by-step(?:\s+analysis)?:|My\s+(?:thinking|reasoning|analysis):|Analysis:|Here(?:'s|\s+is)\s+my\s+(?:thinking|reasoning|analysis|thought)|\*\*(?:Thinking|Reasoning|Analysis)\*\*:?)/i;
+
+  if (THINKING_SECTION.test(cleaned) || /^\d+\.\s+\*\*/.test(cleaned)) {
+    // Split into paragraphs; collect everything that isn't a thinking step.
+    // A "thinking" paragraph starts with a numbered bold step (\d+.  **) or is the
+    // opening preamble itself. The actual answer follows once the list ends.
+    const paragraphs = cleaned.split(/\n{2,}/);
+    const answerParts: string[] = [];
+    let pastThinking = false;
+
+    for (const para of paragraphs) {
+      const trimmed = para.trim();
+      if (!trimmed) continue;
+      const isThinkingPara = THINKING_SECTION.test(trimmed) || /^\d+\.\s+\*\*/.test(trimmed);
+      if (!pastThinking && isThinkingPara) continue;
+      pastThinking = true;
+      answerParts.push(trimmed);
+    }
+
+    return answerParts.join('\n\n');
   }
 
   return cleaned;
@@ -678,7 +741,8 @@ export async function generateCompletion(contextText: string, settings: AISettin
     'You are a scientific manuscript autocomplete engine. ' +
     'The user sends you manuscript text. Your entire response must be the continuation — nothing else. ' +
     'Start immediately with the next word. No preamble, no analysis, no explanation, no labels, no reasoning. ' +
-    'Wrong: "Sure! The next sentence is: X." Right: "X."';
+    'Do NOT show a thinking process, reasoning steps, or numbered analysis. ' +
+    'Wrong: "Sure! The next sentence is: X." Wrong: "Thinking Process: 1. ..." Right: "X."';
 
   const raw = await callLLM(contextText, settings, system, false, undefined, signal, 150);
 
@@ -745,17 +809,23 @@ export async function runJudgeAgent(suggestions: Suggestion[], settings: AISetti
 
     // Try LLM judge for this conflict group
     try {
-      const prompt = `You are a manuscript improvement judge. Given these overlapping suggestions for a scientific manuscript, pick the ONE suggestion that would have the MOST IMPACT on manuscript quality. Consider: severity, specificity, and scientific value.
+      const prompt = `TASK: Multiple AI agents flagged the same manuscript passage. Select the SINGLE best suggestion to keep. Reply with only the index number.
 
-Suggestions:
-${group.map((s, i) => `[${i}] Agent: ${s.agent} | Severity: ${s.severity || 'minor'} | Category: ${s.category || 'general'}
-Original: "${s.originalText.substring(0, 150)}"
-Suggested: "${s.suggestedText.substring(0, 150)}"
-Reason: ${s.explanation.substring(0, 100)}`).join('\n\n')}
+SELECTION CRITERIA (in priority order):
+1. Severity — prefer critical > major > minor > style
+2. Specificity — a concrete replacement beats a vague comment
+3. Scientific value — does it improve accuracy, clarity, or persuasiveness of the science?
+4. Actionability — can the author apply it exactly as written?
 
-Respond with ONLY a single number (the index of the best suggestion, e.g. "0" or "2").`;
+CANDIDATES:
+${group.map((s, i) => `[${i}] Severity: ${s.severity || 'minor'} | Agent: ${s.agent} | Category: ${s.category || 'general'}
+  ORIGINAL: "${s.originalText.substring(0, 200)}"
+  REPLACE WITH: "${s.suggestedText.substring(0, 200)}"
+  REASON: ${s.explanation.substring(0, 150)}`).join('\n\n')}
 
-      const response = await callLLM(prompt, settings, 'You are a concise judge. Reply with only a number.');
+Reply with a single integer (e.g. 0). No explanation, no reasoning steps, no thinking process.`;
+
+      const response = await callLLM(prompt, settings, 'You are a manuscript editor judge. Output only a single integer index. No reasoning, no thinking steps, no explanation.');
       const idx = parseInt(response.trim().match(/\d+/)?.[0] || '0', 10);
       winners.push(group[Math.min(idx, group.length - 1)]);
     } catch (_) {
@@ -1292,7 +1362,8 @@ export async function digestApiSource(sourceText: string, sourceName: string, se
 
   const systemPrompt = `You are a research assistant producing structured digests of scientific papers.
 Given an abstract or paper excerpt, extract the key information in a concise, structured format.
-Be factual and specific. Max 300 words total.`;
+Be factual and specific. Max 300 words total.
+Do NOT output a thinking process or reasoning steps. Start your response immediately.`;
 
   const prompt = `Paper: "${sourceName}"
 
@@ -1332,7 +1403,8 @@ Style rules — apply to both extracted and generated abstracts:
 - Plain continuous prose. No bullet points, no numbered lists.
 - No meta-commentary ("This paper investigates…" is fine; "The abstract is as follows:" is not).
 - Academic register, concise, no filler phrases.
-- Return ONLY the abstract text. Nothing else.`;
+- Return ONLY the abstract text. Nothing else.
+- Do NOT output a thinking process, reasoning steps, or numbered analysis before the answer.`;
 
   const prompt = `Paper: "${sourceName}"
 
@@ -1403,7 +1475,8 @@ Rules (strictly follow all):
 - No meta-commentary. Do not write "The abstract is:" or "This paper presents:".
 - Academic register, concise, no filler phrases.
 - Return ONLY the abstract text. Nothing else.
-- If the text is completely unintelligible, return exactly: Abstract not available.`;
+- If the text is completely unintelligible, return exactly: Abstract not available.
+- Do NOT output a thinking process, reasoning steps, or numbered analysis. Start with the abstract immediately.`;
 
   let prompt: string;
   if (heuristicCandidate) {
@@ -1430,11 +1503,20 @@ Extract or write the abstract.`;
   }
 
   try {
-    const response = await callLLM(prompt, settings, systemPrompt, false, undefined, undefined, 400);
-    return response?.trim() || 'Abstract not available.';
-  } catch (_) {
-    return 'Abstract not available.';
-  }
+    // Give thinking models extra headroom: they consume tokens for reasoning before answering.
+    const tokenBudget = isLocal ? 1200 : 600;
+    const response = await callLLM(prompt, settings, systemPrompt, false, undefined, undefined, tokenBudget);
+    const trimmed = response?.trim() || '';
+    // Reject if the LLM still leaked thinking output despite our stripping (extra safety net).
+    const looksLikeThinking = /^(Thinking\s+Process:|Thought\s+Process:|1\.\s+\*\*)/i.test(trimmed);
+    if (trimmed && !looksLikeThinking) return trimmed;
+  } catch (_) {}
+
+  // LLM failed or returned only reasoning — fall back to the heuristic candidate (if any),
+  // then to a plain excerpt from the beginning of the document as a last resort for search.
+  if (heuristicCandidate) return heuristicCandidate.slice(0, 800).trim();
+  const plainExcerpt = scanRegion.replace(/\s+/g, ' ').trim().slice(0, 500);
+  return plainExcerpt.length > 50 ? plainExcerpt : 'Abstract not available.';
 }
 
 // ─── PDF→Database Scoring Agent ──────────────────────────────────────────────
