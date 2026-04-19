@@ -155,6 +155,12 @@ export function walkNode(node: PmNode, r: ASTRenderer, images?: Map<string, Imag
         (para.content ?? []).map(c => walkNode(c, r, images))
       ));
 
+    case 'codeBlock':
+      return r.paragraph((node.content ?? []).map(c => walkNode(c, r, images)));
+
+    case 'horizontalRule':
+      return r.paragraph([]);
+
     case 'text':
       return r.text(node.text ?? '', parseMarks(node.marks));
 

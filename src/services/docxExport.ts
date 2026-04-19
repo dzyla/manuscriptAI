@@ -2,7 +2,7 @@
 import {
   Document, Paragraph, TextRun, HeadingLevel, ImageRun,
   Table, TableRow, TableCell, WidthType, AlignmentType,
-  LevelFormat, Packer,
+  LevelFormat, Packer, FileChild,
 } from 'docx';
 import type { ASTRenderer, Marks, ImageMeta } from './astExport';
 
@@ -27,12 +27,17 @@ export class DocxRenderer implements ASTRenderer {
 
   doc(children: unknown[]): Document {
     // Flatten arrays produced by bulletList/orderedList
-    const blocks: (Paragraph | Table)[] = [];
+    const blocks: FileChild[] = [];
     for (const child of children) {
       if (Array.isArray(child)) {
-        blocks.push(...(child as (Paragraph | Table)[]));
+        for (const item of child as unknown[]) {
+          if (item instanceof FileChild) blocks.push(item);
+        }
+      } else if (child instanceof FileChild) {
+        blocks.push(child);
       } else if (child != null) {
-        blocks.push(child as Paragraph | Table);
+        // Unknown inline leaked into block position — wrap it safely
+        blocks.push(new Paragraph({ children: [child as TextRun] }));
       }
     }
     return new Document({
