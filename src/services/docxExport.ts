@@ -20,11 +20,9 @@ function getDocxImageType(mimeType: string): 'jpg' | 'png' | 'gif' | 'bmp' | nul
 
 export class DocxRenderer implements ASTRenderer {
   private title: string;
-  private images: Map<string, ImageMeta>;
 
   constructor(opts: { title: string; images: Map<string, ImageMeta> }) {
     this.title = opts.title;
-    this.images = opts.images;
   }
 
   doc(children: unknown[]): Document {

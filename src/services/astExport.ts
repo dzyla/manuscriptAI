@@ -150,6 +150,11 @@ export function walkNode(node: PmNode, r: ASTRenderer, images?: Map<string, Imag
         )
       );
 
+    case 'blockquote':
+      return r.paragraph((node.content ?? []).flatMap(para =>
+        (para.content ?? []).map(c => walkNode(c, r, images))
+      ));
+
     case 'text':
       return r.text(node.text ?? '', parseMarks(node.marks));
 

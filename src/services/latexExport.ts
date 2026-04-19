@@ -23,16 +23,14 @@ export class LatexRenderer implements ASTRenderer {
   private title: string;
   private zip: JSZip;
   private figureIndex = 0;
-  private images: Map<string, ImageMeta>;
 
   constructor(opts: { title: string; images: Map<string, ImageMeta> }) {
     this.title = opts.title;
     this.zip = new JSZip();
-    this.images = opts.images;
   }
 
   doc(children: unknown[]): JSZip {
-    const body = (children as string[]).join('\n\n');
+    const body = (children as string[]).filter(Boolean).join('\n\n');
     const hasFigures = this.figureIndex > 0;
     const preamble = [
       `\\documentclass[12pt]{article}`,

@@ -3,7 +3,7 @@ import { X, Settings, Server, Zap, RotateCcw, Cloud, BookMarked, RefreshCw } fro
 import { AISettings, AgentType } from '../types';
 import { isEncrypted } from '../services/secureStorage';
 import { DEFAULT_AGENT_PROMPTS, AGENT_INFO, AGENT_ICONS } from '../services/ai';
-import { useState, createElement } from 'react';
+import { useState, createElement, useMemo } from 'react';
 import { fetchZoteroLibrary } from '../services/zotero';
 import { useSourceStore } from '../stores/useSourceStore';
 
@@ -26,6 +26,7 @@ export default function SettingsModal({ isOpen, onClose, settings, onUpdateSetti
   const [zoteroSyncing, setZoteroSyncing] = useState(false);
   const [zoteroStatus, setZoteroStatus] = useState<string | null>(null);
   const { addSources } = useSourceStore();
+  const encryptedStorage = useMemo(() => isEncrypted(), []);
 
   const handleZoteroSync = async () => {
     const zotero = settings.zotero;
@@ -119,7 +120,7 @@ export default function SettingsModal({ isOpen, onClose, settings, onUpdateSetti
               <div className="p-5 space-y-5">
                 {activeSection === 'provider' ? (
                   <>
-                    {!isEncrypted() && (
+                    {!encryptedStorage && (
                       <div role="alert" className="flex items-start gap-2 p-3 rounded-xl text-xs" style={{ background: 'rgba(217,119,6,0.08)', border: '1px solid rgba(217,119,6,0.25)', color: 'rgb(180,100,0)' }}>
                         <span aria-hidden="true" className="mt-0.5 shrink-0">⚠</span>
                         <span>API keys are stored unencrypted in browser localStorage. Use the desktop app for secure key storage.</span>
