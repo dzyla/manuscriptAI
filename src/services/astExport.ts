@@ -116,16 +116,16 @@ export function walkNode(node: PmNode, r: ASTRenderer, images?: Map<string, Imag
     case 'bulletList':
       return r.bulletList(
         (node.content ?? []).map(li => {
-          const firstPara = li.content?.find(c => c.type === 'paragraph');
-          return (firstPara?.content ?? []).map(c => walkNode(c, r, images));
+          const paras = (li.content ?? []).filter(c => c.type === 'paragraph');
+          return paras.flatMap(p => (p.content ?? []).map(c => walkNode(c, r, images)));
         })
       );
 
     case 'orderedList':
       return r.orderedList(
         (node.content ?? []).map(li => {
-          const firstPara = li.content?.find(c => c.type === 'paragraph');
-          return (firstPara?.content ?? []).map(c => walkNode(c, r, images));
+          const paras = (li.content ?? []).filter(c => c.type === 'paragraph');
+          return paras.flatMap(p => (p.content ?? []).map(c => walkNode(c, r, images)));
         })
       );
 
@@ -158,6 +158,9 @@ export function walkNode(node: PmNode, r: ASTRenderer, images?: Map<string, Imag
 
     case 'hardBreak':
       return r.hardBreak();
+
+    case 'figureLabel':
+      return r.text(`Figure ${(node.attrs?.num as number) ?? '?'}`, {});
 
     default:
       console.warn(`astExport: unknown node type "${node.type}", falling back to text`);
