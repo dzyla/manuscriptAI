@@ -95,34 +95,43 @@ function readSecureStore(): Record<string, string> {
 }
 
 function writeSecureStore(store: Record<string, string>): void {
-  fs.writeFileSync(getSecureStorePath(), JSON.stringify(store), 'utf-8');
+  const target = getSecureStorePath();
+  const tmp = target + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(store), { encoding: 'utf-8', mode: 0o600 });
+  fs.renameSync(tmp, target);
 }
 
 ipcMain.handle('secure-storage-set', (_event, { key, value }: { key: string; value: string }) => {
-  if (!safeStorage.isEncryptionAvailable()) {
-    const store = readSecureStore();
-    store[key] = value;
-    writeSecureStore(store);
-    return;
-  }
+  if (typeof key !== 'string' || typeof value !== 'string') return;
   const store = readSecureStore();
-  store[key] = safeStorage.encryptString(value).toString('base64');
+  if (safeStorage.isEncryptionAvailable()) {
+    store[key] = 'enc:' + safeStorage.encryptString(value).toString('base64');
+  } else {
+    store[key] = 'plain:' + value;
+  }
   writeSecureStore(store);
 });
 
 ipcMain.handle('secure-storage-get', (_event, { key }: { key: string }): string | null => {
+  if (typeof key !== 'string') return null;
   const store = readSecureStore();
   const raw = store[key];
   if (raw == null) return null;
-  if (!safeStorage.isEncryptionAvailable()) return raw;
-  try {
-    return safeStorage.decryptString(Buffer.from(raw, 'base64'));
-  } catch {
-    return null;
+  if (raw.startsWith('enc:')) {
+    try {
+      return safeStorage.decryptString(Buffer.from(raw.slice(4), 'base64'));
+    } catch {
+      return null;
+    }
   }
+  if (raw.startsWith('plain:')) {
+    return raw.slice(6);
+  }
+  return null;
 });
 
 ipcMain.handle('secure-storage-remove', (_event, { key }: { key: string }) => {
+  if (typeof key !== 'string') return;
   const store = readSecureStore();
   delete store[key];
   writeSecureStore(store);
