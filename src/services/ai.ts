@@ -671,25 +671,14 @@ async function callLLM(prompt: string, settings: AISettings, systemPrompt: strin
  */
 export async function generateCompletion(contextText: string, settings: AISettings, signal?: AbortSignal): Promise<string> {
   const system =
-    'You are an autocomplete engine for scientific manuscripts. ' +
-    'The user will provide the text they have written so far. ' +
-    'Reply with ONLY the next 1–3 sentences that continue it. ' +
-    'Never include labels, preamble, explanations, or any text other than the continuation itself.';
+    'You are a scientific manuscript autocomplete engine. ' +
+    'The user sends you manuscript text. Your entire response must be the continuation — nothing else. ' +
+    'Start immediately with the next word. No preamble, no analysis, no explanation, no labels, no reasoning. ' +
+    'Wrong: "Sure! The next sentence is: X." Right: "X."';
 
-  // Prompt ends with the manuscript text so the model's first output token
-  // is naturally the next word after the cursor.
-  const prompt = contextText;
+  const raw = await callLLM(contextText, settings, system, false, undefined, signal, 150);
 
-  const raw = await callLLM(prompt, settings, system, false, undefined, signal, 150);
-
-  // Strip preamble that small models sometimes emit despite instructions
-  // e.g. "Sure! Here's the continuation:", "Continuation:", blank lines
-  const stripped = raw
-    .replace(/^\s*[\w\s]*:\s*/i, '') // "Continuation: " / "Here's the continuation: "
-    .replace(/^(Sure|Of course|Certainly|Here|I'll)[^.!?\n]*[.!?]\s*/i, '') // "Sure! Here's what comes next."
-    .replace(/^\n+/, '');
-
-  return stripped;
+  return raw.trim();
 }
 
 export async function resolveConflicts(suggestions: Suggestion[], settings: AISettings): Promise<Suggestion[]> {
