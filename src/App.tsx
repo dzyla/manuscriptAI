@@ -793,6 +793,7 @@ export default function App() {
       const markdown = turndownService.turndown(currentContent);
       saveAs(new Blob([markdown], { type: 'text/markdown;charset=utf-8' }), `${title.replace(/\s+/g, '_')}.md`);
     } else if (format === 'docx') {
+      showToast('Exporting Word document...', 'info');
       try {
         const json = editorRef.current?.getJSON() ?? { type: 'doc', content: [] };
         const images = await prefetchImages(json as any);
@@ -806,6 +807,7 @@ export default function App() {
         console.error(err);
       }
     } else if (format === 'tex') {
+      showToast('Building LaTeX package...', 'info');
       try {
         const json = editorRef.current?.getJSON() ?? { type: 'doc', content: [] };
         const images = await prefetchImages(json as any);
@@ -1266,7 +1268,7 @@ export default function App() {
                 Cancel
               </button>
               <button
-                onClick={async () => { const fmt = pendingDownloadFormat; setPendingDownloadFormat(null); await doDownload(fmt); }}
+                onClick={async () => { const fmt = pendingDownloadFormat; if (!fmt) return; setPendingDownloadFormat(null); await doDownload(fmt); }}
                 className="flex-1 py-2 bg-stone-900 text-white rounded-xl text-xs font-semibold hover:bg-stone-800 transition-colors"
               >
                 I Acknowledge — Download
