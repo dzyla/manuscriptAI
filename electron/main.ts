@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, net } from 'electron';
+import { app, BrowserWindow, ipcMain, net, safeStorage } from 'electron';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -77,6 +78,54 @@ ipcMain.handle('net-get', async (_event, { url, headers }: {
   } catch (err) {
     return { ok: false, status: 0, text: '', error: String(err) };
   }
+});
+
+// Secure storage: encrypt/decrypt API keys using OS keychain via safeStorage
+function getSecureStorePath(): string {
+  return path.join(app.getPath('userData'), 'secure-store.json');
+}
+
+function readSecureStore(): Record<string, string> {
+  try {
+    const raw = fs.readFileSync(getSecureStorePath(), 'utf-8');
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+function writeSecureStore(store: Record<string, string>): void {
+  fs.writeFileSync(getSecureStorePath(), JSON.stringify(store), 'utf-8');
+}
+
+ipcMain.handle('secure-storage-set', (_event, { key, value }: { key: string; value: string }) => {
+  if (!safeStorage.isEncryptionAvailable()) {
+    const store = readSecureStore();
+    store[key] = value;
+    writeSecureStore(store);
+    return;
+  }
+  const store = readSecureStore();
+  store[key] = safeStorage.encryptString(value).toString('base64');
+  writeSecureStore(store);
+});
+
+ipcMain.handle('secure-storage-get', (_event, { key }: { key: string }): string | null => {
+  const store = readSecureStore();
+  const raw = store[key];
+  if (raw == null) return null;
+  if (!safeStorage.isEncryptionAvailable()) return raw;
+  try {
+    return safeStorage.decryptString(Buffer.from(raw, 'base64'));
+  } catch {
+    return null;
+  }
+});
+
+ipcMain.handle('secure-storage-remove', (_event, { key }: { key: string }) => {
+  const store = readSecureStore();
+  delete store[key];
+  writeSecureStore(store);
 });
 
 app.whenReady().then(createWindow);

@@ -6,4 +6,10 @@ contextBridge.exposeInMainWorld('electron', {
   netPost: (url, headers, body) => ipcRenderer.invoke('net-post', { url, headers, body }),
   // CORS-free GET via Electron main process
   netGet: (url, headers) => ipcRenderer.invoke('net-get', { url, headers }),
+  // Encrypted key storage via OS keychain (safeStorage)
+  secureStorage: {
+    get: (key) => ipcRenderer.invoke('secure-storage-get', { key }),
+    set: (key, value) => ipcRenderer.invoke('secure-storage-set', { key, value }),
+    remove: (key) => ipcRenderer.invoke('secure-storage-remove', { key }),
+  },
 });
