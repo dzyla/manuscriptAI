@@ -2,23 +2,21 @@
 import JSZip from 'jszip';
 import type { ASTRenderer, Marks, ImageMeta } from './astExport';
 
-const LATEX_ESCAPE: Array<[RegExp, string]> = [
-  [/\\/g,  '\\textbackslash{}'],
-  [/&/g,   '\\&'],
-  [/%/g,   '\\%'],
-  [/\$/g,  '\\$'],
-  [/#/g,   '\\#'],
-  [/_/g,   '\\_'],
-  [/\{/g,  '\\{'],
-  [/\}/g,  '\\}'],
-  [/~/g,   '\\textasciitilde{}'],
-  [/\^/g,  '\\textasciicircum{}'],
-];
+const ESC_MAP: Record<string, string> = {
+  '\\': '\\textbackslash{}',
+  '&':  '\\&',
+  '%':  '\\%',
+  '$':  '\\$',
+  '#':  '\\#',
+  '_':  '\\_',
+  '{':  '\\{',
+  '}':  '\\}',
+  '~':  '\\textasciitilde{}',
+  '^':  '\\textasciicircum{}',
+};
 
 function esc(s: string): string {
-  let out = s;
-  for (const [re, replacement] of LATEX_ESCAPE) out = out.replace(re, replacement);
-  return out;
+  return s.replace(/[\\&%$#_{}~^]/g, ch => ESC_MAP[ch]);
 }
 
 export class LatexRenderer implements ASTRenderer {
@@ -40,9 +38,9 @@ export class LatexRenderer implements ASTRenderer {
       `\\documentclass[12pt]{article}`,
       `\\usepackage[margin=1in]{geometry}`,
       `\\usepackage{graphicx}`,
-      `\\usepackage{hyperref}`,
       `\\usepackage{amsmath}`,
       `\\usepackage{ulem}`,
+      `\\usepackage{hyperref}`,
       hasFigures ? `% Place the extracted figures/ folder next to this .tex file before compiling.` : '',
       `\\title{${esc(this.title)}}`,
       `\\author{}`,
@@ -95,28 +93,32 @@ export class LatexRenderer implements ASTRenderer {
 
   resizableImage(src: string, alt: string, widthAttr: string, meta?: ImageMeta): string {
     this.figureIndex++;
-    const figName = `figure-${this.figureIndex}.png`;
+    const figName = `figure-${this.figureIndex}`;
 
-    if (meta?.buffer && meta.buffer.byteLength > 0) {
-      this.zip.folder('figures')!.file(figName, meta.buffer);
+    if (!meta?.buffer || meta.buffer.byteLength === 0) {
+      return `% [image ${figName} unavailable — not included in zip]`;
     }
+
+    const ext = (meta.mimeType.includes('jpeg') || meta.mimeType.includes('jpg')) ? 'jpg' : 'png';
+    const fullFigName = `${figName}.${ext}`;
+    this.zip.folder('figures')!.file(fullFigName, meta.buffer);
 
     // Parse width: "400px" → fraction of \textwidth, "100%" → \textwidth, unknown → 0.8\textwidth
     let widthSpec = '0.8\\textwidth';
     if (widthAttr.endsWith('%')) {
-      const pct = parseFloat(widthAttr) / 100;
+      const pct = Math.min(parseFloat(widthAttr) / 100, 1.0);
       widthSpec = `${pct.toFixed(2)}\\textwidth`;
     } else if (widthAttr.endsWith('px')) {
       const px = parseInt(widthAttr);
       // Approximate: 600px ≈ \textwidth on a standard 6-inch text block
-      const frac = Math.min(px / 600, 1.0);
+      const frac = Math.min(Math.max(px / 600, 0), 1.0);
       widthSpec = `${frac.toFixed(2)}\\textwidth`;
     }
 
     return [
       `\\begin{figure}[htbp]`,
       `  \\centering`,
-      `  \\includegraphics[width=${widthSpec}]{figures/${figName}}`,
+      `  \\includegraphics[width=${widthSpec}]{figures/${fullFigName}}`,
       alt ? `  \\caption{${esc(alt)}}` : '',
       `\\end{figure}`,
     ].filter(Boolean).join('\n');
