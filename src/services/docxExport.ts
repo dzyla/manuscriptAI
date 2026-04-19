@@ -10,6 +10,14 @@ export { Packer };
 
 const ORDERED_LIST_REF = 'ordered-list-1';
 
+function getDocxImageType(mimeType: string): 'jpg' | 'png' | 'gif' | 'bmp' | null {
+  if (mimeType.includes('jpeg')) return 'jpg';
+  if (mimeType.includes('png'))  return 'png';
+  if (mimeType.includes('gif'))  return 'gif';
+  if (mimeType.includes('bmp'))  return 'bmp';
+  return null; // unsupported (e.g. webp)
+}
+
 export class DocxRenderer implements ASTRenderer {
   private title: string;
   private images: Map<string, ImageMeta>;
@@ -75,9 +83,13 @@ export class DocxRenderer implements ASTRenderer {
   }
 
   citationNode(nums: number[]): TextRun {
-    const label = nums.length === 0 ? '[?]'
-      : nums.length === 1 ? `[${nums[0]}]`
-      : `[${nums[0]}–${nums[nums.length - 1]}]`;
+    if (nums.length === 0) return new TextRun({ text: '[?]' });
+    const sorted = [...nums].sort((a, b) => a - b);
+    if (sorted.length === 1) return new TextRun({ text: `[${sorted[0]}]` });
+    const isConsecutive = sorted.every((n, i) => i === 0 || n === sorted[i - 1] + 1);
+    const label = isConsecutive
+      ? `[${sorted[0]}–${sorted[sorted.length - 1]}]`
+      : `[${sorted.join(',')}]`;
     return new TextRun({ text: label });
   }
 
@@ -112,14 +124,17 @@ export class DocxRenderer implements ASTRenderer {
     const displayWidth = (!isNaN(parsedPx) && parsedPx > 0 && !widthAttr.includes('%'))
       ? Math.min(parsedPx, 600)
       : 500;
-    const aspectRatio = meta.height > 0 ? meta.height / meta.width : 0.75;
+    const aspectRatio = (meta.height > 0 && meta.width > 0) ? meta.height / meta.width : 0.75;
     const displayHeight = Math.round(displayWidth * aspectRatio);
-    const ext = meta.mimeType.includes('jpeg') ? 'jpg' : 'png';
+    const docxType = getDocxImageType(meta.mimeType);
+    if (!docxType) {
+      return new Paragraph({ children: [new TextRun({ text: '[image — unsupported format for Word export (convert to PNG/JPG)]', italics: true })] });
+    }
 
     return new Paragraph({
       children: [
         new ImageRun({
-          type: ext,
+          type: docxType,
           data: new Uint8Array(meta.buffer),
           transformation: { width: displayWidth, height: displayHeight },
         }),
