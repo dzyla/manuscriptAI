@@ -342,9 +342,11 @@ async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: 
     messages,
     temperature: 0.3,
     max_tokens: maxTokens ?? 4096,
-    // Disable extended thinking for models that support the flag (e.g. Qwen3 via LMStudio).
-    // Prevents the model from emitting its reasoning chain in the content field.
+    // Disable thinking/reasoning mode for models that support these flags.
+    // enable_thinking: false → LM Studio (Qwen3, etc.)
+    // think: false          → Ollama (Gemma, QwQ, etc.)
     enable_thinking: false,
+    think: false,
   });
 
   const headers: Record<string, string> = {
@@ -362,12 +364,14 @@ async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: 
         // content may be empty on reasoning models (e.g. nemotron, deepseek-r1) when the
         // thinking chain exhausts the token budget — fall back to reasoning_content in that case
         const rawContent: string = data.choices?.[0]?.message?.content || '';
-        const reasoningContent: string = data.choices?.[0]?.message?.reasoning_content || '';
         // Strip inline thinking blocks emitted by reasoning models (e.g. <think>…</think>,
-        // "Thinking Process: …" preambles). Some LMStudio models embed these in the content field.
+        // "Thinking Process: …" preambles). Some LMStudio/Ollama models embed these in content.
         const msgContent = stripThinkingBlocks(rawContent);
         if (msgContent) return msgContent;
-        if (reasoningContent) return reasoningContent;
+        // Only fall back to reasoning_content when content was genuinely absent (not when it was
+        // stripped because it was pure thinking — in that case reasoning_content IS the thinking).
+        const reasoningContent: string = data.choices?.[0]?.message?.reasoning_content || '';
+        if (reasoningContent && !rawContent) return reasoningContent;
         if (data.output && Array.isArray(data.output)) {
           const messageNode = data.output.find((o: any) => o.type === 'message') || data.output[data.output.length - 1];
           if (messageNode?.content) return messageNode.content;
