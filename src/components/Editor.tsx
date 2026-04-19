@@ -55,6 +55,7 @@ export interface EditorRef {
   revertSuggestion: (originalText: string, suggestedText: string) => boolean;
   scrollToSuggestion: (text: string, id: string) => void;
   getHTML: () => string;
+  getJSON: () => Record<string, unknown>;
   setContent: (html: string) => void;
   getSelectedText: () => string;
   getCurrentSection: () => string | null;
@@ -784,6 +785,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
       }
     },
     getHTML: () => editor?.getHTML() || '',
+    getJSON: () => editor?.getJSON() ?? { type: 'doc', content: [] },
     setContent: (html: string) => {
       if (!editor) return;
       isExternalUpdate.current = true;

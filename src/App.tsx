@@ -17,6 +17,9 @@ import { useAIStore } from './stores/useAIStore';
 import { useSourceStore } from './stores/useSourceStore';
 import { db } from './db/manuscriptDb';
 import { migrateLegacyCitations } from './utils/migrateCitations';
+import { prefetchImages, walkNode } from './services/astExport';
+import { DocxRenderer, Packer } from './services/docxExport';
+import { LatexRenderer } from './services/latexExport';
 
 const stripHtml = (html: string) => html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
 
@@ -790,25 +793,30 @@ export default function App() {
       const markdown = turndownService.turndown(currentContent);
       saveAs(new Blob([markdown], { type: 'text/markdown;charset=utf-8' }), `${title.replace(/\s+/g, '_')}.md`);
     } else if (format === 'docx') {
-      saveAs(new Blob([currentContent], { type: 'application/msword' }), `${title.replace(/\s+/g, '_')}.doc`);
-    } else if (format === 'tex') {
-      setIsAnalyzing(true);
-      showToast('Converting to LaTeX...', 'info');
       try {
-        const turndownService = new TurndownService();
-        const markdown = turndownService.turndown(currentContent);
-        // Fallback to simple LLM conversion to avoid heavy pandoc-wasm dependency
-        const { chatWithAgent } = await import('./services/ai');
-        const prompt = "Convert the following academic manuscript (Markdown) into a clean, well-structured LaTeX document suitable for a generic academic journal. Include a preamble with standard packages (article class, geometry, graphicx, hyperref). Put the title as '"+title+"'. Ensure all sections, bolding, italics, and lists are properly converted. Return ONLY the raw LaTeX code, starting with \\documentclass and ending with \\end{document}.";
-        const result = await chatWithAgent(prompt, markdown, 'editor', aiSettings);
-        let tex = result.text.replace(/```(latex|tex)?\n/g, '').replace(/\n```/g, '');
-        saveAs(new Blob([tex], { type: 'application/x-tex' }), `${title.replace(/\s+/g, '_')}.tex`);
-        showToast('LaTeX conversion complete', 'success');
+        const json = editorRef.current?.getJSON() ?? { type: 'doc', content: [] };
+        const images = await prefetchImages(json as any);
+        const renderer = new DocxRenderer({ title, images });
+        const doc = walkNode(json as any, renderer, images) as ReturnType<DocxRenderer['doc']>;
+        const blob = await Packer.toBlob(doc);
+        saveAs(blob, `${title.replace(/\s+/g, '_')}.docx`);
+        showToast('Word document exported', 'success');
       } catch (err) {
-        showToast('LaTeX conversion failed', 'error');
+        showToast('Word export failed', 'error');
         console.error(err);
-      } finally {
-        setIsAnalyzing(false);
+      }
+    } else if (format === 'tex') {
+      try {
+        const json = editorRef.current?.getJSON() ?? { type: 'doc', content: [] };
+        const images = await prefetchImages(json as any);
+        const renderer = new LatexRenderer({ title, images });
+        const zip = walkNode(json as any, renderer, images) as ReturnType<LatexRenderer['doc']>;
+        const blob = await zip.generateAsync({ type: 'blob' });
+        saveAs(blob, `${title.replace(/\s+/g, '_')}.zip`);
+        showToast('LaTeX package exported', 'success');
+      } catch (err) {
+        showToast('LaTeX export failed', 'error');
+        console.error(err);
       }
     } else {
       // Read directly from memory state — always current, no race with the Dexie write interval
@@ -922,7 +930,7 @@ export default function App() {
                 </button>
                 <button onClick={() => handleDownload('md')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>Export Markdown</button>
                 <button onClick={() => handleDownload('docx')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>Export Word</button>
-                <button onClick={() => handleDownload('tex')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>AI Convert to LaTeX</button>
+                <button onClick={() => handleDownload('tex')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>Export to LaTeX (.zip)</button>
                 <button onClick={() => handleDownload('json')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg font-medium" style={{ color: 'var(--text-primary)' }}>Save Workspace</button>
               </div>
               <input type="file" ref={fileInputRef} onChange={handleLoadWorkspace} accept=".json,.docx,.md,.txt" className="hidden" />
