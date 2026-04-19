@@ -405,12 +405,24 @@ async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: 
     return null;
   }
 
+  // 3-minute per-endpoint timeout; surfaces as a clear message when context is too long
+  const LOCAL_LLM_TIMEOUT_MS = 3 * 60 * 1000;
+
   let lastError = '';
   for (const ep of endpoints) {
     const isLmStudioChat = ep === lmStudioEndpoint;
     const body = isLmStudioChat ? lmStudioBody : openAIBody;
+
+    const timeoutCtrl = new AbortController();
+    const timeoutId = setTimeout(() => timeoutCtrl.abort(), LOCAL_LLM_TIMEOUT_MS);
+    // Combine user abort signal with timeout
+    const abortHandler = () => timeoutCtrl.abort();
+    signal?.addEventListener('abort', abortHandler);
+
     try {
-      const response = await fetch(ep, { method: 'POST', headers, body, signal });
+      const response = await fetch(ep, { method: 'POST', headers, body, signal: timeoutCtrl.signal });
+      clearTimeout(timeoutId);
+      signal?.removeEventListener('abort', abortHandler);
 
       if (response.ok) {
         const data = await response.json();
@@ -427,15 +439,32 @@ async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: 
         }
         return JSON.stringify(data);
       } else {
-        lastError = `${ep} returned ${response.status}`;
+        // Read the error body so callers get the real reason (context too long, auth, etc.)
+        let errDetail = '';
+        try {
+          const errBody = await response.json();
+          errDetail = errBody.error?.message || errBody.message || errBody.detail || '';
+        } catch (_) {
+          try { errDetail = (await response.text()).slice(0, 300); } catch (_2) {}
+        }
+        lastError = `${ep} returned HTTP ${response.status}${errDetail ? `: ${errDetail}` : ''}`;
       }
-    } catch (e) {
-      lastError = `${ep}: ${e instanceof Error ? e.message : 'connection failed'}`;
+    } catch (e: any) {
+      clearTimeout(timeoutId);
+      signal?.removeEventListener('abort', abortHandler);
+      const isTimeout = timeoutCtrl.signal.aborted && !signal?.aborted;
+      if (isTimeout) {
+        lastError = `${ep}: Request timed out after ${LOCAL_LLM_TIMEOUT_MS / 1000}s — text is likely too long for this model's context window`;
+      } else if (signal?.aborted) {
+        throw e; // user cancellation — propagate immediately
+      } else {
+        lastError = `${ep}: ${e instanceof Error ? e.message : 'connection failed'}`;
+      }
       continue;
     }
   }
 
-  throw new Error(`Could not connect to local LLM. Tried: ${endpoints.join(', ')}. Last error: ${lastError}`);
+  throw new Error(`Local LLM unreachable. Last error: ${lastError}`);
 }
 
 /**
@@ -903,7 +932,28 @@ async function repairJSONWithLLM(rawText: string, settings: AISettings): Promise
   }
 }
 
-export async function analyzeText(text: string, agent: AgentType, settings: AISettings, existingSuggestions: Suggestion[] = [], onProgress?: (msg: string) => void, htmlContent?: string, signal?: AbortSignal): Promise<{ suggestions: Suggestion[], status: 'ok' | 'no_suggestions' | 'parsing_failed' }> {
+/** Translate a raw LLM error message into a human-readable diagnosis. */
+function classifyLLMError(err: unknown): string {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  if (msg.includes('timed out') || msg.includes('timeout'))
+    return 'Request timed out — text is too long for this model\'s context window. Reduce document size or switch to a model with a larger context.';
+  if (msg.includes('context') && (msg.includes('long') || msg.includes('exceed') || msg.includes('limit') || msg.includes('length')))
+    return 'Text exceeds model context window. Reduce document size or use a larger-context model.';
+  if (msg.includes('unreachable') || msg.includes('could not connect') || msg.includes('connection refused') || msg.includes('econnrefused') || msg.includes('failed to fetch'))
+    return 'Local LLM server not reachable. Check that the server is running and the URL is correct.';
+  if (msg.includes('401') || msg.includes('unauthorized') || msg.includes('forbidden'))
+    return 'Authentication failed — check the API key in settings.';
+  if (msg.includes('http 413') || msg.includes('payload too large') || msg.includes('request entity too large'))
+    return 'Text is too long for this model\'s context window (HTTP 413).';
+  if (msg.includes('http 5'))
+    return `Server error — ${(err instanceof Error ? err.message : String(err)).slice(0, 120)}`;
+  // Strip boilerplate prefix and return the raw detail
+  return (err instanceof Error ? err.message : String(err))
+    .replace(/^Local LLM unreachable\.\s*Last error:\s*/i, '')
+    .slice(0, 200);
+}
+
+export async function analyzeText(text: string, agent: AgentType, settings: AISettings, existingSuggestions: Suggestion[] = [], onProgress?: (msg: string) => void, htmlContent?: string, signal?: AbortSignal): Promise<{ suggestions: Suggestion[], status: 'ok' | 'no_suggestions' | 'parsing_failed' | 'server_error', errorMessage?: string }> {
   const activePrompt = settings.customPrompts?.[agent] || DEFAULT_AGENT_PROMPTS[agent];
 
   let existingContext = '';
@@ -1050,7 +1100,20 @@ Provide 8-15 highly specific suggestions. Each originalText MUST be an exact quo
       status: result.length > 0 ? 'ok' : 'no_suggestions' 
     };
   } catch (e) {
-    // Last-resort: try repairing via LLM before declaring total failure
+    // Propagate user cancellation immediately
+    if ((e as any)?.name === 'AbortError') throw e;
+
+    const errMsg = e instanceof Error ? e.message : String(e);
+    // Server/connectivity errors: JSON repair is pointless, surface the real reason
+    const isServerError = errMsg.includes('unreachable') || errMsg.includes('timed out') ||
+      errMsg.includes('context') || errMsg.includes('HTTP 4') || errMsg.includes('HTTP 5') ||
+      errMsg.includes('connection') || errMsg.includes('fetch');
+    if (isServerError) {
+      console.error(`Server error for agent ${agent}:`, errMsg);
+      return { suggestions: [], status: 'server_error', errorMessage: classifyLLMError(e) };
+    }
+
+    // Last-resort: try repairing malformed JSON via LLM
     try {
       const textResponse = await callLLM(prompt, settings, activePrompt, true);
       const repaired = await repairJSONWithLLM(textResponse, settings);

@@ -264,7 +264,9 @@ export default function App() {
           setAnalysisProgress(prev ? { ...prev, agent: `${AGENT_INFO[specificAgent].label} — ${msg}` } : null);
         }, htmlContent, signal);
 
-        if (result.status === 'parsing_failed') {
+        if (result.status === 'server_error') {
+          showToast(`✕ ${AGENT_INFO[specificAgent].label}: ${result.errorMessage ?? 'Server error'}`, 'error');
+        } else if (result.status === 'parsing_failed') {
           showToast(`⚠ ${AGENT_INFO[specificAgent].label}: Response wasn't valid JSON. Try a larger model or cloud API.`, 'error');
         } else if (result.status === 'no_suggestions') {
           showToast(`${AGENT_INFO[specificAgent].label} found no issues — nice work!`, 'info');
@@ -286,12 +288,15 @@ export default function App() {
         
         let totalNew = 0;
         let combinedSuggestions: Suggestion[] = [];
-        let failures: string[] = [];
+        let parseFailures: string[] = [];
+        let serverErrors: { label: string; msg: string }[] = [];
         let zeroes: string[] = [];
 
         results.forEach((res, idx) => {
-          if (res.status === 'parsing_failed') failures.push(AGENT_INFO[agentsToRun[idx]].label);
-          else if (res.status === 'no_suggestions') zeroes.push(AGENT_INFO[agentsToRun[idx]].label);
+          const label = AGENT_INFO[agentsToRun[idx]].label;
+          if (res.status === 'server_error') serverErrors.push({ label, msg: res.errorMessage ?? 'Server error' });
+          else if (res.status === 'parsing_failed') parseFailures.push(label);
+          else if (res.status === 'no_suggestions') zeroes.push(label);
           combinedSuggestions = [...combinedSuggestions, ...res.suggestions];
         });
 
@@ -310,16 +315,19 @@ export default function App() {
           }).catch(() => {});
         }
 
-        // Provide clear feedback
-        const msgs: string[] = [];
-        if (totalNew > 0) msgs.push(`${totalNew} suggestions found`);
-        if (failures.length > 0) msgs.push(`JSON parse failed: ${failures.join(', ')}`);
-        if (zeroes.length > 0 && totalNew === 0) msgs.push(`No issues found by: ${zeroes.join(', ')}`);
-        
-        if (failures.length > 0) {
-          showToast(msgs.join(' · '), 'error');
+        // Surface failures with specific diagnostics
+        if (serverErrors.length > 0) {
+          // All server errors share the same root cause — show it once with agent list
+          const agentList = serverErrors.map(e => e.label).join(', ');
+          const diagnosis = serverErrors[0].msg; // root cause is the same for all
+          const prefix = totalNew > 0 ? `${totalNew} suggestions found · ` : '';
+          showToast(`${prefix}✕ ${agentList}: ${diagnosis}`, 'error');
+        } else if (parseFailures.length > 0) {
+          const prefix = totalNew > 0 ? `${totalNew} suggestions found · ` : '';
+          showToast(`${prefix}⚠ JSON parse failed: ${parseFailures.join(', ')}. Try a larger model or cloud API.`, 'error');
         } else if (totalNew > 0) {
-          showToast(msgs.join(' · '), 'success');
+          const zeroNote = zeroes.length > 0 ? ` · No issues from: ${zeroes.join(', ')}` : '';
+          showToast(`${totalNew} suggestions found${zeroNote}`, 'success');
         } else {
           showToast('No suggestions from any agent. Your text looks good!', 'info');
         }
