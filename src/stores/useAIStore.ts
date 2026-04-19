@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { db } from '../db/manuscriptDb';
 import type { AISettings, Suggestion, Message, HistoryItem } from '../types';
+import * as secureStorage from '../services/secureStorage';
 
 const DEFAULT_AI_SETTINGS: AISettings = {
   provider: 'local',
@@ -102,8 +103,10 @@ export const useAIStore = create<AIState>((set, get) => ({
 
   initialize: async () => {
     try {
-      // Load AI settings from localStorage
-      const settingsJson = localStorage.getItem('manuscript-ai-settings');
+      // One-time migration from localStorage → encrypted Electron store
+      await secureStorage.migrateFromLocalStorage('manuscript-ai-settings');
+      // Load AI settings from secure storage (encrypted in Electron, localStorage in browser)
+      const settingsJson = await secureStorage.getItem('manuscript-ai-settings');
       if (settingsJson) {
         try {
           const saved = JSON.parse(settingsJson);
@@ -149,7 +152,7 @@ export const useAIStore = create<AIState>((set, get) => ({
           if (data.aiSettings) {
             const merged = { ...DEFAULT_AI_SETTINGS, ...data.aiSettings };
             set({ aiSettings: merged });
-            localStorage.setItem('manuscript-ai-settings', JSON.stringify(merged));
+            await secureStorage.setItem('manuscript-ai-settings', JSON.stringify(merged));
           }
         }
       }

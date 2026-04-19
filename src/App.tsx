@@ -20,6 +20,7 @@ import { migrateLegacyCitations } from './utils/migrateCitations';
 import { prefetchImages, walkNode } from './services/astExport';
 import { DocxRenderer, Packer } from './services/docxExport';
 import { LatexRenderer } from './services/latexExport';
+import * as secureStorage from './services/secureStorage';
 
 const stripHtml = (html: string) => html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
 
@@ -1215,7 +1216,7 @@ export default function App() {
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         settings={aiSettings}
-        onUpdateSettings={(s) => { setAiSettings(s); localStorage.setItem('manuscript-ai-settings', JSON.stringify(s)); }}
+        onUpdateSettings={(s) => { setAiSettings(s); secureStorage.setItem('manuscript-ai-settings', JSON.stringify(s)); }}
       />
       <PostDraftingView
         isOpen={isPostDraftingOpen}
