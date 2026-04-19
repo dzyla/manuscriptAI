@@ -1,6 +1,7 @@
 import { motion, AnimatePresence } from 'motion/react';
 import { X, Settings, Server, Zap, RotateCcw, Cloud, BookMarked, RefreshCw } from 'lucide-react';
 import { AISettings, AgentType } from '../types';
+import { isEncrypted } from '../services/secureStorage';
 import { DEFAULT_AGENT_PROMPTS, AGENT_INFO, AGENT_ICONS } from '../services/ai';
 import { useState, createElement } from 'react';
 import { fetchZoteroLibrary } from '../services/zotero';
@@ -118,6 +119,12 @@ export default function SettingsModal({ isOpen, onClose, settings, onUpdateSetti
               <div className="p-5 space-y-5">
                 {activeSection === 'provider' ? (
                   <>
+                    {!isEncrypted() && (
+                      <div className="flex items-start gap-2 p-3 rounded-xl text-xs" style={{ background: 'rgba(217,119,6,0.08)', border: '1px solid rgba(217,119,6,0.25)', color: 'rgb(180,100,0)' }}>
+                        <span className="mt-0.5 shrink-0">⚠</span>
+                        <span>API keys are stored unencrypted in browser localStorage. Use the desktop app for secure key storage.</span>
+                      </div>
+                    )}
                     <div className="space-y-3">
                       <label className="text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>Provider</label>
                       <div className="grid grid-cols-4 gap-2">
