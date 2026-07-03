@@ -10,7 +10,7 @@ import { expandCitationNums, formatCitationGroup, mergeAdjacentCitations } from 
 import { analyzeText, chatWithAgent, chatWithManuscript, resolveConflicts, runJudgeAgent, rebutSuggestion, manuscriptSummary, rewriteSection, transformWithInstruction, analyzeSourceAgainstManuscript, verifyClaimAgainstSources, AGENT_INFO, AGENT_ICONS, estimateTokens } from './services/ai';
 import { findTextSpan } from './utils/textMatch';
 import { setDocumentContext } from './services/ai';
-import { GrantTemplatePicker, GrantInstructionsModal, GrantBudgetStrip } from './components/GrantPanel';
+import { GrantTemplatePicker, GrantInstructionsModal, GrantToolbar } from './components/GrantPanel';
 import type { GrantTemplate } from './services/grantTemplates';
 import { Sparkles, FileText, Settings, Download, Keyboard, Eye, Moon, Sun, ChevronDown, FilePlus, Coins, BookOpen, Github, Square } from 'lucide-react';
 import { saveAs } from 'file-saver';
@@ -1060,26 +1060,6 @@ export default function App() {
               </button>
             </div>
 
-            {mode === 'grant' && (
-              <>
-                <button
-                  onClick={() => setShowTemplatePicker(true)}
-                  className="px-2 py-1 text-[10px] font-semibold rounded-lg border shrink-0 hover:bg-stone-50 transition-colors"
-                  style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
-                  title="Start from an NIH grant template"
-                >
-                  Template
-                </button>
-                <button
-                  onClick={() => setShowGrantInstructions(true)}
-                  className={`px-2 py-1 text-[10px] font-semibold rounded-lg border shrink-0 hover:bg-stone-50 transition-colors ${grantInstructions.trim() ? 'text-emerald-700 border-emerald-300' : ''}`}
-                  style={grantInstructions.trim() ? {} : { borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
-                  title={grantInstructions.trim() ? 'Funder instructions active — all agents follow them' : 'Add funder instructions for the AI agents to follow'}
-                >
-                  Instructions{grantInstructions.trim() ? ' ✓' : ''}
-                </button>
-              </>
-            )}
             <div className="flex-1" />
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -1200,8 +1180,16 @@ export default function App() {
           </div>
         </header>
 
-        {/* Grant page-budget strip */}
-        {mode === 'grant' && <GrantBudgetStrip htmlContent={content} templateId={grantTemplateId} />}
+        {/* Grant toolbar: templates, funder instructions, page budgets */}
+        {mode === 'grant' && (
+          <GrantToolbar
+            htmlContent={content}
+            templateId={grantTemplateId}
+            hasInstructions={grantInstructions.trim().length > 0}
+            onOpenTemplates={() => setShowTemplatePicker(true)}
+            onOpenInstructions={() => setShowGrantInstructions(true)}
+          />
+        )}
 
         {/* Editor Area */}
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 md:p-8" style={{ background: 'var(--surface-0)' }}>

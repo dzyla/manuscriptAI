@@ -141,20 +141,20 @@ export function GrantInstructionsModal({ value, onSave, onClose }: InstructionsM
   );
 }
 
-// ─── Per-section page-budget strip ────────────────────────────────────────────
+// ─── Grant toolbar: template/instructions buttons + per-section page budgets ──
 
-interface BudgetStripProps {
+interface GrantToolbarProps {
   htmlContent: string;
   templateId: string | null;
+  hasInstructions: boolean;
+  onOpenTemplates: () => void;
+  onOpenInstructions: () => void;
 }
 
-export function GrantBudgetStrip({ htmlContent, templateId }: BudgetStripProps) {
+export function GrantToolbar({ htmlContent, templateId, hasInstructions, onOpenTemplates, onOpenInstructions }: GrantToolbarProps) {
   const template = getGrantTemplate(templateId);
-  if (!template) return null;
-
-  const docSections = detectH2Sections(htmlContent);
-  const budgeted = template.sections.filter(s => s.pageLimit);
-  if (budgeted.length === 0 || docSections.length === 0) return null;
+  const docSections = template ? detectH2Sections(htmlContent) : [];
+  const budgeted = template ? template.sections.filter(s => s.pageLimit) : [];
 
   const chips = budgeted.map(ts => {
     const match = docSections.find(ds => ds.section.toLowerCase() === ts.title.toLowerCase());
@@ -172,15 +172,33 @@ export function GrantBudgetStrip({ htmlContent, templateId }: BudgetStripProps) 
     );
   }).filter(Boolean);
 
-  if (chips.length === 0) return null;
-
   return (
     <div
-      className="flex items-center gap-4 px-4 sm:px-6 py-1 text-[10px] overflow-x-auto shrink-0"
+      className="flex items-center gap-2 px-4 sm:px-6 py-1.5 text-[10px] overflow-x-auto shrink-0"
       style={{ borderBottom: '1px solid var(--border-subtle)', background: 'var(--surface-2)' }}
     >
-      <span className="uppercase tracking-wider font-bold shrink-0" style={{ color: 'var(--text-muted)' }}>Page budget</span>
-      {chips}
+      <button
+        onClick={onOpenTemplates}
+        className="px-2 py-1 font-semibold rounded-lg border shrink-0 hover:bg-stone-50 transition-colors"
+        style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)', background: 'var(--surface-1)' }}
+        title="Start from an NIH grant template"
+      >
+        <span className="flex items-center gap-1"><FileText size={11} /> Template</span>
+      </button>
+      <button
+        onClick={onOpenInstructions}
+        className={`px-2 py-1 font-semibold rounded-lg border shrink-0 transition-colors ${hasInstructions ? 'text-emerald-700 border-emerald-300 bg-emerald-50 hover:bg-emerald-100' : 'hover:bg-stone-50'}`}
+        style={hasInstructions ? {} : { borderColor: 'var(--border)', color: 'var(--text-secondary)', background: 'var(--surface-1)' }}
+        title={hasInstructions ? 'Funder instructions active — all agents follow them' : 'Add funder instructions for the AI agents to follow'}
+      >
+        <span className="flex items-center gap-1"><ClipboardList size={11} /> Instructions{hasInstructions ? ' ✓' : ''}</span>
+      </button>
+      {chips.length > 0 && (
+        <>
+          <span className="uppercase tracking-wider font-bold shrink-0 ml-2" style={{ color: 'var(--text-muted)' }}>Page budget</span>
+          <div className="flex items-center gap-4">{chips}</div>
+        </>
+      )}
     </div>
   );
 }
