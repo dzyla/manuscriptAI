@@ -31,6 +31,9 @@ export interface PdfMatchScore {
 
 export type AIProvider = 'gemini' | 'openai' | 'anthropic' | 'local';
 
+/** Editing mode: manuscripts get journal-style agents, grants get NIH-style agents */
+export type DocumentMode = 'manuscript' | 'grant';
+
 export type SuggestionSeverity = 'critical' | 'major' | 'minor' | 'style';
 
 export type SuggestionCategory = 'grammar' | 'flow' | 'evidence' | 'impact' | 'clarity' | 'statistics' | 'citation' | 'structure' | 'style' | 'research';
@@ -124,6 +127,11 @@ export interface DocumentRow {
   figureRegistry: Record<string, number>;
   figureCounter: number;
   updatedAt: number;
+  mode?: DocumentMode;
+  /** Free-text funder guidelines (FOA notes, review criteria) injected into every prompt in grant mode */
+  grantInstructions?: string;
+  /** id of the grant template the document was created from (enables page-budget tracking) */
+  grantTemplateId?: string;
 }
 
 export interface SourceRow extends ManuscriptSource {

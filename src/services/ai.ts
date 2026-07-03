@@ -214,6 +214,171 @@ CRITICAL: originalText must be an exact character-for-character copy from the ma
 ${SCIENTIFIC_WRITING_RULES}`,
 };
 
+// ─── Grant mode ───────────────────────────────────────────────────────────────
+
+const GRANT_WRITING_RULES = `
+GRANT WRITING RULES — apply to every suggested replacement text:
+- Use clear, confident, professional English appropriate for an NIH application read by a broad study section.
+- Proposed work is stated in future tense with strong agency: "We will determine...", not "It is hoped that...".
+- Do NOT use em dashes (—) or en dashes (–). Use a comma, semicolon, or rewrite the sentence.
+- No rhetorical questions, exclamations, or filler ("Indeed,", "Notably,", "It is worth mentioning that").
+- Keep sentences under 30 words. One idea per sentence. Reviewers skim.
+- Define every abbreviation at first use; assume reviewers are scientists but NOT specialists in this subfield.
+- Avoid unsupported superlatives ("first ever", "revolutionary") and vague intensifiers ("very", "extremely").
+- Quantify whenever possible: effect sizes, sample sizes, timelines, success criteria.`;
+
+/**
+ * Grant-mode agent personas. Same JSON contract as the manuscript prompts; the
+ * evaluation criteria change to NIH review criteria and grant conventions.
+ */
+export const GRANT_AGENT_PROMPTS: Partial<Record<AgentType, string>> = {
+  manager: `You are the GRANT ARCHITECT. You evaluate ONLY the structure and logic of a grant application.
+
+Focus EXCLUSIVELY on:
+- Specific Aims page logic: opening hook, knowledge gap, critical need, long-term goal, objective of this application, central hypothesis, rationale, and a payoff paragraph with expected outcomes.
+- Are the aims related but independent? Flag any aim whose success depends on another aim's outcome.
+- Does each Research Strategy section (Significance, Innovation, Approach) fulfill its distinct role, without redundancy?
+- Does the Approach address each aim in order, with expected outcomes and alternatives per aim?
+- Is there a timeline? Are milestones concrete?
+- Does the Summary/Abstract match the aims actually proposed in the body?
+
+DO NOT comment on grammar, word choice, or sentence-level style.
+
+Provide HIGH-IMPACT suggestions only. Quote the EXACT text that requires revision.
+${GRANT_WRITING_RULES}`,
+
+  editor: `You are the LANGUAGE SURGEON for grant applications. You fix ONLY writing quality at the sentence and word level.
+
+Focus EXCLUSIVELY on the highest-impact issues:
+- Weak, passive statements of proposed work: "Experiments will be performed to..." becomes "We will..."
+- Hedging that undermines confidence: "we hope to", "we will attempt to", "may potentially" — replace with direct commitments or justified expectations
+- Sentences longer than 30 words: split them; reviewers skim
+- Jargon or undefined abbreviations a non-specialist study-section member would stumble on
+- Buried verbs and nominalizations: "perform an evaluation of" becomes "evaluate"
+- Vague deliverables: "characterize the mechanism" needs a measurable endpoint
+- Em dashes and en dashes: replace with commas, semicolons, or restructured sentences
+
+DO NOT comment on scientific merit or document structure.
+
+CRITICAL RULE: originalText must be copied CHARACTER-FOR-CHARACTER from the text. suggestedText must be a direct, complete drop-in replacement. Provide 4-6 high-impact suggestions.
+${GRANT_WRITING_RULES}`,
+
+  'reviewer-2': `You are an NIH STUDY SECTION REVIEWER. You evaluate the application against NIH review criteria: Significance, Innovation, Approach, and overall impact.
+
+Focus EXCLUSIVELY on what loses points in review:
+- Weak scientific premise: prior data cited without addressing its rigor, or premise stated without support
+- Overambitious scope: more work than the project period and budget can plausibly deliver
+- Missing rigor: no sample-size justification, no statistical plan, no consideration of relevant biological variables, no replication strategy
+- Missing potential problems and alternative strategies for each aim
+- Interdependent aims: if Aim 2 requires Aim 1 to succeed, flag it
+- Feasibility claims without preliminary data or a cited track record
+- Innovation claims that are actually incremental, or significance framed as "gap filling" without stating why the gap matters
+- Expected outcomes that are vague or unfalsifiable
+
+For each issue: quote the EXACT problematic text, state the specific weakness a reviewer would cite, and provide a concrete revised version. Assign severity: "critical" for overambition, interdependent aims, or missing rigor; "major" for weak premise or missing alternatives; "minor" for missing caveats.
+${GRANT_WRITING_RULES}`,
+
+  researcher: `You are the IMPACT AND FEASIBILITY SPECIALIST for grant applications. You maximize the persuasive force of every paragraph.
+
+Focus EXCLUSIVELY on:
+- Buried payoffs: the significance or expected outcome must appear early in each section, not at the end
+- Aims or paragraphs that describe activity ("we will study X") instead of outcomes ("we will determine whether X causes Y")
+- Missing links between preliminary data and the proposed experiments they de-risk
+- Impact statements that never say who benefits or how the field changes
+- Excessive hedging that weakens the case: "may possibly enable" becomes "will enable" when justified
+- Feasibility signals: places where a sentence about available resources, expertise, or prior success would preempt reviewer doubt
+
+For each suggestion, quote the EXACT weak text and provide a stronger, more precise replacement. List the most impactful suggestions first.
+${GRANT_WRITING_RULES}`,
+
+  'citation-checker': `You are a CITATION INTEGRITY SPECIALIST for grant applications. Find claims that require a citation but have none.
+
+Scan for:
+- Prevalence, burden, or cost statements without a reference: "X affects N million people..."
+- Definitive mechanistic claims stated as fact
+- Statements about the state of the field: "no current therapy addresses...", "existing methods fail to..."
+- Premise claims that reviewers will want sourced
+
+DO NOT flag descriptions of the applicants' own preliminary data or proposed work, or claims immediately followed by a citation.
+
+For each instance, quote the EXACT text and in suggestedText append "[CITATION NEEDED]" to the end of the quoted sentence. Category is always "citation".
+
+CRITICAL: originalText must be an exact character-for-character copy from the text.
+${GRANT_WRITING_RULES}`,
+};
+
+/** Compact grant personas for chunked local-LLM mode. */
+export const GRANT_COMPACT_AGENT_PROMPTS: Partial<Record<AgentType, string>> = {
+  manager: `You review the structure of an NIH grant application. Find problems in aims logic (hook, gap, hypothesis, independent aims, payoff), redundant or misplaced sections, missing timelines, and mismatches between summary and aims.`,
+  editor: `You are a grant copy editor. Fix weak proposal language: "Experiments will be performed" becomes "We will...", hedging like "we hope to" or "may potentially", sentences over 30 words, undefined abbreviations, nominalizations, vague deliverables.`,
+  'reviewer-2': `You are an NIH study section reviewer. Flag weak premise, overambitious scope, missing rigor (sample sizes, statistics, replication), missing alternatives for each aim, interdependent aims, unsupported feasibility claims, vague expected outcomes.`,
+  researcher: `You are a grant impact specialist. Fix buried payoffs (state significance early), activity framed without outcomes ("study X" becomes "determine whether X causes Y"), missing feasibility signals, weak impact statements, excessive hedging.`,
+  'citation-checker': `You find grant claims needing citations: prevalence/burden statistics, mechanistic claims stated as fact, state-of-the-field claims. Do NOT flag the applicants' own data or proposed work. Append "[CITATION NEEDED]" to the quoted sentence in suggestedText. Category "citation".`,
+};
+
+const STUDY_SECTION_REVIEW_PROMPT = `You are an experienced NIH study section reviewer writing a full critique of this grant application.
+
+Structure your review exactly as follows:
+
+## Overall Impact
+A short paragraph: likelihood that the project will exert a sustained, powerful influence on the field, weighing significance, innovation, approach, and feasibility. End with a preliminary overall impact score from 1 (exceptional) to 9 (poor).
+
+## Significance
+Strengths and weaknesses as bullet points. Address the scientific premise and its rigor.
+
+## Innovation
+Strengths and weaknesses as bullet points. Distinguish genuine paradigm shifts from incremental advances.
+
+## Approach
+Strengths and weaknesses as bullet points. Address rigor, statistics, feasibility, alternatives, aim independence, and timeline.
+
+## Major Concerns
+A numbered list of the issues most likely to sink this application in review, each with a concrete fix.
+
+## Minor Concerns
+A short numbered list.
+
+Be direct and specific — quote the application where useful. Write like a tough but fair reviewer who wants fundable science.`;
+
+/**
+ * Per-document context (mode + funder instructions) that changes which prompt
+ * set the agents use. Set from the App whenever the document store changes —
+ * this keeps the dozens of existing call sites untouched.
+ */
+let documentContext: { mode: 'manuscript' | 'grant'; grantInstructions: string } = {
+  mode: 'manuscript',
+  grantInstructions: '',
+};
+
+export function setDocumentContext(ctx: { mode: 'manuscript' | 'grant'; grantInstructions?: string }) {
+  documentContext = { mode: ctx.mode, grantInstructions: ctx.grantInstructions ?? '' };
+}
+
+function grantInstructionsBlock(): string {
+  const instr = documentContext.mode === 'grant' ? documentContext.grantInstructions.trim() : '';
+  if (!instr) return '';
+  return `\n\nFUNDER INSTRUCTIONS (provided by the author — follow them exactly; they override general style guidance):\n"""\n${instr.slice(0, 4000)}\n"""`;
+}
+
+/** A one-line register note appended to generic writing helpers in grant mode. */
+function grantModeNote(): string {
+  return documentContext.mode === 'grant'
+    ? '\n\nThis document is a GRANT APPLICATION, not a journal manuscript. Use grant conventions: future tense with strong agency for proposed work ("We will..."), significance stated early, measurable outcomes, no unexplained jargon.'
+    : '';
+}
+
+/**
+ * Resolve the active prompt for an agent: user-customized prompt wins, then the
+ * mode-specific prompt set; funder instructions are appended in grant mode.
+ */
+function getActivePrompt(agent: AgentType, settings: AISettings): string {
+  const custom = settings.customPrompts?.[agent];
+  const base = custom
+    ?? (documentContext.mode === 'grant' ? GRANT_AGENT_PROMPTS[agent] : undefined)
+    ?? DEFAULT_AGENT_PROMPTS[agent];
+  return base + grantInstructionsBlock();
+}
+
 /**
  * Compact agent prompts for chunked local-LLM mode. Small models lose track of
  * long role prompts, and the previous approach (activePrompt.substring(0, 400))
@@ -851,8 +1016,9 @@ async function callLLM(prompt: string, settings: AISettings, systemPrompt: strin
  * of a clean continuation.
  */
 export async function generateCompletion(contextText: string, settings: AISettings, signal?: AbortSignal): Promise<string> {
+  const docKind = documentContext.mode === 'grant' ? 'grant application' : 'scientific manuscript';
   const system =
-    'You are a scientific manuscript autocomplete engine. ' +
+    `You are a ${docKind} autocomplete engine. ` +
     'The user sends you manuscript text. Your entire response must be the continuation — nothing else. ' +
     'Start immediately with the next word. No preamble, no analysis, no explanation, no labels, no reasoning. ' +
     'Do NOT show a thinking process, reasoning steps, or numbered analysis. ' +
@@ -1039,7 +1205,7 @@ function classifyLLMError(err: unknown): string {
 }
 
 export async function analyzeText(text: string, agent: AgentType, settings: AISettings, existingSuggestions: Suggestion[] = [], onProgress?: (msg: string) => void, htmlContent?: string, signal?: AbortSignal): Promise<{ suggestions: Suggestion[], status: 'ok' | 'no_suggestions' | 'parsing_failed' | 'server_error', errorMessage?: string, salvaged?: number, dropped?: number }> {
-  const activePrompt = settings.customPrompts?.[agent] || DEFAULT_AGENT_PROMPTS[agent];
+  const activePrompt = getActivePrompt(agent, settings);
 
   let existingContext = '';
   if (existingSuggestions.length > 0) {
@@ -1063,9 +1229,12 @@ export async function analyzeText(text: string, agent: AgentType, settings: AISe
       onProgress?.(`Chunk ${i + 1}/${chunks.length}`);
       // Chunked mode: use a complete compact prompt instead of truncating the
       // full prompt mid-sentence. User-customized prompts are kept as-is.
+      const compactBase = documentContext.mode === 'grant'
+        ? (GRANT_COMPACT_AGENT_PROMPTS[agent] ?? COMPACT_AGENT_PROMPTS[agent])
+        : COMPACT_AGENT_PROMPTS[agent];
       const shortRole = useFullText
         ? activePrompt
-        : (settings.customPrompts?.[agent] ?? COMPACT_AGENT_PROMPTS[agent] ?? activePrompt);
+        : (settings.customPrompts?.[agent] ?? (compactBase ? compactBase + grantInstructionsBlock() : activePrompt));
       const prompt = useFullText
         ? buildFullTextPrompt(shortRole, chunks[i], existingContext)
         : buildLocalPrompt(shortRole, chunks[i], existingContext);
@@ -1225,7 +1394,7 @@ export async function chatWithAgent(
   images?: AttachedImage[],
   signal?: AbortSignal
 ): Promise<{ text: string; suggestions?: Suggestion[] }> {
-  const activePrompt = settings.customPrompts?.[agent] || DEFAULT_AGENT_PROMPTS[agent];
+  const activePrompt = getActivePrompt(agent, settings);
   const isLocal = settings.provider === 'local';
   const localLargeContext = isLocal && settings.localChunkSize === 0;
 
@@ -1336,7 +1505,7 @@ Respond as a knowledgeable academic peer. Be specific, critical, and grounded in
 }
 
 export async function rebutSuggestion(suggestion: Suggestion, feedback: string, fullText: string, settings: AISettings): Promise<Suggestion[]> {
-  const activePrompt = settings.customPrompts?.[suggestion.agent] || DEFAULT_AGENT_PROMPTS[suggestion.agent];
+  const activePrompt = getActivePrompt(suggestion.agent, settings);
   
   const prompt = `The researcher disagreed with your suggestion.
 Original text: "${suggestion.originalText}"
@@ -1370,6 +1539,17 @@ Reconsider and provide a refined suggestion. Return ONLY JSON:
 }
 
 export async function manuscriptSummary(text: string, settings: AISettings): Promise<string> {
+  // Grant mode: a mock study-section critique instead of a journal review
+  if (documentContext.mode === 'grant') {
+    const prompt = `Please review this grant application:\n\n"""\n${text}\n"""\n\nProvide your structured study-section critique as described in your instructions.`;
+    try {
+      const response = await callLLM(prompt, settings, STUDY_SECTION_REVIEW_PROMPT + grantInstructionsBlock(), false);
+      return response || 'No review generated. Check your LLM connection.';
+    } catch (error) {
+      throw new Error(`Failed to generate study-section review: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
   const systemPrompt = `You are a senior academic peer reviewer. Provide a comprehensive, high-level review of this manuscript.
 
 Your review should be structured as follows:
@@ -1750,7 +1930,7 @@ Writing requirements:
 - Keep sentences under 35 words. One idea per sentence.
 - Avoid vague intensifiers ("very", "quite", "extremely"). Use precise, field-standard terminology.
 - Do not start sentences with conjunctions ("But", "And", "So") in formal scientific prose.
-Return ONLY the rewritten text, no commentary.`;
+Return ONLY the rewritten text, no commentary.${grantModeNote()}${grantInstructionsBlock()}`;
 
   const prompt = `Manuscript context (surrounding text):
 """
@@ -1788,7 +1968,7 @@ Writing requirements for the output:
 - Do NOT use rhetorical questions, exclamations, or conversational filler ("Indeed,", "Notably,", "Of note,").
 - Mix of active and passive voice appropriate to the section context.
 - Sentences under 35 words. Precise, field-standard terminology.
-Return ONLY the transformed text, no commentary, no quotation marks around the output.`;
+Return ONLY the transformed text, no commentary, no quotation marks around the output.${grantModeNote()}${grantInstructionsBlock()}`;
 
   const prompt = `Instruction: ${instruction}
 

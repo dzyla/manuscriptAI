@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { db } from '../db/manuscriptDb';
-import type { DocumentRow } from '../types';
+import type { DocumentRow, DocumentMode } from '../types';
 
 interface DocumentState {
   title: string;
@@ -10,11 +10,17 @@ interface DocumentState {
   citationCounter: number;
   figureRegistry: Record<string, number>;
   figureCounter: number;
+  mode: DocumentMode;
+  grantInstructions: string;
+  grantTemplateId: string | null;
 
   setTitle: (title: string) => void;
   setContent: (content: string) => void;
   setSaveState: (s: DocumentState['saveState']) => void;
   setCitationRegistry: (reg: Record<string, number>) => void;
+  setMode: (mode: DocumentMode) => void;
+  setGrantInstructions: (text: string) => void;
+  setGrantTemplateId: (id: string | null) => void;
 
   /**
    * Register a new source citation. Returns existing number if already registered,
@@ -71,11 +77,17 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   citationCounter: 0,
   figureRegistry: {},
   figureCounter: 0,
+  mode: 'manuscript',
+  grantInstructions: '',
+  grantTemplateId: null,
 
   setTitle: (title) => set({ title, saveState: 'Draft' }),
   setContent: (content) => set({ content, saveState: 'Draft' }),
   setSaveState: (saveState) => set({ saveState }),
   setCitationRegistry: (citationRegistry) => set({ citationRegistry }),
+  setMode: (mode) => set({ mode, saveState: 'Draft' }),
+  setGrantInstructions: (grantInstructions) => set({ grantInstructions, saveState: 'Draft' }),
+  setGrantTemplateId: (grantTemplateId) => set({ grantTemplateId, saveState: 'Draft' }),
 
   insertCitation: (sourceId) => {
     const { citationRegistry, citationCounter } = get();
@@ -138,6 +150,9 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     citationCounter: 0,
     figureRegistry: {},
     figureCounter: 0,
+    mode: 'manuscript',
+    grantInstructions: '',
+    grantTemplateId: null,
   }),
 
   initialize: async () => {
@@ -153,6 +168,9 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
           citationCounter: row.citationCounter,
           figureRegistry: row.figureRegistry ?? {},
           figureCounter: row.figureCounter ?? 0,
+          mode: row.mode ?? 'manuscript',
+          grantInstructions: row.grantInstructions ?? '',
+          grantTemplateId: row.grantTemplateId ?? null,
         });
         return;
       }
@@ -180,7 +198,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   },
 
   persist: async () => {
-    const { title, content, saveState, citationRegistry, citationCounter, figureRegistry, figureCounter } = get();
+    const { title, content, saveState, citationRegistry, citationCounter, figureRegistry, figureCounter, mode, grantInstructions, grantTemplateId } = get();
     const row: DocumentRow = {
       id: 'current',
       title,
@@ -191,6 +209,9 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       figureRegistry,
       figureCounter,
       updatedAt: Date.now(),
+      mode,
+      grantInstructions,
+      grantTemplateId: grantTemplateId ?? undefined,
     };
     await db.documents.put(row);
   },

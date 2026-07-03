@@ -9,6 +9,9 @@ import { searchSimilarManuscripts } from './services/manuscriptSearch';
 import { expandCitationNums, formatCitationGroup, mergeAdjacentCitations } from './services/citations';
 import { analyzeText, chatWithAgent, chatWithManuscript, resolveConflicts, runJudgeAgent, rebutSuggestion, manuscriptSummary, rewriteSection, transformWithInstruction, analyzeSourceAgainstManuscript, verifyClaimAgainstSources, AGENT_INFO, AGENT_ICONS, estimateTokens } from './services/ai';
 import { findTextSpan } from './utils/textMatch';
+import { setDocumentContext } from './services/ai';
+import { GrantTemplatePicker, GrantInstructionsModal, GrantBudgetStrip } from './components/GrantPanel';
+import type { GrantTemplate } from './services/grantTemplates';
 import { Sparkles, FileText, Settings, Download, Keyboard, Eye, Moon, Sun, ChevronDown, FilePlus, Coins, BookOpen, Github, Square } from 'lucide-react';
 import { saveAs } from 'file-saver';
 import * as mammoth from 'mammoth';
@@ -43,6 +46,8 @@ export default function App() {
     insertFigure: storeInsertFigure,
     renumberFigures: storeRenumberFigures,
     resetDocument, persist: persistDocument, initialize: initDocument,
+    mode, grantInstructions, grantTemplateId,
+    setMode, setGrantInstructions, setGrantTemplateId,
   } = useDocumentStore();
 
   const {
@@ -84,6 +89,24 @@ export default function App() {
   const [editorWidth, setEditorWidth] = useState<'normal' | 'wide' | 'full'>('normal');
   const [currentAgent, setCurrentAgent] = useState<AgentType>('manager');
   const [pendingDownloadFormat, setPendingDownloadFormat] = useState<'md' | 'docx' | 'json' | 'tex' | null>(null);
+  const [showTemplatePicker, setShowTemplatePicker] = useState(false);
+  const [showGrantInstructions, setShowGrantInstructions] = useState(false);
+
+  // Keep the AI service aware of the document mode + funder instructions,
+  // so every agent/chat/rewrite prompt resolves against the right prompt set.
+  useEffect(() => {
+    setDocumentContext({ mode, grantInstructions });
+  }, [mode, grantInstructions]);
+
+  const handleApplyGrantTemplate = (template: GrantTemplate, html: string) => {
+    editorRef.current?.setContent(html);
+    setContent(html);
+    setMode('grant');
+    setGrantTemplateId(template.id);
+    setShowTemplatePicker(false);
+    persistDocument();
+    showToast(`${template.mechanism} template applied — fill in each section`, 'success');
+  };
 
   // Resize handler for Sidebar
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
@@ -1016,6 +1039,47 @@ export default function App() {
             <span className="text-[11px] font-medium shrink-0 hidden sm:inline" style={{ color: 'var(--text-muted)' }}>
               {wordCount} words
             </span>
+
+            {/* Document mode toggle: manuscript / grant */}
+            <div className="flex items-center rounded-lg p-0.5 shrink-0" style={{ border: '1px solid var(--border)', background: 'var(--surface-2)' }}>
+              <button
+                onClick={() => setMode('manuscript')}
+                className={`px-2 py-0.5 text-[10px] font-bold rounded-md transition-colors ${mode === 'manuscript' ? 'bg-white shadow text-stone-800' : ''}`}
+                style={mode === 'manuscript' ? {} : { color: 'var(--text-muted)' }}
+                title="Manuscript mode — journal-style agents"
+              >
+                Manuscript
+              </button>
+              <button
+                onClick={() => setMode('grant')}
+                className={`px-2 py-0.5 text-[10px] font-bold rounded-md transition-colors ${mode === 'grant' ? 'bg-emerald-700 text-white shadow' : ''}`}
+                style={mode === 'grant' ? {} : { color: 'var(--text-muted)' }}
+                title="Grant mode — NIH-style agents, templates, and page budgets"
+              >
+                Grant
+              </button>
+            </div>
+
+            {mode === 'grant' && (
+              <>
+                <button
+                  onClick={() => setShowTemplatePicker(true)}
+                  className="px-2 py-1 text-[10px] font-semibold rounded-lg border shrink-0 hover:bg-stone-50 transition-colors"
+                  style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
+                  title="Start from an NIH grant template"
+                >
+                  Template
+                </button>
+                <button
+                  onClick={() => setShowGrantInstructions(true)}
+                  className={`px-2 py-1 text-[10px] font-semibold rounded-lg border shrink-0 hover:bg-stone-50 transition-colors ${grantInstructions.trim() ? 'text-emerald-700 border-emerald-300' : ''}`}
+                  style={grantInstructions.trim() ? {} : { borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
+                  title={grantInstructions.trim() ? 'Funder instructions active — all agents follow them' : 'Add funder instructions for the AI agents to follow'}
+                >
+                  Instructions{grantInstructions.trim() ? ' ✓' : ''}
+                </button>
+              </>
+            )}
             <div className="flex-1" />
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -1136,6 +1200,9 @@ export default function App() {
           </div>
         </header>
 
+        {/* Grant page-budget strip */}
+        {mode === 'grant' && <GrantBudgetStrip htmlContent={content} templateId={grantTemplateId} />}
+
         {/* Editor Area */}
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 md:p-8" style={{ background: 'var(--surface-0)' }}>
           <Editor
@@ -1235,6 +1302,25 @@ export default function App() {
         settings={aiSettings}
         onUpdateSettings={(s) => { setAiSettings(s); void secureStorage.setItem('manuscript-ai-settings', JSON.stringify(s)); }}
       />
+      {showTemplatePicker && (
+        <GrantTemplatePicker
+          documentHasContent={stripHtml(content).replace(/Start writing your manuscript here.*$/, '').trim().length > 0}
+          onApply={handleApplyGrantTemplate}
+          onClose={() => setShowTemplatePicker(false)}
+        />
+      )}
+      {showGrantInstructions && (
+        <GrantInstructionsModal
+          value={grantInstructions}
+          onSave={(text) => {
+            setGrantInstructions(text);
+            setShowGrantInstructions(false);
+            persistDocument();
+            showToast(text.trim() ? 'Grant instructions saved — all agents will follow them' : 'Grant instructions cleared', 'success');
+          }}
+          onClose={() => setShowGrantInstructions(false)}
+        />
+      )}
       <PostDraftingView
         isOpen={isPostDraftingOpen}
         onClose={() => setIsPostDraftingOpen(false)}
