@@ -214,6 +214,23 @@ CRITICAL: originalText must be an exact character-for-character copy from the ma
 ${SCIENTIFIC_WRITING_RULES}`,
 };
 
+/**
+ * Compact agent prompts for chunked local-LLM mode. Small models lose track of
+ * long role prompts, and the previous approach (activePrompt.substring(0, 400))
+ * cut mid-sentence and dropped every rule below the cut. Each compact prompt is
+ * complete: role, focus areas, and the non-negotiable quoting rule.
+ */
+export const COMPACT_AGENT_PROMPTS: Partial<Record<AgentType, string>> = {
+  manager: `You are a scientific manuscript structure reviewer. Find the highest-impact structural problems: missing or misordered sections, abstract that does not match the body, weak transitions, redundant content, conclusions that overstate the evidence.`,
+  editor: `You are a scientific copy editor. Fix the highest-impact language problems: passive voice ("It was observed that X" becomes "We observed X"), wordy filler ("in order to" becomes "to"), sentences over 35 words, ambiguous pronouns ("this", "it"), nominalizations ("perform an analysis of" becomes "analyze"), tense inconsistencies.`,
+  'reviewer-2': `You are a rigorous peer reviewer. Find scientific weaknesses: claims stated as fact without support, conclusions exceeding the data ("prove" should be "suggest"), missing sample sizes or statistics, undefined terms or abbreviations, unaddressed confounders, overgeneralized findings.`,
+  researcher: `You are a clarity and impact specialist. Fix buried main points (the topic sentence must state the finding), excessive hedging ("may possibly suggest" becomes "suggests"), vague quantifiers where numbers exist, paragraphs mixing two ideas, weak closing sentences.`,
+  'citation-checker': `You find claims that need citations: statistics without references, definitive scientific claims stated as fact, "studies show" without a source. Do NOT flag the authors' own methods or results, or claims already followed by a citation. In suggestedText, append "[CITATION NEEDED]" to the quoted sentence. Use category "citation".`,
+};
+
+/** The one rule small models most often break — stated identically everywhere. */
+const EXACT_QUOTE_RULE = `- originalText MUST be copied EXACTLY from the text above: same characters, same punctuation, same capitalization, including any citation markers like [3]. Never paraphrase, shorten, or "clean up" the quote.`;
+
 function truncateText(text: string, maxLen: number): string {
   return text.length > maxLen ? text.substring(0, maxLen) + '\n...[truncated]' : text;
 }
@@ -289,7 +306,7 @@ export function localModelSupportsVision(modelName: string): boolean {
   return /vl\b|vision|visual|llava|clip|multimodal|bakllava|minicpm-v|moondream|qwen.*vl|phi.*vision|internvl|cogvlm|pixtral|molmo|paligemma/.test(lower);
 }
 
-async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: string = "", images?: AttachedImage[], signal?: AbortSignal, maxTokens?: number): Promise<string> {
+async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: string = "", images?: AttachedImage[], signal?: AbortSignal, maxTokens?: number, jsonMode: boolean = false): Promise<string> {
   let baseUrl = settings.localBaseUrl.trim();
   if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
 
@@ -339,7 +356,7 @@ async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: 
   const resolvedMaxTokens = maxTokens ?? 4096;
 
   // Standard OpenAI-compatible body
-  const openAIBody = JSON.stringify({
+  const baseBody = {
     model: settings.localModel,
     messages,
     temperature: 0.3,
@@ -347,7 +364,11 @@ async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: 
     // Disable thinking/reasoning mode where the server supports these flags
     enable_thinking: false,
     think: false,
-  });
+  };
+  // Constrained JSON output — supported by LM Studio, Ollama, vLLM, llama.cpp.
+  // If a server rejects the param with HTTP 400, we retry without it below.
+  const openAIBody = JSON.stringify(jsonMode ? { ...baseBody, response_format: { type: 'json_object' } } : baseBody);
+  const openAIBodyNoFormat = JSON.stringify(baseBody);
 
   // LM Studio proprietary /api/v1/chat body (requires input + system_prompt)
   const userText = messages.filter(m => m.role !== 'system')
@@ -410,9 +431,15 @@ async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: 
   const LOCAL_LLM_TIMEOUT_MS = 3 * 60 * 1000;
 
   let lastError = '';
-  for (const ep of endpoints) {
+  endpointLoop: for (const ep of endpoints) {
     const isLmStudioChat = ep === lmStudioEndpoint;
-    const body = isLmStudioChat ? lmStudioBody : openAIBody;
+    // In JSON mode, retry once without response_format if the server rejects it (HTTP 400)
+    const bodiesToTry = isLmStudioChat
+      ? [lmStudioBody]
+      : (jsonMode && openAIBody !== openAIBodyNoFormat ? [openAIBody, openAIBodyNoFormat] : [openAIBody]);
+
+    for (let attempt = 0; attempt < bodiesToTry.length; attempt++) {
+    const body = bodiesToTry[attempt];
 
     const timeoutCtrl = new AbortController();
     const timeoutId = setTimeout(() => timeoutCtrl.abort(), LOCAL_LLM_TIMEOUT_MS);
@@ -449,6 +476,9 @@ async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: 
           try { errDetail = (await response.text()).slice(0, 300); } catch (_2) {}
         }
         lastError = `${ep} returned HTTP ${response.status}${errDetail ? `: ${errDetail}` : ''}`;
+        // 400 on the response_format attempt → retry this endpoint without it
+        if (response.status === 400 && attempt < bodiesToTry.length - 1) continue;
+        continue endpointLoop;
       }
     } catch (e: any) {
       clearTimeout(timeoutId);
@@ -461,7 +491,8 @@ async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: 
       } else {
         lastError = `${ep}: ${e instanceof Error ? e.message : 'connection failed'}`;
       }
-      continue;
+      continue endpointLoop; // network/timeout error — retrying a different body won't help
+    }
     }
   }
 
@@ -759,7 +790,7 @@ export function estimateTokens(text: string): number {
 
 async function callLLM(prompt: string, settings: AISettings, systemPrompt: string, jsonMode: boolean = false, images?: AttachedImage[], signal?: AbortSignal, maxTokens?: number): Promise<string> {
   if (settings.provider === 'local') {
-    return callLocalLLM(prompt, settings, systemPrompt, images, signal, maxTokens);
+    return callLocalLLM(prompt, settings, systemPrompt, images, signal, maxTokens, jsonMode);
   } else if (settings.provider === 'anthropic') {
     return callAnthropicLLM(prompt, settings, systemPrompt, images, signal, maxTokens);
   } else if (settings.provider === 'openai') {
@@ -942,7 +973,7 @@ Example of the EXACT JSON format to return (copy this structure precisely):
 
 Rules:
 - Return ONLY the JSON object — no markdown, no preamble, no explanation outside the JSON
-- originalText MUST be copied CHARACTER-FOR-CHARACTER from the manuscript above
+${EXACT_QUOTE_RULE}
 - Provide 5-10 specific, high-impact suggestions covering the ENTIRE manuscript
 - Cover different sections: introduction, methods, results, discussion
 - severity: "critical", "major", "minor", or "style"
@@ -965,8 +996,8 @@ Example of the EXACT JSON format to return:
 
 Rules:
 - Return ONLY the JSON object — no markdown, no explanation outside the JSON
-- originalText MUST be copied exactly from the text above
-- Provide 3-6 specific suggestions
+${EXACT_QUOTE_RULE}
+- Provide 3-5 specific suggestions
 - severity: "critical", "major", "minor", or "style"
 - category: "grammar", "flow", "research", "clarity", or "structure"`;
 }
@@ -1030,13 +1061,17 @@ export async function analyzeText(text: string, agent: AgentType, settings: AISe
     for (let i = 0; i < chunks.length; i++) {
       if (signal?.aborted) break;
       onProgress?.(`Chunk ${i + 1}/${chunks.length}`);
-      const shortRole = useFullText ? activePrompt : activePrompt.substring(0, 400);
+      // Chunked mode: use a complete compact prompt instead of truncating the
+      // full prompt mid-sentence. User-customized prompts are kept as-is.
+      const shortRole = useFullText
+        ? activePrompt
+        : (settings.customPrompts?.[agent] ?? COMPACT_AGENT_PROMPTS[agent] ?? activePrompt);
       const prompt = useFullText
         ? buildFullTextPrompt(shortRole, chunks[i], existingContext)
         : buildLocalPrompt(shortRole, chunks[i], existingContext);
 
       try {
-        const textResponse = await callLocalLLM(prompt, settings, "Return only valid JSON. No markdown, no explanations.", undefined, signal);
+        const textResponse = await callLocalLLM(prompt, settings, "Return only valid JSON. No markdown, no explanations.", undefined, signal, undefined, true);
         rawResponses.push(textResponse);
         
         if (textResponse) {
@@ -1112,10 +1147,12 @@ Each suggestion must have:
 - category: "grammar" | "flow" | "research" | "clarity" | "structure"
 - section: which manuscript section
 
-Provide 8-15 highly specific suggestions. Each originalText MUST be an exact quote.`;
+Provide 8-15 highly specific suggestions.
+${EXACT_QUOTE_RULE}`;
 
   try {
-    let textResponse = await callLLM(prompt, settings, activePrompt, true, undefined, signal);
+    // 8192 output tokens: a 10-15 suggestion JSON payload does not fit in 4096
+    let textResponse = await callLLM(prompt, settings, activePrompt, true, undefined, signal, 8192);
     if (!textResponse) return { suggestions: [], status: 'no_suggestions' };
 
     const parsed = parseJSONRobust(textResponse);
@@ -1144,7 +1181,7 @@ Provide 8-15 highly specific suggestions. Each originalText MUST be an exact quo
 
     // Last-resort: try repairing malformed JSON via LLM
     try {
-      const textResponse = await callLLM(prompt, settings, activePrompt, true);
+      const textResponse = await callLLM(prompt, settings, activePrompt, true, undefined, undefined, 8192);
       const repaired = await repairJSONWithLLM(textResponse, settings);
       const parsed = parseJSONRobust(repaired);
       const arr = Array.isArray(parsed) ? parsed : (parsed.suggestions || []);
