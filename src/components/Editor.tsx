@@ -26,6 +26,7 @@ import { AutoComplete } from '../extensions/AutoComplete';
 import { NodeSelection } from 'prosemirror-state';
 import { expandCitationNums, fetchCrossrefDoi, looksLikeDoi, normalizeDoi } from '../services/citations';
 import { useSourceStore } from '../stores/useSourceStore';
+import { findTextPositionRobust, flattenDoc } from '../utils/textMatch';
 
 interface EditorProps {
   content: string;
@@ -55,6 +56,8 @@ export interface EditorRef {
   revertSuggestion: (originalText: string, suggestedText: string) => boolean;
   scrollToSuggestion: (text: string, id: string) => void;
   getHTML: () => string;
+  /** Canonical plain text (block-separated, citation markers included) — use for all LLM calls */
+  getPlainText: () => string;
   getJSON: () => Record<string, unknown>;
   setContent: (html: string) => void;
   getSelectedText: () => string;
@@ -69,47 +72,10 @@ export interface EditorRef {
   insertFigureLabelNode: (figureId: string, num: number) => void;
 }
 
-const findTextPosition = (doc: any, searchText: string): { from: number; to: number } | null => {
-  let found: { from: number; to: number } | null = null;
-  doc.descendants((node: any, pos: number) => {
-    if (found) return false;
-    if (node.isText && node.text.includes(searchText)) {
-      const offset = node.text.indexOf(searchText);
-      found = { from: pos + offset, to: pos + offset + searchText.length };
-      return false;
-    }
-    return true;
-  });
-  if (found) return found;
-
-  const fullText = doc.textContent;
-  const searchIdx = fullText.indexOf(searchText);
-  if (searchIdx === -1) return null;
-
-  let charsSeen = 0;
-  let fromPos: number | null = null;
-  let toPos: number | null = null;
-  const targetEnd = searchIdx + searchText.length;
-
-  doc.descendants((node: any, pos: number) => {
-    if (toPos !== null) return false;
-    if (node.isText) {
-      const nodeStart = charsSeen;
-      const nodeEnd = charsSeen + node.text.length;
-      if (fromPos === null && searchIdx >= nodeStart && searchIdx < nodeEnd) {
-        fromPos = pos + (searchIdx - nodeStart);
-      }
-      if (fromPos !== null && targetEnd >= nodeStart && targetEnd <= nodeEnd) {
-        toPos = pos + (targetEnd - nodeStart);
-      }
-      charsSeen += node.text.length;
-    }
-    return true;
-  });
-
-  if (fromPos !== null && toPos !== null) return { from: fromPos, to: toPos };
-  return null;
-};
+// Tiered matcher (exact → normalized → fuzzy) with citation-aware position
+// mapping. Tolerates LLM misquotes that the old exact-only search rejected.
+const findTextPosition = (doc: any, searchText: string): { from: number; to: number } | null =>
+  findTextPositionRobust(doc, searchText);
 
 // Bubble actions: transform = produces accept/reject suggestion; analyze = produces chat reply only
 const BUBBLE_ACTIONS: { label: string; instruction: string; agent: AgentType; icon: any; mode: 'transform' | 'analyze' }[] = [
@@ -688,60 +654,44 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
     applySuggestion: (originalText, suggestedText) => {
       if (!editor) return false;
       const posMatch = findTextPosition(editor.state.doc, originalText);
-      if (posMatch) {
-        // First scroll to the text so user can see the change
-        editor.chain().focus()
-          .setTextSelection({ from: posMatch.from, to: posMatch.to })
-          .scrollIntoView()
-          .run();
+      if (!posMatch) return false;
 
-        // Brief pause so user sees what's being replaced, then apply
-        setTimeout(() => {
-          editor.chain().focus()
-            .setTextSelection({ from: posMatch.from, to: posMatch.to })
-            .insertContent(suggestedText)
-            .run();
-          
-          // Flash animation on the new text
-          const newPosMatch = findTextPosition(editor.state.doc, suggestedText);
-          if (newPosMatch) {
-            editor.chain()
-              .setTextSelection({ from: newPosMatch.from, to: newPosMatch.to })
-              .scrollIntoView()
-              .run();
-          }
+      // Apply synchronously so callers reading getHTML() right after see the
+      // new content (history recording and accept-all depend on this).
+      editor.chain().focus()
+        .setTextSelection({ from: posMatch.from, to: posMatch.to })
+        .insertContent(suggestedText)
+        .scrollIntoView()
+        .run();
 
-          // Apply DOM-level flash animation
-          setTimeout(() => {
-            const sel = window.getSelection();
-            if (sel && sel.rangeCount > 0) {
-              const range = sel.getRangeAt(0);
-              const span = document.createElement('span');
-              span.className = 'accept-flash';
-              try {
-                range.surroundContents(span);
-                setTimeout(() => {
-                  // Unwrap the flash span after animation
-                  if (span.parentNode) {
-                    const parent = span.parentNode;
-                    while (span.firstChild) parent.insertBefore(span.firstChild, span);
-                    parent.removeChild(span);
-                  }
-                }, 1200);
-              } catch (_) {
-                // Can fail if selection spans multiple elements — that's fine
+      const newHtml = editor.getHTML();
+      lastExternalContent.current = newHtml;
+      onChange(newHtml);
+
+      // Flash animation on the new text (purely cosmetic, async is fine)
+      setTimeout(() => {
+        const sel = window.getSelection();
+        if (sel && sel.rangeCount > 0) {
+          const range = sel.getRangeAt(0);
+          const span = document.createElement('span');
+          span.className = 'accept-flash';
+          try {
+            range.surroundContents(span);
+            setTimeout(() => {
+              // Unwrap the flash span after animation
+              if (span.parentNode) {
+                const parent = span.parentNode;
+                while (span.firstChild) parent.insertBefore(span.firstChild, span);
+                parent.removeChild(span);
               }
-            }
-          }, 50);
+            }, 1200);
+          } catch (_) {
+            // Can fail if selection spans multiple elements — that's fine
+          }
+        }
+      }, 50);
 
-          const newHtml = editor.getHTML();
-          lastExternalContent.current = newHtml;
-          onChange(newHtml);
-        }, 200);
-
-        return true;
-      }
-      return false;
+      return true;
     },
     revertSuggestion: (originalText, suggestedText) => {
       if (!editor) return false;
@@ -785,6 +735,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
       }
     },
     getHTML: () => editor?.getHTML() || '',
+    getPlainText: () => editor ? flattenDoc(editor.state.doc).text : '',
     getJSON: () => editor?.getJSON() ?? { type: 'doc', content: [] },
     setContent: (html: string) => {
       if (!editor) return;

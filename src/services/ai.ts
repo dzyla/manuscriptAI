@@ -2,6 +2,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 import OpenAI from "openai";
 import { encode } from 'gpt-tokenizer';
 import { AgentType, Suggestion, AISettings, AttachedImage } from "../types";
+import { findTextSpan } from "../utils/textMatch";
 import { Clipboard, PenLine, FlaskConical, Beaker, BookMarked, MessageCircle, Quote } from 'lucide-react';
 
 export const AGENT_INFO: Record<AgentType, { label: string; color: string; bgSoft: string; description: string; iconName: string }> = {
@@ -609,6 +610,59 @@ function getGeminiClient(settings: AISettings) {
   return new GoogleGenAI({ apiKey: settings.geminiApiKey || process.env.GEMINI_API_KEY || "" });
 }
 
+const VALID_SEVERITIES = ['critical', 'major', 'minor', 'style'];
+const VALID_CATEGORIES = ['grammar', 'flow', 'research', 'clarity', 'structure', 'citation', 'evidence', 'impact', 'statistics', 'style'];
+
+export interface AnchoredSuggestions {
+  suggestions: Suggestion[];
+  /** located via normalized/fuzzy matching (LLM misquoted the text) */
+  salvaged: number;
+  /** discarded: unlocatable quote or no-op edit */
+  dropped: number;
+}
+
+/**
+ * Anchor raw LLM suggestion objects against the document text.
+ *
+ * Instead of exact indexOf (which silently discarded every suggestion the LLM
+ * misquoted), this uses tiered matching (exact → normalized → fuzzy) and then
+ * REWRITES originalText to the actual document text, so accept-time replacement
+ * in the editor always finds its target.
+ */
+export function anchorSuggestions(rawArr: any[], docText: string, agent: AgentType, idPrefix: string): AnchoredSuggestions {
+  const suggestions: Suggestion[] = [];
+  let salvaged = 0;
+  let dropped = 0;
+
+  for (let index = 0; index < rawArr.length; index++) {
+    const s = rawArr[index];
+    if (!s || typeof s.originalText !== 'string' || typeof s.suggestedText !== 'string') continue;
+    const suggestedText = s.suggestedText.trim();
+    if (!s.originalText.trim() || !suggestedText) { dropped++; continue; }
+
+    const span = findTextSpan(docText, s.originalText);
+    if (!span) { dropped++; continue; }
+    if (span.matchedText.trim() === suggestedText) { dropped++; continue; }
+    if (span.method !== 'exact') salvaged++;
+
+    suggestions.push({
+      ...s,
+      id: `${idPrefix}-${index}`,
+      agent,
+      originalText: span.matchedText,
+      suggestedText,
+      explanation: s.explanation || '',
+      startIndex: span.start,
+      endIndex: span.end,
+      severity: VALID_SEVERITIES.includes(s.severity) ? s.severity : 'minor',
+      category: VALID_CATEGORIES.includes(s.category) ? s.category : 'clarity',
+      section: s.section || 'General',
+    });
+  }
+
+  return { suggestions, salvaged, dropped };
+}
+
 /**
  * Parse H2-based sections directly from TipTap HTML output.
  * Returns sections in document order, each containing the heading title
@@ -953,7 +1007,7 @@ function classifyLLMError(err: unknown): string {
     .slice(0, 200);
 }
 
-export async function analyzeText(text: string, agent: AgentType, settings: AISettings, existingSuggestions: Suggestion[] = [], onProgress?: (msg: string) => void, htmlContent?: string, signal?: AbortSignal): Promise<{ suggestions: Suggestion[], status: 'ok' | 'no_suggestions' | 'parsing_failed' | 'server_error', errorMessage?: string }> {
+export async function analyzeText(text: string, agent: AgentType, settings: AISettings, existingSuggestions: Suggestion[] = [], onProgress?: (msg: string) => void, htmlContent?: string, signal?: AbortSignal): Promise<{ suggestions: Suggestion[], status: 'ok' | 'no_suggestions' | 'parsing_failed' | 'server_error', errorMessage?: string, salvaged?: number, dropped?: number }> {
   const activePrompt = settings.customPrompts?.[agent] || DEFAULT_AGENT_PROMPTS[agent];
 
   let existingContext = '';
@@ -970,6 +1024,8 @@ export async function analyzeText(text: string, agent: AgentType, settings: AISe
     const allSuggestions: Suggestion[] = [];
     let parsingFailed = false;
     let rawResponses: string[] = [];
+    let totalSalvaged = 0;
+    let totalDropped = 0;
     
     for (let i = 0; i < chunks.length; i++) {
       if (signal?.aborted) break;
@@ -987,20 +1043,11 @@ export async function analyzeText(text: string, agent: AgentType, settings: AISe
           try {
             const parsed = parseJSONRobust(textResponse);
             const suggestionsArr = Array.isArray(parsed) ? parsed : (parsed.suggestions || parsed.fixes || []);
-            const chunkSuggestions = suggestionsArr
-              .filter((s: any) => s.originalText && s.suggestedText)
-              .map((s: any, index: number) => ({
-                ...s,
-                id: `suggestion-${Date.now()}-${i}-${index}`,
-                agent: agent,
-                startIndex: text.indexOf(s.originalText),
-                endIndex: text.indexOf(s.originalText) + (s.originalText?.length || 0),
-                severity: ['critical', 'major', 'minor', 'style'].includes(s.severity) ? s.severity : 'minor',
-                category: ['grammar', 'flow', 'research', 'clarity', 'structure'].includes(s.category) ? s.category : 'grammar',
-                section: s.section || 'General'
-              }))
-              .filter((s: any) => s.startIndex !== -1);
-            
+            const anchored = anchorSuggestions(suggestionsArr, text, agent, `suggestion-${Date.now()}-${i}`);
+            const chunkSuggestions = anchored.suggestions;
+            totalSalvaged += anchored.salvaged;
+            totalDropped += anchored.dropped;
+
             allSuggestions.push(...chunkSuggestions);
             if (chunkSuggestions.length > 0) {
               existingContext += '\n' + JSON.stringify(chunkSuggestions.map((s: any) => s.originalText).slice(0, 5));
@@ -1012,21 +1059,11 @@ export async function analyzeText(text: string, agent: AgentType, settings: AISe
               const repaired = await repairJSONWithLLM(textResponse, settings);
               const parsedRepaired = parseJSONRobust(repaired);
               const arr = Array.isArray(parsedRepaired) ? parsedRepaired : (parsedRepaired.suggestions || parsedRepaired.fixes || []);
-              const repairSugs = arr
-                .filter((s: any) => s.originalText && s.suggestedText)
-                .map((s: any, index: number) => ({
-                  ...s,
-                  id: `suggestion-${Date.now()}-${i}-r${index}`,
-                  agent,
-                  startIndex: text.indexOf(s.originalText),
-                  endIndex: text.indexOf(s.originalText) + (s.originalText?.length || 0),
-                  severity: ['critical', 'major', 'minor', 'style'].includes(s.severity) ? s.severity : 'minor',
-                  category: ['grammar', 'flow', 'research', 'clarity', 'structure', 'citation'].includes(s.category) ? s.category : 'grammar',
-                  section: s.section || 'General',
-                }))
-                .filter((s: any) => s.startIndex !== -1);
-              allSuggestions.push(...repairSugs);
-              if (repairSugs.length === 0) parsingFailed = true;
+              const anchoredRepair = anchorSuggestions(arr, text, agent, `suggestion-${Date.now()}-${i}-r`);
+              totalSalvaged += anchoredRepair.salvaged;
+              totalDropped += anchoredRepair.dropped;
+              allSuggestions.push(...anchoredRepair.suggestions);
+              if (anchoredRepair.suggestions.length === 0) parsingFailed = true;
             } catch {
               console.error(`Chunk ${i + 1} parse+repair error. Raw:`, textResponse.substring(0, 300));
               parsingFailed = true;
@@ -1043,9 +1080,11 @@ export async function analyzeText(text: string, agent: AgentType, settings: AISe
       console.warn('All chunks failed to parse. Last raw responses:', rawResponses.slice(-2));
     }
     
-    return { 
-      suggestions: allSuggestions, 
-      status: allSuggestions.length > 0 ? 'ok' : (parsingFailed ? 'parsing_failed' : 'no_suggestions') 
+    return {
+      suggestions: allSuggestions,
+      status: allSuggestions.length > 0 ? 'ok' : (parsingFailed ? 'parsing_failed' : 'no_suggestions'),
+      salvaged: totalSalvaged,
+      dropped: totalDropped,
     };
   }
 
@@ -1081,23 +1120,13 @@ Provide 8-15 highly specific suggestions. Each originalText MUST be an exact quo
 
     const parsed = parseJSONRobust(textResponse);
     const suggestionsArr = Array.isArray(parsed) ? parsed : (parsed.suggestions || []);
-    const result = suggestionsArr
-      .filter((s: any) => s.originalText && s.suggestedText)
-      .map((s: any, index: number) => ({
-        ...s,
-        id: `suggestion-${Date.now()}-${index}`,
-        agent: agent,
-        startIndex: text.indexOf(s.originalText),
-        endIndex: text.indexOf(s.originalText) + (s.originalText?.length || 0),
-        severity: ['critical', 'major', 'minor', 'style'].includes(s.severity) ? s.severity : 'minor',
-        category: ['grammar', 'flow', 'research', 'clarity', 'structure'].includes(s.category) ? s.category : 'grammar',
-        section: s.section || 'General'
-      }))
-      .filter((s: any) => s.startIndex !== -1);
-    
-    return { 
-      suggestions: result, 
-      status: result.length > 0 ? 'ok' : 'no_suggestions' 
+    const anchored = anchorSuggestions(suggestionsArr, text, agent, `suggestion-${Date.now()}`);
+
+    return {
+      suggestions: anchored.suggestions,
+      status: anchored.suggestions.length > 0 ? 'ok' : 'no_suggestions',
+      salvaged: anchored.salvaged,
+      dropped: anchored.dropped,
     };
   } catch (e) {
     // Propagate user cancellation immediately
@@ -1119,20 +1148,13 @@ Provide 8-15 highly specific suggestions. Each originalText MUST be an exact quo
       const repaired = await repairJSONWithLLM(textResponse, settings);
       const parsed = parseJSONRobust(repaired);
       const arr = Array.isArray(parsed) ? parsed : (parsed.suggestions || []);
-      const result = arr
-        .filter((s: any) => s.originalText && s.suggestedText)
-        .map((s: any, index: number) => ({
-          ...s,
-          id: `suggestion-${Date.now()}-repair-${index}`,
-          agent,
-          startIndex: text.indexOf(s.originalText),
-          endIndex: text.indexOf(s.originalText) + (s.originalText?.length || 0),
-          severity: ['critical', 'major', 'minor', 'style'].includes(s.severity) ? s.severity : 'minor',
-          category: ['grammar', 'flow', 'research', 'clarity', 'structure', 'citation'].includes(s.category) ? s.category : 'grammar',
-          section: s.section || 'General',
-        }))
-        .filter((s: any) => s.startIndex !== -1);
-      return { suggestions: result, status: result.length > 0 ? 'ok' : 'no_suggestions' };
+      const anchored = anchorSuggestions(arr, text, agent, `suggestion-${Date.now()}-repair`);
+      return {
+        suggestions: anchored.suggestions,
+        status: anchored.suggestions.length > 0 ? 'ok' : 'no_suggestions',
+        salvaged: anchored.salvaged,
+        dropped: anchored.dropped,
+      };
     } catch {
       console.error(`Failed to parse suggestions for ${agent}:`, e);
       return { suggestions: [], status: 'parsing_failed' };
@@ -1231,18 +1253,7 @@ ${intent !== 'info_question' ? `After your response, append any text edit sugges
     try {
       const parsed = parseJSONRobust(suggestionsMatch[1].trim());
       const arr = Array.isArray(parsed) ? parsed : (parsed.suggestions || []);
-      suggestions = arr
-        .filter((s: any) => s.originalText && s.suggestedText)
-        .map((s: any, index: number) => ({
-          ...s,
-          id: `suggestion-chat-${Date.now()}-${index}`,
-          agent,
-          startIndex: referenceContext.indexOf(s.originalText),
-          endIndex: referenceContext.indexOf(s.originalText) + (s.originalText?.length || 0),
-          severity: s.severity || 'minor',
-          category: s.category || 'clarity',
-        }))
-        .filter((s: any) => s.startIndex !== -1);
+      suggestions = anchorSuggestions(arr, referenceContext, agent, `suggestion-chat-${Date.now()}`).suggestions;
       cleanText = textResponse.replace(/\[SUGGESTIONS_START\][\s\S]*?\[SUGGESTIONS_END\]/, '').trim();
     } catch (e) {
       console.error('Failed to parse chat suggestions:', e);

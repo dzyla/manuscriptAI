@@ -8,6 +8,7 @@ import { AgentType, Message, Suggestion, HistoryItem, AISettings, ManuscriptSour
 import { searchSimilarManuscripts } from './services/manuscriptSearch';
 import { expandCitationNums, formatCitationGroup, mergeAdjacentCitations } from './services/citations';
 import { analyzeText, chatWithAgent, chatWithManuscript, resolveConflicts, runJudgeAgent, rebutSuggestion, manuscriptSummary, rewriteSection, transformWithInstruction, analyzeSourceAgainstManuscript, verifyClaimAgainstSources, AGENT_INFO, AGENT_ICONS, estimateTokens } from './services/ai';
+import { findTextSpan } from './utils/textMatch';
 import { Sparkles, FileText, Settings, Download, Keyboard, Eye, Moon, Sun, ChevronDown, FilePlus, Coins, BookOpen, Github, Square } from 'lucide-react';
 import { saveAs } from 'file-saver';
 import * as mammoth from 'mammoth';
@@ -247,9 +248,10 @@ export default function App() {
     setIsAnalyzing(true);
     setShowAnalyzeMenu(false);
     try {
-      // Get the latest text directly from the editor
+      // Get the latest text directly from the editor.
+      // getPlainText is the canonical representation (same one used for anchoring).
       const htmlContent = editorRef.current?.getHTML() || content;
-      const plainText = stripHtml(htmlContent);
+      const plainText = editorRef.current?.getPlainText() || stripHtml(htmlContent);
 
       if (plainText.length < 20) {
         showToast('Write some text first before analyzing.', 'info');
@@ -275,7 +277,8 @@ export default function App() {
         if (result.suggestions.length > 0) {
           const resolved = await resolveConflicts(result.suggestions, aiSettings);
           addSuggestions(resolved);
-          showToast(`${resolved.length} suggestions from ${AGENT_INFO[specificAgent].label}`, 'success');
+          const salvageNote = result.salvaged ? ` · ${result.salvaged} recovered by fuzzy match` : '';
+          showToast(`${resolved.length} suggestions from ${AGENT_INFO[specificAgent].label}${salvageNote}`, 'success');
         }
       } else {
         // Run all agents in parallel
@@ -327,7 +330,9 @@ export default function App() {
           showToast(`${prefix}⚠ JSON parse failed: ${parseFailures.join(', ')}. Try a larger model or cloud API.`, 'error');
         } else if (totalNew > 0) {
           const zeroNote = zeroes.length > 0 ? ` · No issues from: ${zeroes.join(', ')}` : '';
-          showToast(`${totalNew} suggestions found${zeroNote}`, 'success');
+          const totalSalvaged = results.reduce((n, r) => n + (r.salvaged ?? 0), 0);
+          const salvageNote = totalSalvaged > 0 ? ` · ${totalSalvaged} recovered by fuzzy match` : '';
+          showToast(`${totalNew} suggestions found${zeroNote}${salvageNote}`, 'success');
         } else {
           showToast('No suggestions from any agent. Your text looks good!', 'info');
         }
@@ -348,7 +353,7 @@ export default function App() {
     addMessage(userMsg);
 
     // Resolve manuscript scope: __full__ sends full text, __section__ sends current section only
-    const fullText = stripHtml(editorRef.current?.getHTML() || content);
+    const fullText = (editorRef.current?.getPlainText() || stripHtml(content));
     const extraSources = (attachedSources || []).filter(s => s.name !== '__full__' && s.name !== '__section__');
 
     const hasFullScope   = attachedSources?.some(s => s.name === '__full__');
@@ -582,7 +587,9 @@ export default function App() {
   };
 
   const handleAcceptAll = () => {
-    const currentSuggestions = [...suggestions];
+    // Apply bottom-up so earlier text is untouched while later suggestions
+    // are located — keeps remaining anchors valid as the document changes.
+    const currentSuggestions = [...suggestions].sort((a, b) => b.startIndex - a.startIndex);
     for (const s of currentSuggestions) {
       handleAcceptSuggestion(s);
     }
@@ -603,7 +610,7 @@ export default function App() {
     if (!suggestion) return;
     setIsAnalyzing(true);
     try {
-      const plainText = stripHtml(editorRef.current?.getHTML() || content);
+      const plainText = (editorRef.current?.getPlainText() || stripHtml(content));
       const newSugs = await rebutSuggestion(suggestion, feedback, plainText, aiSettings);
       if (newSugs?.length) {
         updateSuggestion(suggestionId, newSugs[0]);
@@ -632,7 +639,7 @@ export default function App() {
   // Handle selection-based agent query from the editor BubbleMenu
   const handleSelectionQuery = async (selectedText: string, instruction: string, agent: AgentType) => {
     setIsAnalyzing(true);
-    const fullText = stripHtml(editorRef.current?.getHTML() || content);
+    const fullText = (editorRef.current?.getPlainText() || stripHtml(content));
     
     // Switch sidebar to chat to show the reply
     setSidebarTab('chat');
@@ -682,17 +689,18 @@ export default function App() {
 
   const handleTransformSelection = async (selectedText: string, instruction: string, agent: AgentType) => {
     setIsAnalyzing(true);
-    const plainText = stripHtml(editorRef.current?.getHTML() || content);
+    const plainText = (editorRef.current?.getPlainText() || stripHtml(content));
     try {
       const transformed = await transformWithInstruction(selectedText, instruction, plainText, aiSettings);
+      const span = findTextSpan(plainText, selectedText);
       const suggestion: Suggestion = {
         id: `suggestion-transform-${Date.now()}`,
-        originalText: selectedText,
+        originalText: span?.matchedText ?? selectedText,
         suggestedText: transformed,
         explanation: instruction,
         agent,
-        startIndex: plainText.indexOf(selectedText),
-        endIndex: plainText.indexOf(selectedText) + selectedText.length,
+        startIndex: span?.start ?? 0,
+        endIndex: span?.end ?? selectedText.length,
         severity: 'major',
         category: 'clarity',
         section: 'Transform',
@@ -709,17 +717,18 @@ export default function App() {
 
   const handleRewriteSection = async (selectedText: string) => {
     setIsAnalyzing(true);
-    const plainText = stripHtml(editorRef.current?.getHTML() || content);
+    const plainText = (editorRef.current?.getPlainText() || stripHtml(content));
     try {
       const rewritten = await rewriteSection(selectedText, plainText, aiSettings);
+      const span = findTextSpan(plainText, selectedText);
       const suggestion: Suggestion = {
         id: `suggestion-rewrite-${Date.now()}`,
-        originalText: selectedText,
+        originalText: span?.matchedText ?? selectedText,
         suggestedText: rewritten,
         explanation: 'AI rewrite — improved clarity, flow, and scientific impact while preserving meaning.',
         agent: 'editor',
-        startIndex: plainText.indexOf(selectedText),
-        endIndex: plainText.indexOf(selectedText) + selectedText.length,
+        startIndex: span?.start ?? 0,
+        endIndex: span?.end ?? selectedText.length,
         severity: 'major',
         category: 'clarity',
         section: 'Rewrite',
@@ -768,7 +777,7 @@ export default function App() {
     addMessage(userMsg);
 
     try {
-      const plainText = stripHtml(editorRef.current?.getHTML() || content);
+      const plainText = (editorRef.current?.getPlainText() || stripHtml(content));
 
       if (plainText.length < 50) {
         showToast('Write more text first for a meaningful summary.', 'info');
