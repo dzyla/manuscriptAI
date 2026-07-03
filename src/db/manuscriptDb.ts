@@ -15,6 +15,7 @@ class ManuscriptDb extends Dexie {
   suggestions!: Table<SuggestionRow>;
   historyItems!: Table<HistoryItemRow>;
   versionSnapshots!: Table<VersionSnapshot>;
+  grantTemplates!: Table<{ id: string; template: unknown; updatedAt: number }>;
 
   constructor() {
     super('ManuscriptAIEditor');
@@ -25,6 +26,10 @@ class ManuscriptDb extends Dexie {
       suggestions: 'id',
       historyItems: 'id, timestamp',
       versionSnapshots: 'id, timestamp',
+    });
+    // v2: user-defined / AI-generated grant templates
+    this.version(2).stores({
+      grantTemplates: 'id, updatedAt',
     });
   }
 }

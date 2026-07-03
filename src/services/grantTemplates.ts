@@ -102,8 +102,103 @@ export const GRANT_TEMPLATES: GrantTemplate[] = [
   },
 ];
 
+// ─── Fellowship / career-award built-ins (copy & adjust via the template manager) ───
+
+GRANT_TEMPLATES.push(
+  {
+    id: 'nih-f31',
+    name: 'NIH F31/F32 — NRSA Fellowship',
+    mechanism: 'F31/F32',
+    description: 'Predoctoral (F31) / postdoctoral (F32) fellowship. Aims (1 page) + Research Strategy (6 pages) + training-focused sections.',
+    sections: [
+      { title: 'Project Summary / Abstract', pageLimit: 1, guidance: '30 lines max. Frame the science AND the training: what you will discover and what you will learn to become an independent scientist.' },
+      SPECIFIC_AIMS,
+      { title: 'Research Strategy', pageLimit: 6, guidance: 'Significance, Innovation, and Approach in one section. Emphasize how the research plan doubles as a training vehicle: which techniques and analytical skills you will acquire under whose guidance.' },
+      { title: 'Applicant Background and Goals', pageLimit: 6, guidance: 'Your scientific trajectory: past training, career goals, and how this fellowship bridges them. Written with your sponsor; include a training timeline.' },
+      { title: 'Sponsor and Training Environment', guidance: 'Sponsor track record, mentoring plan, institutional resources, courses, and committees. Usually drafted by the sponsor.' },
+    ],
+  },
+  {
+    id: 'nih-k99',
+    name: 'NIH K99/R00 — Pathway to Independence',
+    mechanism: 'K99/R00',
+    description: 'Mentored-to-independent transition award. Aims (1 page) + Research Strategy (6 pages) + career development plan.',
+    sections: [
+      { title: 'Project Summary / Abstract', pageLimit: 1, guidance: '30 lines max. Make the two-phase structure visible: mentored K99 phase goals and independent R00 phase goals.' },
+      SPECIFIC_AIMS,
+      { title: 'Candidate Information and Career Development', pageLimit: 6, guidance: 'Career goals, training activities for the K99 phase, and the skills gap this award closes. Combined page limit shared with Research Strategy is 12 pages; keep each in balance.' },
+      { title: 'Research Strategy', pageLimit: 6, guidance: 'Significance, Innovation, Approach. Design aims so the K99 phase de-risks the R00 phase; the R00 aims must be portable to your independent lab.' },
+      { title: 'Training in Rigor and Reproducibility', guidance: 'How the plan builds rigorous experimental design, statistics, and transparency practices.' },
+    ],
+  },
+);
+
 export function getGrantTemplate(id: string | null | undefined): GrantTemplate | undefined {
-  return GRANT_TEMPLATES.find(t => t.id === id);
+  if (!id) return undefined;
+  return GRANT_TEMPLATES.find(t => t.id === id) ?? customTemplateCache.find(t => t.id === id);
+}
+
+// ─── Custom templates (user-edited or AI-generated), persisted in Dexie ───────
+
+import { db } from '../db/manuscriptDb';
+
+let customTemplateCache: GrantTemplate[] = [];
+
+export async function loadCustomTemplates(): Promise<GrantTemplate[]> {
+  try {
+    const rows = await db.grantTemplates.toArray();
+    customTemplateCache = rows
+      .map(r => r.template as GrantTemplate)
+      .filter(t => t && t.id && Array.isArray(t.sections));
+  } catch { customTemplateCache = []; }
+  return customTemplateCache;
+}
+
+export function getCustomTemplates(): GrantTemplate[] {
+  return customTemplateCache;
+}
+
+export async function saveCustomTemplate(template: GrantTemplate): Promise<void> {
+  await db.grantTemplates.put({ id: template.id, template, updatedAt: Date.now() });
+  await loadCustomTemplates();
+}
+
+export async function deleteCustomTemplate(id: string): Promise<void> {
+  await db.grantTemplates.delete(id);
+  await loadCustomTemplates();
+}
+
+/**
+ * Validate and normalize a template object (e.g. from the LLM generator or a
+ * hand-edited form). Returns null if unusable.
+ */
+export function normalizeTemplate(raw: any, idPrefix = 'custom'): GrantTemplate | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const sectionsIn = Array.isArray(raw.sections) ? raw.sections : [];
+  const sections: GrantTemplateSection[] = sectionsIn
+    .filter((s: any) => s && typeof s.title === 'string' && s.title.trim())
+    .slice(0, 16)
+    .map((s: any) => {
+      const pl = Number(s.pageLimit);
+      return {
+        title: String(s.title).trim().slice(0, 120),
+        pageLimit: Number.isFinite(pl) && pl > 0 && pl <= 100 ? Math.round(pl * 2) / 2 : undefined,
+        guidance: String(s.guidance ?? '').trim().slice(0, 600) || 'Write this section.',
+      };
+    });
+  if (sections.length === 0) return null;
+  return {
+    id: `${idPrefix}-${Date.now()}`,
+    name: String(raw.name ?? 'Custom Template').trim().slice(0, 120) || 'Custom Template',
+    mechanism: String(raw.mechanism ?? 'Custom').trim().slice(0, 20) || 'Custom',
+    description: String(raw.description ?? '').trim().slice(0, 400),
+    sections,
+  };
+}
+
+/** Words → pages under NIH formatting assumptions; one decimal place. */
+export function wordsToPages(words: number): number {
+  return Math.round((words / WORDS_PER_PAGE) * 10) / 10;
 }
 
 function escapeHtml(s: string): string {

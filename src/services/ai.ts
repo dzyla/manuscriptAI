@@ -1392,7 +1392,9 @@ export async function chatWithAgent(
   settings: AISettings,
   attachedSources?: Array<{ name: string; text: string }>,
   images?: AttachedImage[],
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  tools?: AgentTool[],
+  onToolUse?: (name: string) => void
 ): Promise<{ text: string; suggestions?: Suggestion[] }> {
   const activePrompt = getActivePrompt(agent, settings);
   const isLocal = settings.provider === 'local';
@@ -1448,7 +1450,11 @@ ${intent !== 'info_question' ? `After your response, append any text edit sugges
 ]
 [SUGGESTIONS_END]` : 'Reply in plain text only — no suggestions block needed.'}`;
 
-  let textResponse = await callLLM(prompt, settings, activePrompt, false, images, signal);
+  // Tool loop only for text-only chats (images bypass it — vision + tool
+  // protocol confuses small models)
+  let textResponse = (tools && tools.length > 0 && (!images || images.length === 0))
+    ? await runWithTools(prompt, activePrompt, tools, settings, signal, onToolUse)
+    : await callLLM(prompt, settings, activePrompt, false, images, signal);
   if (!textResponse) textResponse = '';
 
   const suggestionsMatch = textResponse.match(/\[SUGGESTIONS_START\]([\s\S]*?)\[SUGGESTIONS_END\]/);
@@ -2080,6 +2086,107 @@ export async function generatePostDraftingContent(text: string, type: 'cover_let
   } catch (error) {
     throw new Error(`Failed to generate content: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
+}
+
+/**
+ * Generate a grant template from a natural-language description or pasted FOA
+ * text. Returns a raw object for grantTemplates.normalizeTemplate() to validate.
+ */
+export async function generateGrantTemplate(description: string, settings: AISettings): Promise<any> {
+  const systemPrompt = `You design grant application templates. Given a funding-opportunity description, output the section structure an applicant must write.
+Return ONLY valid JSON, exactly this shape:
+{"name":"short template name","mechanism":"R01 or FOA number or funder acronym","description":"one sentence","sections":[{"title":"Section Title","pageLimit":2,"guidance":"2-3 sentences telling the applicant what this section must accomplish"}]}
+Rules:
+- 4-12 sections in the order they appear in the application
+- pageLimit: number of pages allowed; omit the field if the funder sets no limit. NEVER invent limits — use limits stated in the description, or well-known limits for the named mechanism (e.g. NIH R01: Specific Aims 1, Research Strategy 12)
+- guidance must be actionable and specific to this funder, not generic
+- No markdown, no commentary, JSON only`;
+
+  const prompt = `Funding opportunity / grant description:\n"""\n${truncateText(description, settings.provider === 'local' ? 4000 : 12000)}\n"""\n\nReturn the template JSON.`;
+  const raw = await callLLM(prompt, settings, systemPrompt, true, undefined, undefined, 2000);
+  return parseJSONRobust(raw);
+}
+
+/** Condense a section to fit its page budget. Returns the trimmed text. */
+export async function trimSectionToLimit(sectionText: string, sectionTitle: string, budgetWords: number, settings: AISettings): Promise<string> {
+  const systemPrompt = `You condense grant/manuscript sections to fit strict page limits without losing substance.
+Rules:
+- Target length: at most ${budgetWords} words (currently over the limit).
+- Preserve every distinct claim, aim, number, and citation marker like [3]; cut redundancy, filler, and over-explanation instead.
+- Keep the same heading-free plain prose structure and paragraph order.
+- Do NOT use em dashes or en dashes. Keep sentences under 30 words.
+Return ONLY the condensed section text, no commentary.${grantInstructionsBlock()}`;
+
+  const prompt = `Section "${sectionTitle}" (${budgetWords}-word budget):\n"""\n${sectionText}\n"""\n\nCondense it to fit the budget.`;
+  const out = await callLLM(prompt, settings, systemPrompt, false);
+  return out.trim();
+}
+
+// ─── Agent tools ──────────────────────────────────────────────────────────────
+
+export interface AgentTool {
+  name: string;
+  description: string;
+  /** executes the tool; returns plain text for the model */
+  run: (args: Record<string, any>) => Promise<string>;
+}
+
+const TOOL_CALL_RE = /\[TOOL_CALL\]([\s\S]*?)\[\/TOOL_CALL\]/;
+
+function toolProtocolPrompt(tools: AgentTool[]): string {
+  return `
+
+TOOLS AVAILABLE — you may call these before answering:
+${tools.map(t => `- ${t.name}: ${t.description}`).join('\n')}
+To call a tool, reply with ONLY:
+[TOOL_CALL]{"tool":"<name>","args":{...}}[/TOOL_CALL]
+You will receive the result and can then call another tool or give your final answer. Maximum 3 tool calls. Never mention the tool syntax in your final answer.`;
+}
+
+/**
+ * Provider-agnostic tool loop: works with any model (no native function-calling
+ * required). The model requests tools via a [TOOL_CALL] JSON block; we execute
+ * and feed results back, then return the final plain answer.
+ */
+export async function runWithTools(
+  prompt: string,
+  systemPrompt: string,
+  tools: AgentTool[],
+  settings: AISettings,
+  signal?: AbortSignal,
+  onToolUse?: (name: string) => void,
+): Promise<string> {
+  if (tools.length === 0) return callLLM(prompt, settings, systemPrompt, false, undefined, signal);
+
+  const system = systemPrompt + toolProtocolPrompt(tools);
+  let conversation = prompt;
+
+  for (let round = 0; round < 4; round++) {
+    const response = await callLLM(conversation, settings, system, false, undefined, signal);
+    const match = response.match(TOOL_CALL_RE);
+    if (!match || round === 3) {
+      return response.replace(TOOL_CALL_RE, '').trim();
+    }
+
+    let result = '';
+    let toolName = 'unknown';
+    try {
+      const call = parseJSONRobust(match[1]);
+      toolName = String(call.tool ?? '');
+      const tool = tools.find(t => t.name === toolName);
+      if (!tool) {
+        result = `Error: unknown tool "${toolName}". Available: ${tools.map(t => t.name).join(', ')}`;
+      } else {
+        onToolUse?.(toolName);
+        result = await tool.run(call.args ?? {});
+      }
+    } catch (e) {
+      result = `Error executing tool: ${e instanceof Error ? e.message : 'invalid tool call JSON'}`;
+    }
+
+    conversation += `\n\n[Assistant called tool ${toolName}]\n[TOOL_RESULT]\n${result.slice(0, 6000)}\n[/TOOL_RESULT]\n\nContinue: call another tool if needed, or give your final answer now.`;
+  }
+  return '';
 }
 
 export const POST_DRAFTING_PROMPTS = {

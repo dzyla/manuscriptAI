@@ -49,6 +49,8 @@ interface EditorProps {
   aiSettings?: AISettings;
   onAnalyzeImage?: (dataUrl: string, prompt: string, contextText?: string) => void;
   onInsertFigure?: () => void;
+  /** render dashed page-break guides at NIH-format intervals (grant mode) */
+  showPageGuides?: boolean;
 }
 
 export interface EditorRef {
@@ -63,6 +65,7 @@ export interface EditorRef {
   getSelectedText: () => string;
   getCurrentSection: () => string | null;
   getCurrentSectionText: () => string | null;
+  getSectionTextByTitle: (title: string) => string | null;
   scrollToHeading: (headingText: string) => void;
   scrollToCitation: (num: number) => void;
   getCitationOrder: () => string[];
@@ -123,8 +126,33 @@ const BUBBLE_ACTIONS: { label: string; instruction: string; agent: AgentType; ic
   },
 ];
 
-const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggestions, onSuggestionClick, onSelectionQuery, onTransformSelection, onRewriteSection, onAnalyzeSection, onVerifyClaim, onSearchSimilar, sources, citationRegistry, onInsertCitation, isDistractionFree, editorZoom = 100, editorWidth = 'normal', aiSettings, onAnalyzeImage, onInsertFigure }, ref) => {
+const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggestions, onSuggestionClick, onSelectionQuery, onTransformSelection, onRewriteSection, onAnalyzeSection, onVerifyClaim, onSearchSimilar, sources, citationRegistry, onInsertCitation, isDistractionFree, editorZoom = 100, editorWidth = 'normal', aiSettings, onAnalyzeImage, onInsertFigure, showPageGuides = false }, ref) => {
   const [isMounted, setIsMounted] = useState(false);
+
+  // ── Page guides: dashed page-break lines at NIH-format intervals ──────────
+  // Page height scales with rendered content width (7.5in usable width → 10in
+  // usable height per page), so zoom and editor width are handled implicitly.
+  const pageGuideContainerRef = useRef<HTMLDivElement>(null);
+  const [pageGuideOffsets, setPageGuideOffsets] = useState<number[]>([]);
+  useEffect(() => {
+    if (!showPageGuides) { setPageGuideOffsets([]); return; }
+    const el = pageGuideContainerRef.current;
+    if (!el) return;
+    const compute = () => {
+      const prose = el.querySelector('.ProseMirror') as HTMLElement | null;
+      if (!prose) return;
+      const pageHeight = (prose.clientWidth / 7.5) * 10;
+      if (pageHeight < 100) return;
+      const contentTop = prose.offsetTop;
+      const n = Math.floor(prose.scrollHeight / pageHeight);
+      setPageGuideOffsets(Array.from({ length: Math.min(n, 200) }, (_, i) => contentTop + (i + 1) * pageHeight));
+    };
+    compute();
+    const ro = new ResizeObserver(compute);
+    const prose = el.querySelector('.ProseMirror');
+    if (prose) ro.observe(prose);
+    return () => ro.disconnect();
+  }, [showPageGuides, content, editorZoom, editorWidth]);
   const [showSelectionBar, setShowSelectionBar] = useState(false);
   const [selectionInstruction, setSelectionInstruction] = useState('');
   const [selectionAgent, setSelectionAgent] = useState<AgentType>('editor');
@@ -747,6 +775,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
     getSelectedText,
     getCurrentSection: () => currentSectionTitle,
     getCurrentSectionText: () => currentSectionTitle ? getSectionText(currentSectionTitle) : null,
+    getSectionTextByTitle: (title: string) => title ? getSectionText(title) : null,
     scrollToHeading: (headingText: string) => {
       if (!editor) return;
       let targetPos: number | null = null;
@@ -967,12 +996,22 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
         </div>
 
         <div
-          className="px-8 sm:px-12 md:px-16 py-12 md:py-20"
+          ref={pageGuideContainerRef}
+          className="px-8 sm:px-12 md:px-16 py-12 md:py-20 relative"
           style={{
             fontSize: `${editorZoom}%`,
 
           }}
         >
+          {showPageGuides && pageGuideOffsets.map((top, i) => (
+            <div key={i} className="absolute left-0 right-0 pointer-events-none z-10" style={{ top }} aria-hidden>
+              <div className="border-t border-dashed border-stone-300 relative">
+                <span className="absolute -top-2.5 right-1 text-[9px] font-bold px-1 rounded" style={{ color: 'var(--text-muted)', background: 'var(--surface-1)' }}>
+                  p. {i + 2}
+                </span>
+              </div>
+            </div>
+          ))}
           <EditorContent editor={editor} />
         </div>
 

@@ -9,9 +9,9 @@ import { searchSimilarManuscripts } from './services/manuscriptSearch';
 import { expandCitationNums, formatCitationGroup, mergeAdjacentCitations } from './services/citations';
 import { analyzeText, chatWithAgent, chatWithManuscript, resolveConflicts, runJudgeAgent, rebutSuggestion, manuscriptSummary, rewriteSection, transformWithInstruction, analyzeSourceAgainstManuscript, verifyClaimAgainstSources, AGENT_INFO, AGENT_ICONS, estimateTokens } from './services/ai';
 import { findTextSpan } from './utils/textMatch';
-import { setDocumentContext } from './services/ai';
+import { setDocumentContext, trimSectionToLimit, type AgentTool } from './services/ai';
 import { GrantTemplatePicker, GrantInstructionsModal, GrantToolbar } from './components/GrantPanel';
-import type { GrantTemplate } from './services/grantTemplates';
+import { loadCustomTemplates, getGrantTemplate, WORDS_PER_PAGE, type GrantTemplate } from './services/grantTemplates';
 import { Sparkles, FileText, Settings, Download, Keyboard, Eye, Moon, Sun, ChevronDown, FilePlus, Coins, BookOpen, Github, Square } from 'lucide-react';
 import { saveAs } from 'file-saver';
 import * as mammoth from 'mammoth';
@@ -97,6 +97,83 @@ export default function App() {
   useEffect(() => {
     setDocumentContext({ mode, grantInstructions });
   }, [mode, grantInstructions]);
+
+  useEffect(() => { void loadCustomTemplates(); }, []);
+
+  const [trimmingSection, setTrimmingSection] = useState<string | null>(null);
+  const handleTrimSection = async (sectionTitle: string, budgetWords: number) => {
+    const sectionText = editorRef.current?.getSectionTextByTitle(sectionTitle);
+    if (!sectionText) { showToast('Section not found in document', 'error'); return; }
+    // Body only — getSectionTextByTitle prepends the title line
+    const body = sectionText.split('\n\n').slice(1).join('\n\n').trim();
+    if (!body) return;
+    setTrimmingSection(sectionTitle);
+    try {
+      const trimmed = await trimSectionToLimit(body, sectionTitle, budgetWords, aiSettings);
+      if (!trimmed || trimmed === body) { showToast('Trim produced no change', 'info'); return; }
+      const plainText = editorRef.current?.getPlainText() || stripHtml(content);
+      const span = findTextSpan(plainText, body);
+      addSuggestions([{
+        id: `suggestion-trim-${Date.now()}`,
+        originalText: span?.matchedText ?? body,
+        suggestedText: trimmed,
+        explanation: `Condensed "${sectionTitle}" to fit its ${Math.round(budgetWords / WORDS_PER_PAGE * 10) / 10}-page NIH limit (~${budgetWords} words).`,
+        agent: 'editor',
+        startIndex: span?.start ?? 0,
+        endIndex: span?.end ?? body.length,
+        severity: 'major',
+        category: 'structure',
+        section: sectionTitle,
+      }]);
+      setSidebarTab('suggestions');
+      showToast(`Trim ready for "${sectionTitle}" — review in Suggestions`, 'success');
+    } catch (e) {
+      showToast(`Trim failed: ${e instanceof Error ? e.message : 'Unknown error'}`, 'error');
+    } finally {
+      setTrimmingSection(null);
+    }
+  };
+
+  // Tools the chat agents can call mid-conversation (provider-agnostic protocol)
+  const buildAgentTools = (): AgentTool[] => [
+    {
+      name: 'search_literature',
+      description: 'Semantic search over PubMed/bioRxiv/medRxiv/arXiv. args: {"query": "..."} — returns top matching papers with abstracts.',
+      run: async (args) => {
+        const results = await searchSimilarManuscripts(String(args.query ?? ''), 5);
+        if (results.length === 0) return 'No results found.';
+        return results.map((r, i) => `[${i + 1}] ${r.title} (${r.journal ?? r.source} ${r.year ?? ''}) DOI:${r.doi}\n${(r.abstract || '').slice(0, 400)}`).join('\n\n');
+      },
+    },
+    {
+      name: 'read_section',
+      description: 'Read the full text of one document section. args: {"title": "exact H2 heading"}',
+      run: async (args) => editorRef.current?.getSectionTextByTitle(String(args.title ?? '')) || `Section "${args.title}" not found. Use one of the document's H2 headings.`,
+    },
+    {
+      name: 'check_page_budgets',
+      description: 'Get current word/page counts per section vs the grant template limits. args: {}',
+      run: async () => {
+        const template = getGrantTemplate(grantTemplateId);
+        if (!template) return 'No grant template applied to this document.';
+        const plain = editorRef.current?.getPlainText() ?? '';
+        return template.sections.map(s => {
+          const text = editorRef.current?.getSectionTextByTitle(s.title);
+          const words = text ? text.split(/\s+/).filter(Boolean).length : 0;
+          const limit = s.pageLimit ? ` / limit ${s.pageLimit} pages (~${Math.round(s.pageLimit * WORDS_PER_PAGE)} words)` : '';
+          return `${s.title}: ${words} words${limit}`;
+        }).join('\n') + `\nTotal: ${plain.split(/\s+/).filter(Boolean).length} words`;
+      },
+    },
+    {
+      name: 'verify_claim',
+      description: 'Check a claim against the uploaded reference sources. args: {"claim": "..."}',
+      run: async (args) => {
+        const digested = sources.filter(s => s.text || s.digest).map(s => ({ name: s.name, text: s.text, digest: s.digest }));
+        return verifyClaimAgainstSources(String(args.claim ?? ''), digested, aiSettings);
+      },
+    },
+  ];
 
   const handleApplyGrantTemplate = (template: GrantTemplate, html: string) => {
     editorRef.current?.setContent(html);
@@ -400,7 +477,11 @@ export default function App() {
     try {
       const result = agent === 'manuscript-ai'
         ? await chatWithManuscript(text, manuscriptArg, aiSettings, sourcesWithContext.length > 0 ? sourcesWithContext : undefined, images, signal)
-        : await chatWithAgent(text, manuscriptArg, agent, aiSettings, sourcesWithContext.length > 0 ? sourcesWithContext : undefined, images, signal);
+        : await chatWithAgent(text, manuscriptArg, agent, aiSettings, sourcesWithContext.length > 0 ? sourcesWithContext : undefined, images, signal,
+            buildAgentTools(), (toolName) => {
+              const prev = useAIStore.getState().analysisProgress;
+              setAnalysisProgress({ agent: `Using tool: ${toolName}…`, total: prev?.total ?? 1, done: prev?.done ?? 0 });
+            });
       const suggestions: Suggestion[] | undefined = 'suggestions' in result ? (result as any).suggestions : undefined;
       const newSugs: Suggestion[] | undefined = 'suggestions' in result ? (result as any).suggestions : undefined;
       const assistantMsg: Message = {
@@ -1188,6 +1269,8 @@ export default function App() {
             hasInstructions={grantInstructions.trim().length > 0}
             onOpenTemplates={() => setShowTemplatePicker(true)}
             onOpenInstructions={() => setShowGrantInstructions(true)}
+            onTrimSection={handleTrimSection}
+            trimmingSection={trimmingSection}
           />
         )}
 
@@ -1196,6 +1279,7 @@ export default function App() {
           <Editor
             ref={editorRef}
             content={content}
+            showPageGuides={mode === 'grant'}
             onChange={(html) => setContent(html)}
             suggestions={suggestions}
             onSuggestionClick={handleSuggestionClick}
@@ -1293,6 +1377,7 @@ export default function App() {
       {showTemplatePicker && (
         <GrantTemplatePicker
           documentHasContent={stripHtml(content).replace(/Start writing your manuscript here.*$/, '').trim().length > 0}
+          aiSettings={aiSettings}
           onApply={handleApplyGrantTemplate}
           onClose={() => setShowTemplatePicker(false)}
         />
