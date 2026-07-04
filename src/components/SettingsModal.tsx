@@ -48,7 +48,7 @@ export default function SettingsModal({ isOpen, onClose, settings, onUpdateSetti
       setZoteroSyncing(false);
     }
   };
-  const allAgents: AgentType[] = ['manager', 'editor', 'reviewer-2', 'researcher'];
+  const allAgents: AgentType[] = ['manager', 'editor', 'reviewer-2', 'researcher', 'statistician', 'consistency', 'reporting', 'citation-checker'];
 
   const resetPrompt = (agent: AgentType) => {
     const newCustom = { ...settings.customPrompts };
@@ -292,6 +292,19 @@ export default function SettingsModal({ isOpen, onClose, settings, onUpdateSetti
                             <option value="4000">Large chunks — 4000 chars (16k ctx models)</option>
                             <option value="8000">XL chunks — 8000 chars (32k+ ctx models)</option>
                           </select>
+                        </div>
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>Analysis Pipeline (chunked mode)</label>
+                          <select
+                            value={settings.pipelineMode ?? 'find-fix'}
+                            onChange={(e) => onUpdateSettings({ ...settings, pipelineMode: e.target.value as 'find-fix' | 'single' })}
+                            className="w-full p-3 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-stone-800/10 transition-all"
+                            style={inputStyle}
+                          >
+                            <option value="find-fix">Find-then-fix (recommended for small models)</option>
+                            <option value="single">Single-pass (fewer calls, faster)</option>
+                          </select>
+                          <p className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>Find-then-fix splits analysis into an easy "quote the problems" pass and a "write the fixes" pass — small models handle it far better. Only applies when chunking is on.</p>
                         </div>
                         <div className="p-3 rounded-lg text-[10px] leading-relaxed space-y-1" style={{ background: 'var(--surface-2)', color: 'var(--text-tertiary)' }}>
                           <p className="font-semibold" style={{ color: 'var(--text-secondary)' }}>Local LLM Tips:</p>

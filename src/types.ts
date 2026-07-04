@@ -1,4 +1,4 @@
-export type AgentType = 'manager' | 'editor' | 'reviewer-2' | 'researcher' | 'literature-reviewer' | 'manuscript-ai' | 'citation-checker';
+export type AgentType = 'manager' | 'editor' | 'reviewer-2' | 'researcher' | 'literature-reviewer' | 'manuscript-ai' | 'citation-checker' | 'statistician' | 'consistency' | 'reporting';
 
 export interface SemanticSearchResult {
   title: string;
@@ -31,6 +31,9 @@ export interface PdfMatchScore {
 
 export type AIProvider = 'gemini' | 'openai' | 'anthropic' | 'local';
 
+/** Editing mode: manuscripts get journal-style agents, grants get NIH-style agents */
+export type DocumentMode = 'manuscript' | 'grant';
+
 export type SuggestionSeverity = 'critical' | 'major' | 'minor' | 'style';
 
 export type SuggestionCategory = 'grammar' | 'flow' | 'evidence' | 'impact' | 'clarity' | 'statistics' | 'citation' | 'structure' | 'style' | 'research';
@@ -47,6 +50,9 @@ export interface AISettings {
   localApiKey: string;
   localModel: string;
   localChunkSize?: number;  // 0 = no chunking (full manuscript), undefined/default = 2000 chars
+  /** Local chunked analysis strategy. 'find-fix' (default): two-pass find-then-fix
+   *  for small models. 'single': legacy one-shot per chunk. */
+  pipelineMode?: 'find-fix' | 'single';
   customPrompts?: Partial<Record<AgentType, string>>;
   zotero?: ZoteroSettings;
 }
@@ -124,6 +130,11 @@ export interface DocumentRow {
   figureRegistry: Record<string, number>;
   figureCounter: number;
   updatedAt: number;
+  mode?: DocumentMode;
+  /** Free-text funder guidelines (FOA notes, review criteria) injected into every prompt in grant mode */
+  grantInstructions?: string;
+  /** id of the grant template the document was created from (enables page-budget tracking) */
+  grantTemplateId?: string;
 }
 
 export interface SourceRow extends ManuscriptSource {

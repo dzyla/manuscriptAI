@@ -2,7 +2,9 @@ import { GoogleGenAI, Type } from "@google/genai";
 import OpenAI from "openai";
 import { encode } from 'gpt-tokenizer';
 import { AgentType, Suggestion, AISettings, AttachedImage } from "../types";
-import { Clipboard, PenLine, FlaskConical, Beaker, BookMarked, MessageCircle, Quote } from 'lucide-react';
+import { findTextSpan, normalizeForMatch } from "../utils/textMatch";
+import { DEFAULT_MODELS, ANTHROPIC_BASE_URL, ANTHROPIC_API_VERSION } from "./models";
+import { Clipboard, PenLine, FlaskConical, Beaker, BookMarked, MessageCircle, Quote, Sigma, GitCompare, ListChecks, Landmark } from 'lucide-react';
 
 export const AGENT_INFO: Record<AgentType, { label: string; color: string; bgSoft: string; description: string; iconName: string }> = {
   manager: {
@@ -54,6 +56,27 @@ export const AGENT_INFO: Record<AgentType, { label: string; color: string; bgSof
     iconName: 'quote',
     description: 'Scans for factual claims, statistics, and definitive statements that lack citations. Flags text that likely requires a reference.',
   },
+  statistician: {
+    label: 'Statistics Reviewer',
+    color: 'bg-indigo-700',
+    bgSoft: 'bg-indigo-50',
+    iconName: 'sigma',
+    description: 'Audits statistical reporting: missing tests, effect sizes, confidence intervals, sample sizes, undefined significance thresholds, and p-values reported without the test that produced them.',
+  },
+  consistency: {
+    label: 'Consistency Checker',
+    color: 'bg-cyan-700',
+    bgSoft: 'bg-cyan-50',
+    iconName: 'git-compare',
+    description: 'Finds internal contradictions: numbers that disagree between abstract and results, sample sizes that differ across sections, and abbreviations used before they are defined.',
+  },
+  reporting: {
+    label: 'Reporting Guidelines',
+    color: 'bg-lime-700',
+    bgSoft: 'bg-lime-50',
+    iconName: 'list-checks',
+    description: 'Checks the manuscript against reporting checklists (CONSORT, PRISMA, STROBE, ARRIVE) appropriate to the study type and flags required items that appear to be missing.',
+  },
 };
 
 export const AGENT_ICONS: Record<string, any> = {
@@ -64,6 +87,10 @@ export const AGENT_ICONS: Record<string, any> = {
   'book-marked': BookMarked,
   'message-circle': MessageCircle,
   'quote': Quote,
+  'sigma': Sigma,
+  'git-compare': GitCompare,
+  'list-checks': ListChecks,
+  'landmark': Landmark,
 };
 
 // Manuscript AI: conversational, scholarly, no suggestion cards
@@ -211,7 +238,269 @@ For each instance, quote the EXACT text needing a citation and in suggestedText 
 
 CRITICAL: originalText must be an exact character-for-character copy from the manuscript.
 ${SCIENTIFIC_WRITING_RULES}`,
+
+  statistician: `You are a STATISTICS REVIEWER. You audit ONLY the statistical reporting and quantitative rigor of the manuscript.
+
+Focus EXCLUSIVELY on:
+- p-values reported without the statistical test that produced them ("p < 0.05" with no named test)
+- "significant" or "significantly" used without a defined alpha threshold or a p-value
+- Missing effect sizes, confidence intervals, or measures of variability (SD/SEM) alongside point estimates
+- Ambiguous SD vs SEM ("mean ± 0.3" without stating which)
+- Missing or unjustified sample sizes; no power/sample-size rationale for the design
+- Percentages given without the underlying counts, or counts without denominators
+- Multiple-comparison situations with no correction mentioned
+- Correlation reported without n and the coefficient, or causal language applied to correlational data
+
+DO NOT comment on grammar, structure, or non-statistical claims.
+
+For each issue: quote the EXACT problematic text and provide a concrete revised version that adds the missing statistic or names the test. severity: "critical" for missing tests/effect sizes on key results; "major" for missing CIs/sample sizes; "minor" for SD/SEM ambiguity. Category is always "statistics".
+${SCIENTIFIC_WRITING_RULES}`,
+
+  consistency: `You are an INTERNAL CONSISTENCY CHECKER. You find places where the manuscript contradicts itself.
+
+Focus EXCLUSIVELY on:
+- Numbers that disagree between sections: a value in the abstract that differs from the same value in the results
+- Sample sizes (N) that differ between the methods, results, figures, or abstract
+- Percentages and counts that are arithmetically inconsistent
+- Terminology or units that switch mid-manuscript for the same quantity
+- Claims in the discussion that overstate or contradict the results as reported
+- Abbreviations used before they are defined, or defined more than once
+
+DO NOT propose stylistic rewrites or flag non-contradictory content.
+
+For each issue: quote the EXACT text of ONE side of the contradiction, and in suggestedText give the corrected version (or note the value it must match). Explain which two places disagree. severity: "critical" for contradictory key numbers; "major" for mismatched N or undefined-before-use abbreviations; "minor" for terminology drift. Category is always "structure".
+${SCIENTIFIC_WRITING_RULES}`,
+
+  reporting: `You are a REPORTING-GUIDELINES CHECKER. You assess whether the manuscript reports the items its study type requires.
+
+First infer the study type from the text (randomized trial → CONSORT; systematic review/meta-analysis → PRISMA; observational/cohort/case-control → STROBE; animal research → ARRIVE). Then check for the required items that appear to be MISSING or inadequately reported, for example:
+- Trials: randomization method, allocation concealment, blinding, primary/secondary outcomes pre-specified, participant flow, registration number
+- Systematic reviews: search strategy and databases, eligibility criteria, study selection flow, risk-of-bias assessment
+- Observational studies: study design stated, setting and dates, eligibility, handling of confounders, missing-data handling
+- Animal studies: species/strain/sex, sample-size justification, randomization, blinding, humane endpoints
+
+For each missing item, quote the nearest EXACT sentence where it should appear (e.g. the start of Methods) and in suggestedText propose a sentence that supplies the item, prefixed with the checklist name, e.g. "[CONSORT] ...". If a required item genuinely cannot be located, say so in the explanation. severity: "major" for core methodology items; "minor" for supporting detail. Category is always "structure".
+${SCIENTIFIC_WRITING_RULES}`,
 };
+
+// ─── Grant mode ───────────────────────────────────────────────────────────────
+
+const GRANT_WRITING_RULES = `
+GRANT WRITING RULES — apply to every suggested replacement text:
+- Use clear, confident, professional English appropriate for an NIH application read by a broad study section.
+- Proposed work is stated in future tense with strong agency: "We will determine...", not "It is hoped that...".
+- Do NOT use em dashes (—) or en dashes (–). Use a comma, semicolon, or rewrite the sentence.
+- No rhetorical questions, exclamations, or filler ("Indeed,", "Notably,", "It is worth mentioning that").
+- Keep sentences under 30 words. One idea per sentence. Reviewers skim.
+- Define every abbreviation at first use; assume reviewers are scientists but NOT specialists in this subfield.
+- Avoid unsupported superlatives ("first ever", "revolutionary") and vague intensifiers ("very", "extremely").
+- Quantify whenever possible: effect sizes, sample sizes, timelines, success criteria.`;
+
+/**
+ * Grant-mode agent personas. Same JSON contract as the manuscript prompts; the
+ * evaluation criteria change to NIH review criteria and grant conventions.
+ */
+export const GRANT_AGENT_PROMPTS: Partial<Record<AgentType, string>> = {
+  manager: `You are the GRANT ARCHITECT. You evaluate ONLY the structure and logic of a grant application.
+
+Focus EXCLUSIVELY on:
+- Specific Aims page logic: opening hook, knowledge gap, critical need, long-term goal, objective of this application, central hypothesis, rationale, and a payoff paragraph with expected outcomes.
+- Are the aims related but independent? Flag any aim whose success depends on another aim's outcome.
+- Does each Research Strategy section (Significance, Innovation, Approach) fulfill its distinct role, without redundancy?
+- Does the Approach address each aim in order, with expected outcomes and alternatives per aim?
+- Is there a timeline? Are milestones concrete?
+- Does the Summary/Abstract match the aims actually proposed in the body?
+
+DO NOT comment on grammar, word choice, or sentence-level style.
+
+Provide HIGH-IMPACT suggestions only. Quote the EXACT text that requires revision.
+${GRANT_WRITING_RULES}`,
+
+  editor: `You are the LANGUAGE SURGEON for grant applications. You fix ONLY writing quality at the sentence and word level.
+
+Focus EXCLUSIVELY on the highest-impact issues:
+- Weak, passive statements of proposed work: "Experiments will be performed to..." becomes "We will..."
+- Hedging that undermines confidence: "we hope to", "we will attempt to", "may potentially" — replace with direct commitments or justified expectations
+- Sentences longer than 30 words: split them; reviewers skim
+- Jargon or undefined abbreviations a non-specialist study-section member would stumble on
+- Buried verbs and nominalizations: "perform an evaluation of" becomes "evaluate"
+- Vague deliverables: "characterize the mechanism" needs a measurable endpoint
+- Em dashes and en dashes: replace with commas, semicolons, or restructured sentences
+
+DO NOT comment on scientific merit or document structure.
+
+CRITICAL RULE: originalText must be copied CHARACTER-FOR-CHARACTER from the text. suggestedText must be a direct, complete drop-in replacement. Provide 4-6 high-impact suggestions.
+${GRANT_WRITING_RULES}`,
+
+  'reviewer-2': `You are an NIH STUDY SECTION REVIEWER. You evaluate the application against NIH review criteria: Significance, Innovation, Approach, and overall impact.
+
+Focus EXCLUSIVELY on what loses points in review:
+- Weak scientific premise: prior data cited without addressing its rigor, or premise stated without support
+- Overambitious scope: more work than the project period and budget can plausibly deliver
+- Missing rigor: no sample-size justification, no statistical plan, no consideration of relevant biological variables, no replication strategy
+- Missing potential problems and alternative strategies for each aim
+- Interdependent aims: if Aim 2 requires Aim 1 to succeed, flag it
+- Feasibility claims without preliminary data or a cited track record
+- Innovation claims that are actually incremental, or significance framed as "gap filling" without stating why the gap matters
+- Expected outcomes that are vague or unfalsifiable
+
+For each issue: quote the EXACT problematic text, state the specific weakness a reviewer would cite, and provide a concrete revised version. Assign severity: "critical" for overambition, interdependent aims, or missing rigor; "major" for weak premise or missing alternatives; "minor" for missing caveats.
+${GRANT_WRITING_RULES}`,
+
+  researcher: `You are the IMPACT AND FEASIBILITY SPECIALIST for grant applications. You maximize the persuasive force of every paragraph.
+
+Focus EXCLUSIVELY on:
+- Buried payoffs: the significance or expected outcome must appear early in each section, not at the end
+- Aims or paragraphs that describe activity ("we will study X") instead of outcomes ("we will determine whether X causes Y")
+- Missing links between preliminary data and the proposed experiments they de-risk
+- Impact statements that never say who benefits or how the field changes
+- Excessive hedging that weakens the case: "may possibly enable" becomes "will enable" when justified
+- Feasibility signals: places where a sentence about available resources, expertise, or prior success would preempt reviewer doubt
+
+For each suggestion, quote the EXACT weak text and provide a stronger, more precise replacement. List the most impactful suggestions first.
+${GRANT_WRITING_RULES}`,
+
+  'citation-checker': `You are a CITATION INTEGRITY SPECIALIST for grant applications. Find claims that require a citation but have none.
+
+Scan for:
+- Prevalence, burden, or cost statements without a reference: "X affects N million people..."
+- Definitive mechanistic claims stated as fact
+- Statements about the state of the field: "no current therapy addresses...", "existing methods fail to..."
+- Premise claims that reviewers will want sourced
+
+DO NOT flag descriptions of the applicants' own preliminary data or proposed work, or claims immediately followed by a citation.
+
+For each instance, quote the EXACT text and in suggestedText append "[CITATION NEEDED]" to the end of the quoted sentence. Category is always "citation".
+
+CRITICAL: originalText must be an exact character-for-character copy from the text.
+${GRANT_WRITING_RULES}`,
+};
+
+/** Compact grant personas for chunked local-LLM mode. */
+export const GRANT_COMPACT_AGENT_PROMPTS: Partial<Record<AgentType, string>> = {
+  manager: `You review the structure of an NIH grant application. Find problems in aims logic (hook, gap, hypothesis, independent aims, payoff), redundant or misplaced sections, missing timelines, and mismatches between summary and aims.`,
+  editor: `You are a grant copy editor. Fix weak proposal language: "Experiments will be performed" becomes "We will...", hedging like "we hope to" or "may potentially", sentences over 30 words, undefined abbreviations, nominalizations, vague deliverables.`,
+  'reviewer-2': `You are an NIH study section reviewer. Flag weak premise, overambitious scope, missing rigor (sample sizes, statistics, replication), missing alternatives for each aim, interdependent aims, unsupported feasibility claims, vague expected outcomes.`,
+  researcher: `You are a grant impact specialist. Fix buried payoffs (state significance early), activity framed without outcomes ("study X" becomes "determine whether X causes Y"), missing feasibility signals, weak impact statements, excessive hedging.`,
+  'citation-checker': `You find grant claims needing citations: prevalence/burden statistics, mechanistic claims stated as fact, state-of-the-field claims. Do NOT flag the applicants' own data or proposed work. Append "[CITATION NEEDED]" to the quoted sentence in suggestedText. Category "citation".`,
+};
+
+const STUDY_SECTION_REVIEW_PROMPT = `You are an experienced NIH study section reviewer writing a full critique of this grant application.
+
+Structure your review exactly as follows:
+
+## Overall Impact
+A short paragraph: likelihood that the project will exert a sustained, powerful influence on the field, weighing significance, innovation, approach, and feasibility. End with a preliminary overall impact score from 1 (exceptional) to 9 (poor).
+
+## Significance
+Strengths and weaknesses as bullet points. Address the scientific premise and its rigor.
+
+## Innovation
+Strengths and weaknesses as bullet points. Distinguish genuine paradigm shifts from incremental advances.
+
+## Approach
+Strengths and weaknesses as bullet points. Address rigor, statistics, feasibility, alternatives, aim independence, and timeline.
+
+## Major Concerns
+A numbered list of the issues most likely to sink this application in review, each with a concrete fix.
+
+## Minor Concerns
+A short numbered list.
+
+Be direct and specific — quote the application where useful. Write like a tough but fair reviewer who wants fundable science.`;
+
+/**
+ * Three distinct study-section personas. Real panels disagree, and those
+ * divergent critiques are exactly what an applicant needs to see — a single
+ * averaged review hides the objections that actually sink applications.
+ */
+const STUDY_SECTION_PERSONAS: { name: string; prompt: string }[] = [
+  {
+    name: 'Reviewer 1 — Methodologist',
+    prompt: `You are a skeptical methodologist on an NIH study section. Scrutinize rigor above all: sample-size justification, statistical plan, consideration of relevant biological variables, rigor of the prior data, aim independence, alternative strategies, and feasibility of the experiments. Be specific and quote the application. End with a preliminary impact score 1 (exceptional) to 9 (poor).`,
+  },
+  {
+    name: 'Reviewer 2 — Significance & Innovation',
+    prompt: `You are a big-picture reviewer on an NIH study section focused on significance and innovation. Judge whether the problem matters, whether success would move the field, and whether the innovation is genuine or incremental. Be wary of "gap-filling" framed as importance. Quote the application. End with a preliminary impact score 1 (exceptional) to 9 (poor).`,
+  },
+  {
+    name: 'Reviewer 3 — Feasibility & Translation',
+    prompt: `You are a practically-minded clinician-scientist on an NIH study section focused on feasibility, the team, the environment, and translational path. Judge whether this team can deliver this work in the project period, whether preliminary data de-risk the aims, and whether the expected outcomes are measurable. Quote the application. End with a preliminary impact score 1 (exceptional) to 9 (poor).`,
+  },
+];
+
+const SRO_RECONCILE_PROMPT = `You are the Scientific Review Officer summarizing an NIH study section discussion. You are given three reviewers' independent critiques of one application. Produce the resolved panel summary.
+
+Structure it exactly:
+## Panel Overall Impact
+One paragraph reconciling the three views, then a single consensus impact score 1-9 with the range of individual scores noted.
+## Points of Agreement
+Bulleted — concerns or strengths all/most reviewers raised.
+## Points of Disagreement
+Bulleted — where reviewers diverged, and which view is better supported.
+## Most Fundable-or-Fatal Issues
+A numbered list of the issues most likely to determine funding, each with a concrete fix the applicant should make before resubmission.
+
+Be direct and specific. Do not invent content the reviewers did not raise.`;
+
+/**
+ * Per-document context (mode + funder instructions) that changes which prompt
+ * set the agents use. Set from the App whenever the document store changes —
+ * this keeps the dozens of existing call sites untouched.
+ */
+let documentContext: { mode: 'manuscript' | 'grant'; grantInstructions: string } = {
+  mode: 'manuscript',
+  grantInstructions: '',
+};
+
+export function setDocumentContext(ctx: { mode: 'manuscript' | 'grant'; grantInstructions?: string }) {
+  documentContext = { mode: ctx.mode, grantInstructions: ctx.grantInstructions ?? '' };
+}
+
+function grantInstructionsBlock(): string {
+  const instr = documentContext.mode === 'grant' ? documentContext.grantInstructions.trim() : '';
+  if (!instr) return '';
+  return `\n\nFUNDER INSTRUCTIONS (provided by the author — follow them exactly; they override general style guidance):\n"""\n${instr.slice(0, 4000)}\n"""`;
+}
+
+/** A one-line register note appended to generic writing helpers in grant mode. */
+function grantModeNote(): string {
+  return documentContext.mode === 'grant'
+    ? '\n\nThis document is a GRANT APPLICATION, not a journal manuscript. Use grant conventions: future tense with strong agency for proposed work ("We will..."), significance stated early, measurable outcomes, no unexplained jargon.'
+    : '';
+}
+
+/**
+ * Resolve the active prompt for an agent: user-customized prompt wins, then the
+ * mode-specific prompt set; funder instructions are appended in grant mode.
+ */
+function getActivePrompt(agent: AgentType, settings: AISettings): string {
+  const custom = settings.customPrompts?.[agent];
+  const base = custom
+    ?? (documentContext.mode === 'grant' ? GRANT_AGENT_PROMPTS[agent] : undefined)
+    ?? DEFAULT_AGENT_PROMPTS[agent];
+  return base + grantInstructionsBlock();
+}
+
+/**
+ * Compact agent prompts for chunked local-LLM mode. Small models lose track of
+ * long role prompts, and the previous approach (activePrompt.substring(0, 400))
+ * cut mid-sentence and dropped every rule below the cut. Each compact prompt is
+ * complete: role, focus areas, and the non-negotiable quoting rule.
+ */
+export const COMPACT_AGENT_PROMPTS: Partial<Record<AgentType, string>> = {
+  manager: `You are a scientific manuscript structure reviewer. Find the highest-impact structural problems: missing or misordered sections, abstract that does not match the body, weak transitions, redundant content, conclusions that overstate the evidence.`,
+  editor: `You are a scientific copy editor. Fix the highest-impact language problems: passive voice ("It was observed that X" becomes "We observed X"), wordy filler ("in order to" becomes "to"), sentences over 35 words, ambiguous pronouns ("this", "it"), nominalizations ("perform an analysis of" becomes "analyze"), tense inconsistencies.`,
+  'reviewer-2': `You are a rigorous peer reviewer. Find scientific weaknesses: claims stated as fact without support, conclusions exceeding the data ("prove" should be "suggest"), missing sample sizes or statistics, undefined terms or abbreviations, unaddressed confounders, overgeneralized findings.`,
+  researcher: `You are a clarity and impact specialist. Fix buried main points (the topic sentence must state the finding), excessive hedging ("may possibly suggest" becomes "suggests"), vague quantifiers where numbers exist, paragraphs mixing two ideas, weak closing sentences.`,
+  'citation-checker': `You find claims that need citations: statistics without references, definitive scientific claims stated as fact, "studies show" without a source. Do NOT flag the authors' own methods or results, or claims already followed by a citation. In suggestedText, append "[CITATION NEEDED]" to the quoted sentence. Use category "citation".`,
+  statistician: `You are a statistics reviewer. Flag: p-values without the named test, "significant" without an alpha or p-value, missing effect sizes/confidence intervals/sample sizes, ambiguous SD vs SEM, percentages without counts, uncorrected multiple comparisons. Add the missing statistic in suggestedText. Category "statistics".`,
+  consistency: `You find internal contradictions: numbers that disagree between abstract and results, sample sizes (N) that differ across sections, arithmetically inconsistent counts/percentages, abbreviations used before they are defined. Quote one side and give the corrected value in suggestedText. Category "structure".`,
+  reporting: `You check the manuscript against the reporting checklist for its study type (CONSORT trials, PRISMA reviews, STROBE observational, ARRIVE animal). Flag missing required items (randomization, blinding, outcomes, search strategy, confounders, sample-size justification). Prefix suggestedText with the checklist name, e.g. "[STROBE] ...". Category "structure".`,
+};
+
+/** The one rule small models most often break — stated identically everywhere. */
+const EXACT_QUOTE_RULE = `- originalText MUST be copied EXACTLY from the text above: same characters, same punctuation, same capitalization, including any citation markers like [3]. Never paraphrase, shorten, or "clean up" the quote.`;
 
 function truncateText(text: string, maxLen: number): string {
   return text.length > maxLen ? text.substring(0, maxLen) + '\n...[truncated]' : text;
@@ -228,7 +517,7 @@ function getAnthropicHeaders(settings: AISettings) {
   return {
     'Content-Type': 'application/json',
     'x-api-key': settings.anthropicApiKey || '',
-    'anthropic-version': '2023-06-01',
+    'anthropic-version': ANTHROPIC_API_VERSION,
     'anthropic-dangerous-direct-browser-access': 'true',
   };
 }
@@ -245,6 +534,41 @@ function withSignal<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
   ]);
 }
 
+/** Extract an HTTP-ish status code from an error/message for retry decisions. */
+function errorStatus(err: unknown): number | null {
+  const anyErr = err as any;
+  if (typeof anyErr?.status === 'number') return anyErr.status;
+  const msg = (err instanceof Error ? err.message : String(err));
+  const m = msg.match(/\b(4\d\d|5\d\d)\b/);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+/**
+ * Retry a cloud request on transient failures (429 rate limit, 5xx, overloaded).
+ * Honours user cancellation immediately and never retries 4xx client errors
+ * other than 429. Uses exponential backoff with jitter.
+ */
+async function withRetry<T>(fn: () => Promise<T>, signal?: AbortSignal, maxRetries = 3): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if ((err as any)?.name === 'AbortError' || signal?.aborted) throw err;
+      lastErr = err;
+      const status = errorStatus(err);
+      const retryable = status === 429 || status === 529 || (status != null && status >= 500);
+      if (!retryable || attempt === maxRetries) throw err;
+      const delay = Math.min(1000 * 2 ** attempt, 8000) + Math.random() * 400;
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(resolve, delay);
+        signal?.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); }, { once: true });
+      });
+    }
+  }
+  throw lastErr;
+}
+
 async function callAnthropicLLM(prompt: string, settings: AISettings, systemPrompt: string = "", images?: AttachedImage[], signal?: AbortSignal, maxTokens?: number): Promise<string> {
   const userContent: any[] = [];
 
@@ -256,27 +580,42 @@ async function callAnthropicLLM(prompt: string, settings: AISettings, systemProm
       });
     }
   }
-  userContent.push({ type: 'text', text: prompt });
+  // Prompt caching: mark the (large, stable) user prompt block so that a repeat
+  // analysis of the same manuscript with the same agent reads from cache (~0.1x
+  // input cost) instead of re-processing the full text. Below the model's
+  // minimum cacheable prefix the marker is a harmless no-op.
+  const promptBlock: any = { type: 'text', text: prompt };
+  if (prompt.length > 4000) promptBlock.cache_control = { type: 'ephemeral' };
+  userContent.push(promptBlock);
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: getAnthropicHeaders(settings),
-    signal,
-    body: JSON.stringify({
-      model: settings.anthropicModel || 'claude-sonnet-4-6',
-      max_tokens: maxTokens ?? 4096,
-      system: systemPrompt || undefined,
-      messages: [{ role: 'user', content: userContent }],
-    })
-  });
+  // Cache the system (agent-role) prompt too when it's large enough to matter.
+  const systemBlocks = systemPrompt
+    ? [{ type: 'text', text: systemPrompt, ...(systemPrompt.length > 3000 ? { cache_control: { type: 'ephemeral' } } : {}) }]
+    : undefined;
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Anthropic API error (${response.status}): ${text}`);
-  }
+  return withRetry(async () => {
+    const response = await fetch(`${ANTHROPIC_BASE_URL}/messages`, {
+      method: 'POST',
+      headers: getAnthropicHeaders(settings),
+      signal,
+      body: JSON.stringify({
+        model: settings.anthropicModel || DEFAULT_MODELS.anthropic,
+        max_tokens: maxTokens ?? 4096,
+        system: systemBlocks,
+        messages: [{ role: 'user', content: userContent }],
+      })
+    });
 
-  const data = await response.json();
-  return data.content?.[0]?.text || '';
+    if (!response.ok) {
+      const text = await response.text();
+      const err: any = new Error(`Anthropic API error (${response.status}): ${text}`);
+      err.status = response.status;
+      throw err;
+    }
+
+    const data = await response.json();
+    return data.content?.[0]?.text || '';
+  }, signal);
 }
 
 /**
@@ -288,7 +627,7 @@ export function localModelSupportsVision(modelName: string): boolean {
   return /vl\b|vision|visual|llava|clip|multimodal|bakllava|minicpm-v|moondream|qwen.*vl|phi.*vision|internvl|cogvlm|pixtral|molmo|paligemma/.test(lower);
 }
 
-async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: string = "", images?: AttachedImage[], signal?: AbortSignal, maxTokens?: number): Promise<string> {
+async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: string = "", images?: AttachedImage[], signal?: AbortSignal, maxTokens?: number, jsonMode: boolean = false, jsonSchema?: Record<string, any>, temperature?: number): Promise<string> {
   let baseUrl = settings.localBaseUrl.trim();
   if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
 
@@ -338,15 +677,26 @@ async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: 
   const resolvedMaxTokens = maxTokens ?? 4096;
 
   // Standard OpenAI-compatible body
-  const openAIBody = JSON.stringify({
+  const baseBody = {
     model: settings.localModel,
     messages,
-    temperature: 0.3,
+    temperature: temperature ?? 0.3,
     max_tokens: resolvedMaxTokens,
     // Disable thinking/reasoning mode where the server supports these flags
     enable_thinking: false,
     think: false,
-  });
+  };
+  // Constrained JSON output — supported by LM Studio, Ollama, vLLM, llama.cpp.
+  // A json_schema grammar (when provided) forces the exact shape and near-
+  // eliminates parse failures; plain json_object is the fallback. If a server
+  // rejects either param with HTTP 400, we retry without it below.
+  const responseFormat = jsonSchema
+    ? { response_format: { type: 'json_schema', json_schema: { name: 'response', schema: jsonSchema, strict: false } } }
+    : jsonMode
+      ? { response_format: { type: 'json_object' } }
+      : {};
+  const openAIBody = JSON.stringify((jsonMode || jsonSchema) ? { ...baseBody, ...responseFormat } : baseBody);
+  const openAIBodyNoFormat = JSON.stringify(baseBody);
 
   // LM Studio proprietary /api/v1/chat body (requires input + system_prompt)
   const userText = messages.filter(m => m.role !== 'system')
@@ -409,9 +759,15 @@ async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: 
   const LOCAL_LLM_TIMEOUT_MS = 3 * 60 * 1000;
 
   let lastError = '';
-  for (const ep of endpoints) {
+  endpointLoop: for (const ep of endpoints) {
     const isLmStudioChat = ep === lmStudioEndpoint;
-    const body = isLmStudioChat ? lmStudioBody : openAIBody;
+    // In JSON mode, retry once without response_format if the server rejects it (HTTP 400)
+    const bodiesToTry = isLmStudioChat
+      ? [lmStudioBody]
+      : ((jsonMode || jsonSchema) && openAIBody !== openAIBodyNoFormat ? [openAIBody, openAIBodyNoFormat] : [openAIBody]);
+
+    for (let attempt = 0; attempt < bodiesToTry.length; attempt++) {
+    const body = bodiesToTry[attempt];
 
     const timeoutCtrl = new AbortController();
     const timeoutId = setTimeout(() => timeoutCtrl.abort(), LOCAL_LLM_TIMEOUT_MS);
@@ -448,6 +804,9 @@ async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: 
           try { errDetail = (await response.text()).slice(0, 300); } catch (_2) {}
         }
         lastError = `${ep} returned HTTP ${response.status}${errDetail ? `: ${errDetail}` : ''}`;
+        // 400 on the response_format attempt → retry this endpoint without it
+        if (response.status === 400 && attempt < bodiesToTry.length - 1) continue;
+        continue endpointLoop;
       }
     } catch (e: any) {
       clearTimeout(timeoutId);
@@ -460,7 +819,8 @@ async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: 
       } else {
         lastError = `${ep}: ${e instanceof Error ? e.message : 'connection failed'}`;
       }
-      continue;
+      continue endpointLoop; // network/timeout error — retrying a different body won't help
+    }
     }
   }
 
@@ -521,7 +881,7 @@ function stripThinkingBlocks(text: string): string {
  * - Partial responses
  * - Text before/after JSON
  */
-function parseJSONRobust(text: string): any {
+export function parseJSONRobust(text: string): any {
   let cleanText = text.trim();
   
   // Extract from markdown code blocks
@@ -607,6 +967,99 @@ function parseJSONRobust(text: string): any {
 
 function getGeminiClient(settings: AISettings) {
   return new GoogleGenAI({ apiKey: settings.geminiApiKey || process.env.GEMINI_API_KEY || "" });
+}
+
+const VALID_SEVERITIES = ['critical', 'major', 'minor', 'style'];
+const VALID_CATEGORIES = ['grammar', 'flow', 'research', 'clarity', 'structure', 'citation', 'evidence', 'impact', 'statistics', 'style'];
+
+export interface AnchoredSuggestions {
+  suggestions: Suggestion[];
+  /** located via normalized/fuzzy matching (LLM misquoted the text) */
+  salvaged: number;
+  /** discarded: unlocatable quote or no-op edit */
+  dropped: number;
+}
+
+/** Bracketed citation markers like [3], [1,4], [2-5]. */
+const LINT_CITATION_MARKER_RE = /\[\d+(?:\s*[,;–-]\s*\d+)*\]/g;
+
+/**
+ * Deterministically enforce the house style the prompts only *ask* for, and
+ * repair the mistakes small models most often make in `suggestedText`:
+ *  - remove em/en dashes (replace with a comma) — a hard style rule,
+ *  - re-append citation markers the model dropped from the original quote,
+ *  - collapse the punctuation/whitespace artifacts those edits can leave.
+ * Runs in code so it is provider-independent and free.
+ */
+export function lintSuggestedText(suggested: string, original: string): string {
+  let out = suggested;
+
+  // No em/en dashes. Spaced dash → comma; tight dash → comma too (usually fine).
+  out = out.replace(/\s*[—–]\s*/g, ', ');
+  // Clean the artifacts the replacement can create.
+  out = out.replace(/,\s*,/g, ',').replace(/\s+([,.;:])/g, '$1').replace(/\s{2,}/g, ' ').trim();
+
+  // Preserve references: if the original quote carried citation markers and the
+  // replacement dropped every one, re-attach them before the trailing period so
+  // accepting the edit never silently deletes a citation.
+  const origMarkers = original.match(LINT_CITATION_MARKER_RE) ?? [];
+  const newMarkers = out.match(LINT_CITATION_MARKER_RE) ?? [];
+  if (origMarkers.length > 0 && newMarkers.length === 0) {
+    const markerStr = ' ' + origMarkers.join('');
+    out = /[.;:!?]$/.test(out)
+      ? out.slice(0, -1) + markerStr + out.slice(-1)
+      : out + markerStr;
+  }
+
+  return out;
+}
+
+/**
+ * Anchor raw LLM suggestion objects against the document text.
+ *
+ * Instead of exact indexOf (which silently discarded every suggestion the LLM
+ * misquoted), this uses tiered matching (exact → normalized → fuzzy) and then
+ * REWRITES originalText to the actual document text, so accept-time replacement
+ * in the editor always finds its target.
+ */
+export function anchorSuggestions(rawArr: any[], docText: string, agent: AgentType, idPrefix: string): AnchoredSuggestions {
+  const suggestions: Suggestion[] = [];
+  let salvaged = 0;
+  let dropped = 0;
+
+  for (let index = 0; index < rawArr.length; index++) {
+    const s = rawArr[index];
+    if (!s || typeof s.originalText !== 'string' || typeof s.suggestedText !== 'string') continue;
+    if (!s.originalText.trim() || !s.suggestedText.trim()) { dropped++; continue; }
+
+    const span = findTextSpan(docText, s.originalText);
+    if (!span) { dropped++; continue; }
+
+    // Enforce house style and repair dropped citations before the no-op check,
+    // so a "fix" that only swapped a curly quote or an em dash is still dropped.
+    const suggestedText = lintSuggestedText(s.suggestedText.trim(), span.matchedText);
+    if (!suggestedText) { dropped++; continue; }
+    const normOrig = normalizeForMatch(span.matchedText).text.trim().toLowerCase();
+    const normNew = normalizeForMatch(suggestedText).text.trim().toLowerCase();
+    if (normOrig === normNew) { dropped++; continue; }
+    if (span.method !== 'exact') salvaged++;
+
+    suggestions.push({
+      ...s,
+      id: `${idPrefix}-${index}`,
+      agent,
+      originalText: span.matchedText,
+      suggestedText,
+      explanation: s.explanation || '',
+      startIndex: span.start,
+      endIndex: span.end,
+      severity: VALID_SEVERITIES.includes(s.severity) ? s.severity : 'minor',
+      category: VALID_CATEGORIES.includes(s.category) ? s.category : 'clarity',
+      section: s.section || 'General',
+    });
+  }
+
+  return { suggestions, salvaged, dropped };
 }
 
 /**
@@ -703,9 +1156,50 @@ export function estimateTokens(text: string): number {
   return encode(text).length;
 }
 
-async function callLLM(prompt: string, settings: AISettings, systemPrompt: string, jsonMode: boolean = false, images?: AttachedImage[], signal?: AbortSignal, maxTokens?: number): Promise<string> {
+/**
+ * JSON schema for a suggestions payload, used for constrained decoding on
+ * providers that support it. Small local models and cloud models both emit far
+ * cleaner output when the shape is enforced by the sampler rather than only
+ * described in the prompt, which near-eliminates the parse-failure path.
+ */
+export const SUGGESTIONS_JSON_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    suggestions: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          originalText: { type: 'string' },
+          suggestedText: { type: 'string' },
+          explanation: { type: 'string' },
+          severity: { type: 'string', enum: ['critical', 'major', 'minor', 'style'] },
+          category: { type: 'string' },
+        },
+        required: ['originalText', 'suggestedText', 'explanation'],
+      },
+    },
+  },
+  required: ['suggestions'],
+} as const;
+
+interface LLMOptions {
+  jsonMode?: boolean;
+  images?: AttachedImage[];
+  signal?: AbortSignal;
+  maxTokens?: number;
+  /** JSON schema for constrained decoding (openai/gemini/local where supported). */
+  jsonSchema?: Record<string, any>;
+  /** Sampling temperature; providers that reject it (Anthropic 4.7+) ignore it. */
+  temperature?: number;
+}
+
+async function callLLM(prompt: string, settings: AISettings, systemPrompt: string, jsonMode: boolean = false, images?: AttachedImage[], signal?: AbortSignal, maxTokens?: number, opts: Omit<LLMOptions, 'jsonMode' | 'images' | 'signal' | 'maxTokens'> = {}): Promise<string> {
+  const { jsonSchema, temperature } = opts;
   if (settings.provider === 'local') {
-    return callLocalLLM(prompt, settings, systemPrompt, images, signal, maxTokens);
+    return callLocalLLM(prompt, settings, systemPrompt, images, signal, maxTokens, jsonMode, jsonSchema, temperature);
   } else if (settings.provider === 'anthropic') {
     return callAnthropicLLM(prompt, settings, systemPrompt, images, signal, maxTokens);
   } else if (settings.provider === 'openai') {
@@ -717,40 +1211,52 @@ async function callLLM(prompt: string, settings: AISettings, systemPrompt: strin
         { type: 'text' as const, text: prompt },
       ];
     }
-    return withSignal(openai.chat.completions.create({
-      model: settings.openaiModel || 'gpt-5.4-mini',
+    const responseFormat = jsonSchema
+      ? { response_format: { type: 'json_schema' as const, json_schema: { name: 'response', schema: jsonSchema, strict: false } } }
+      : jsonMode
+        ? { response_format: { type: 'json_object' as const } }
+        : {};
+    // Note: temperature is intentionally NOT forwarded to cloud providers —
+    // several current models reject a non-default value with a 400 that retry
+    // cannot fix. Only the local path (llama.cpp/LM Studio/Ollama) uses it.
+    return withRetry(() => withSignal(openai.chat.completions.create({
+      model: settings.openaiModel || DEFAULT_MODELS.openai,
       messages: [
         ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
         { role: 'user' as const, content: userContent }
       ],
-      ...(jsonMode ? { response_format: { type: 'json_object' as const } } : {}),
+      ...responseFormat,
       ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
-    }).then(r => r.choices[0].message.content || ''), signal);
+    }, { signal }).then(r => r.choices[0].message.content || ''), signal), signal);
   } else {
     // Gemini
     const ai = getGeminiClient(settings);
+    const jsonConfig = jsonSchema
+      ? { responseMimeType: 'application/json', responseJsonSchema: jsonSchema }
+      : jsonMode
+        ? { responseMimeType: 'application/json' }
+        : {};
+    const baseConfig = {
+      ...jsonConfig,
+      ...(maxTokens !== undefined ? { maxOutputTokens: maxTokens } : {}),
+      abortSignal: signal,
+    };
     if (images && images.length > 0) {
       const parts: any[] = images.map(img => ({
         inlineData: { mimeType: img.mimeType, data: img.base64 },
       }));
       parts.push({ text: (systemPrompt ? systemPrompt + '\n\n' : '') + prompt });
-      return withSignal(ai.models.generateContent({
-        model: settings.geminiModel || 'gemini-3.1-pro-preview',
+      return withRetry(() => withSignal(ai.models.generateContent({
+        model: settings.geminiModel || DEFAULT_MODELS.gemini,
         contents: [{ parts }],
-        config: {
-          ...(jsonMode ? { responseMimeType: 'application/json' } : {}),
-          ...(maxTokens !== undefined ? { maxOutputTokens: maxTokens } : {}),
-        },
-      }).then(r => r.text || ''), signal);
+        config: baseConfig,
+      }).then(r => r.text || ''), signal), signal);
     }
-    return withSignal(ai.models.generateContent({
-      model: settings.geminiModel || 'gemini-3.1-pro-preview',
+    return withRetry(() => withSignal(ai.models.generateContent({
+      model: settings.geminiModel || DEFAULT_MODELS.gemini,
       contents: (systemPrompt ? systemPrompt + '\n\n' : '') + prompt,
-      config: {
-        ...(jsonMode ? { responseMimeType: 'application/json' } : {}),
-        ...(maxTokens !== undefined ? { maxOutputTokens: maxTokens } : {}),
-      },
-    }).then(r => r.text || ''), signal);
+      config: baseConfig,
+    }).then(r => r.text || ''), signal), signal);
   }
 }
 
@@ -766,8 +1272,9 @@ async function callLLM(prompt: string, settings: AISettings, systemPrompt: strin
  * of a clean continuation.
  */
 export async function generateCompletion(contextText: string, settings: AISettings, signal?: AbortSignal): Promise<string> {
+  const docKind = documentContext.mode === 'grant' ? 'grant application' : 'scientific manuscript';
   const system =
-    'You are a scientific manuscript autocomplete engine. ' +
+    `You are a ${docKind} autocomplete engine. ` +
     'The user sends you manuscript text. Your entire response must be the continuation — nothing else. ' +
     'Start immediately with the next word. No preamble, no analysis, no explanation, no labels, no reasoning. ' +
     'Do NOT show a thinking process, reasoning steps, or numbered analysis. ' +
@@ -778,13 +1285,15 @@ export async function generateCompletion(contextText: string, settings: AISettin
   return raw.trim();
 }
 
-export async function resolveConflicts(suggestions: Suggestion[], settings: AISettings): Promise<Suggestion[]> {
+export async function resolveConflicts(suggestions: Suggestion[], _settings?: AISettings): Promise<Suggestion[]> {
   if (suggestions.length < 2) return suggestions;
 
-  // Dedup by exact originalText
+  // Only drop *identical* suggestions (same span AND same replacement). Two
+  // agents proposing DIFFERENT fixes for the same passage is exactly the case
+  // the Judge exists to resolve, so keep both here and let the Judge choose.
   const seen = new Set<string>();
   return suggestions.filter(s => {
-    const key = s.originalText.trim().toLowerCase();
+    const key = `${s.originalText.trim().toLowerCase()}→${s.suggestedText.trim().toLowerCase()}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -793,17 +1302,18 @@ export async function resolveConflicts(suggestions: Suggestion[], settings: AISe
 
 const SEVERITY_RANK: Record<string, number> = { critical: 4, major: 3, minor: 2, style: 1 };
 
-/**
- * Judge agent: runs after all suggestions are collected, finds overlapping suggestions
- * (where originalText of one is a substring of another, or they cover the same passage),
- * and for each conflict group selects the most impactful suggestion using LLM.
- * Falls back to severity-based selection if LLM fails.
- */
-export async function runJudgeAgent(suggestions: Suggestion[], settings: AISettings): Promise<Suggestion[]> {
-  if (suggestions.length < 2) return suggestions;
+/** Deterministic pick within a conflict group: severity, then most specific. */
+function bestBySeverity(group: Suggestion[]): Suggestion {
+  return group.reduce((a, b) => {
+    const rankA = SEVERITY_RANK[a.severity || 'style'] ?? 1;
+    const rankB = SEVERITY_RANK[b.severity || 'style'] ?? 1;
+    if (rankA !== rankB) return rankA > rankB ? a : b;
+    return a.originalText.length <= b.originalText.length ? a : b;
+  });
+}
 
-  // Build conflict groups: two suggestions conflict if one's originalText contains or is contained by the other's,
-  // or if their startIndex/endIndex ranges overlap.
+/** Group suggestions into overlapping conflict clusters (exported for tests). */
+export function buildConflictGroups(suggestions: Suggestion[]): Suggestion[][] {
   const groups: Suggestion[][] = [];
   const assigned = new Set<string>();
 
@@ -827,49 +1337,213 @@ export async function runJudgeAgent(suggestions: Suggestion[], settings: AISetti
     }
     groups.push(group);
   }
+  return groups;
+}
 
-  const winners: Suggestion[] = [];
+/**
+ * Judge agent: finds overlapping suggestions (one's originalText contains the
+ * other, or their ranges overlap) and keeps the single most impactful one per
+ * conflict. All conflicts are decided in ONE batched LLM call (the previous
+ * version made a sequential call per group, which was slow on local models),
+ * and each answer index is validated rather than blindly clamped. Falls back to
+ * deterministic severity selection whenever the LLM answer is missing or bad.
+ */
+export async function runJudgeAgent(suggestions: Suggestion[], settings: AISettings, signal?: AbortSignal): Promise<Suggestion[]> {
+  if (suggestions.length < 2) return suggestions;
 
-  for (const group of groups) {
-    if (group.length === 1) {
-      winners.push(group[0]);
-      continue;
-    }
+  const groups = buildConflictGroups(suggestions);
+  const conflicts = groups.filter(g => g.length > 1);
+  const winners: Suggestion[] = groups.filter(g => g.length === 1).map(g => g[0]);
 
-    // Try LLM judge for this conflict group
-    try {
-      const prompt = `TASK: Multiple AI agents flagged the same manuscript passage. Select the SINGLE best suggestion to keep. Reply with only the index number.
+  if (conflicts.length === 0) return suggestions;
 
-SELECTION CRITERIA (in priority order):
-1. Severity — prefer critical > major > minor > style
-2. Specificity — a concrete replacement beats a vague comment
-3. Scientific value — does it improve accuracy, clarity, or persuasiveness of the science?
-4. Actionability — can the author apply it exactly as written?
+  // Default every conflict to its deterministic winner; the LLM only overrides.
+  const chosen = new Map<number, Suggestion>();
+  conflicts.forEach((g, gi) => chosen.set(gi, bestBySeverity(g)));
 
-CANDIDATES:
-${group.map((s, i) => `[${i}] Severity: ${s.severity || 'minor'} | Agent: ${s.agent} | Category: ${s.category || 'general'}
-  ORIGINAL: "${s.originalText.substring(0, 200)}"
-  REPLACE WITH: "${s.suggestedText.substring(0, 200)}"
-  REASON: ${s.explanation.substring(0, 150)}`).join('\n\n')}
+  try {
+    const prompt = `Multiple AI agents flagged the same passages. For each GROUP, pick the SINGLE best suggestion to keep.
 
-Reply with a single integer (e.g. 0). No explanation, no reasoning steps, no thinking process.`;
+SELECTION CRITERIA (priority order): severity (critical>major>minor>style); a concrete replacement beats a vague comment; scientific value; can the author apply it exactly as written.
 
-      const response = await callLLM(prompt, settings, 'You are a manuscript editor judge. Output only a single integer index. No reasoning, no thinking steps, no explanation.');
-      const idx = parseInt(response.trim().match(/\d+/)?.[0] || '0', 10);
-      winners.push(group[Math.min(idx, group.length - 1)]);
-    } catch (_) {
-      // Fallback: pick by severity, then by shorter originalText (more specific)
-      const best = group.reduce((a, b) => {
-        const rankA = SEVERITY_RANK[a.severity || 'style'] ?? 1;
-        const rankB = SEVERITY_RANK[b.severity || 'style'] ?? 1;
-        if (rankA !== rankB) return rankA > rankB ? a : b;
-        return a.originalText.length <= b.originalText.length ? a : b;
+${conflicts.map((group, gi) => `GROUP ${gi}:
+${group.map((s, i) => `  [${i}] severity=${s.severity || 'minor'} agent=${s.agent} category=${s.category || 'general'}
+      ORIGINAL: "${s.originalText.substring(0, 160)}"
+      REPLACE: "${s.suggestedText.substring(0, 160)}"
+      REASON: ${(s.explanation || '').substring(0, 120)}`).join('\n')}`).join('\n\n')}
+
+Return ONLY JSON mapping each group index to the chosen candidate index, e.g. {"0":1,"1":0}. No prose, no reasoning.`;
+
+    const response = await callLLM(prompt, settings, 'You are a manuscript editor judge. Output only the JSON map of group index to chosen candidate index.', true, undefined, signal, 500);
+    const parsed = parseJSONRobust(response);
+    if (parsed && typeof parsed === 'object') {
+      conflicts.forEach((group, gi) => {
+        const raw = parsed[String(gi)] ?? parsed[gi];
+        const idx = typeof raw === 'number' ? raw : parseInt(String(raw), 10);
+        if (Number.isInteger(idx) && idx >= 0 && idx < group.length) {
+          chosen.set(gi, group[idx]);
+        }
       });
-      winners.push(best);
     }
+  } catch (_) {
+    // keep the deterministic defaults
   }
 
+  conflicts.forEach((_g, gi) => winners.push(chosen.get(gi)!));
   return winners;
+}
+
+const PROBLEMS_JSON_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: { problems: { type: 'array', items: {
+    type: 'object', additionalProperties: false,
+    properties: {
+      quote: { type: 'string' }, issue: { type: 'string' },
+      severity: { type: 'string', enum: ['critical', 'major', 'minor', 'style'] },
+      category: { type: 'string' },
+    }, required: ['quote', 'issue'],
+  } } }, required: ['problems'],
+} as const;
+
+const FIXES_JSON_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: { fixes: { type: 'array', items: {
+    type: 'object', additionalProperties: false,
+    properties: { index: { type: 'integer' }, suggestedText: { type: 'string' } },
+    required: ['index', 'suggestedText'],
+  } } }, required: ['fixes'],
+} as const;
+
+interface FoundProblem { quote: string; issue: string; severity?: string; category?: string }
+
+/**
+ * Find-then-fix pass 1: ask the model only to QUOTE problems (no rewriting).
+ * A tiny, easy output shape that small local models handle far more reliably
+ * than the compound "find + quote exactly + rewrite + emit JSON" single call.
+ */
+async function findProblems(chunkText: string, compactRole: string, settings: AISettings, signal?: AbortSignal): Promise<FoundProblem[]> {
+  const prompt = `${compactRole}
+
+Find the highest-impact problems in the text below. Do NOT rewrite anything yet — only quote each problem.
+
+Text:
+"""
+${chunkText}
+"""
+
+Return ONLY JSON: {"problems":[{"quote":"exact verbatim span copied from the text","issue":"one short line naming the problem","severity":"critical|major|minor|style","category":"grammar|clarity|flow|structure|research|citation|evidence|statistics"}]}
+Rules: quote MUST be copied character-for-character from the text above. Provide 3-6 problems. No prose outside the JSON.`;
+  const raw = await callLocalLLM(prompt, settings, 'Return only valid JSON. No markdown.', undefined, signal, undefined, true, PROBLEMS_JSON_SCHEMA);
+  const parsed = parseJSONRobust(raw);
+  const arr = Array.isArray(parsed) ? parsed : (parsed?.problems ?? []);
+  return (arr as any[])
+    .filter(p => p && typeof p.quote === 'string' && p.quote.trim())
+    .map(p => ({ quote: p.quote, issue: String(p.issue ?? ''), severity: p.severity, category: p.category }));
+}
+
+/**
+ * Find-then-fix pass 2: hand back the (already anchored) problem passages and
+ * ask only for replacements. Verifying/rewriting known-quoted spans is a much
+ * easier task than locating them, so quality rises and quotes never drift.
+ */
+async function writeFixes(problems: FoundProblem[], compactRole: string, settings: AISettings, signal?: AbortSignal): Promise<Map<number, string>> {
+  const out = new Map<number, string>();
+  if (problems.length === 0) return out;
+  const prompt = `${compactRole}
+
+Rewrite each flagged passage below. Preserve the scientific meaning; apply the stated fix; produce a direct drop-in replacement.
+${SCIENTIFIC_WRITING_RULES}
+
+PASSAGES:
+${problems.map((p, i) => `[${i}] problem: ${p.issue}\n    text: "${p.quote}"`).join('\n')}
+
+Return ONLY JSON: {"fixes":[{"index":0,"suggestedText":"the replacement text"}]}. One entry per passage. No prose outside the JSON.`;
+  const raw = await callLocalLLM(prompt, settings, 'Return only valid JSON. No markdown.', undefined, signal, undefined, true, FIXES_JSON_SCHEMA);
+  const parsed = parseJSONRobust(raw);
+  const arr = Array.isArray(parsed) ? parsed : (parsed?.fixes ?? []);
+  for (const f of (arr as any[])) {
+    const idx = parseInt(String(f?.index), 10);
+    if (Number.isInteger(idx) && typeof f?.suggestedText === 'string' && f.suggestedText.trim()) {
+      out.set(idx, f.suggestedText);
+    }
+  }
+  return out;
+}
+
+/**
+ * Two-pass find-then-fix analysis of a chunk. Returns raw suggestion objects
+ * (originalText/suggestedText/...) ready for anchorSuggestions, or an empty
+ * array if the model found nothing or produced no usable fixes (the caller can
+ * then fall back to the single-pass path).
+ */
+async function findThenFixChunk(chunkText: string, compactRole: string, settings: AISettings, signal?: AbortSignal): Promise<any[]> {
+  const problems = await findProblems(chunkText, compactRole, settings, signal);
+  if (problems.length === 0) return [];
+  const fixes = await writeFixes(problems, compactRole, settings, signal);
+  const raw: any[] = [];
+  problems.forEach((p, i) => {
+    const suggestedText = fixes.get(i);
+    if (!suggestedText) return;
+    raw.push({
+      originalText: p.quote,
+      suggestedText,
+      explanation: p.issue,
+      severity: p.severity,
+      category: p.category,
+    });
+  });
+  return raw;
+}
+
+/**
+ * Verifier stage — the quality gate the pipeline was missing.
+ *
+ * Anchoring only checks that a suggestion *locates* and isn't a no-op; nothing
+ * checks whether it is actually GOOD. Small models are far better at verifying
+ * than generating, so one cheap batched call — "for each edit, does the
+ * replacement preserve the scientific meaning and genuinely improve the text?"
+ * — catches the classic failure of a "fix" that subtly changes a claim or
+ * makes no real improvement. It only ever DROPS suggestions, and it fails open:
+ * any error, or an unparseable answer, keeps everything.
+ */
+export async function verifySuggestions(
+  suggestions: Suggestion[],
+  settings: AISettings,
+  signal?: AbortSignal,
+): Promise<{ kept: Suggestion[]; dropped: number }> {
+  if (suggestions.length < 2) return { kept: suggestions, dropped: 0 };
+
+  const prompt = `You are a strict scientific editor validating proposed manuscript edits. For EACH numbered edit, decide keep or drop.
+
+DROP an edit only if: it changes the scientific meaning or a claim, it makes no real improvement, the replacement is worse or ungrammatical, or the "reason" does not match what the edit does. When unsure, KEEP.
+
+EDITS:
+${suggestions.map((s, i) => `[${i}] (${s.category || 'general'}/${s.severity || 'minor'})
+  ORIGINAL: "${s.originalText.substring(0, 200)}"
+  REPLACE:  "${s.suggestedText.substring(0, 200)}"
+  REASON:   ${(s.explanation || '').substring(0, 140)}`).join('\n\n')}
+
+Return ONLY JSON: {"drop":[indices to remove]}. If none should be dropped, return {"drop":[]}. No prose.`;
+
+  try {
+    const response = await callLLM(
+      prompt, settings,
+      'You validate manuscript edits. Output only the JSON object of indices to drop.',
+      true, undefined, signal, 500,
+      { jsonSchema: { type: 'object', additionalProperties: false, properties: { drop: { type: 'array', items: { type: 'integer' } } }, required: ['drop'] } },
+    );
+    const parsed = parseJSONRobust(response);
+    const dropIdx: unknown = Array.isArray(parsed) ? parsed : parsed?.drop;
+    if (!Array.isArray(dropIdx)) return { kept: suggestions, dropped: 0 };
+    const dropSet = new Set(dropIdx.map((n: any) => parseInt(String(n), 10)).filter(n => Number.isInteger(n)));
+    // Safety valve: if the model wants to drop nearly everything it is probably
+    // confused — keep all rather than nuke a good analysis.
+    if (dropSet.size >= suggestions.length) return { kept: suggestions, dropped: 0 };
+    const kept = suggestions.filter((_s, i) => !dropSet.has(i));
+    return { kept, dropped: suggestions.length - kept.length };
+  } catch {
+    return { kept: suggestions, dropped: 0 };
+  }
 }
 
 function buildFullTextPrompt(agentRole: string, text: string, existingContext: string): string {
@@ -888,7 +1562,7 @@ Example of the EXACT JSON format to return (copy this structure precisely):
 
 Rules:
 - Return ONLY the JSON object — no markdown, no preamble, no explanation outside the JSON
-- originalText MUST be copied CHARACTER-FOR-CHARACTER from the manuscript above
+${EXACT_QUOTE_RULE}
 - Provide 5-10 specific, high-impact suggestions covering the ENTIRE manuscript
 - Cover different sections: introduction, methods, results, discussion
 - severity: "critical", "major", "minor", or "style"
@@ -911,8 +1585,8 @@ Example of the EXACT JSON format to return:
 
 Rules:
 - Return ONLY the JSON object — no markdown, no explanation outside the JSON
-- originalText MUST be copied exactly from the text above
-- Provide 3-6 specific suggestions
+${EXACT_QUOTE_RULE}
+- Provide 3-5 specific suggestions
 - severity: "critical", "major", "minor", or "style"
 - category: "grammar", "flow", "research", "clarity", or "structure"`;
 }
@@ -953,8 +1627,8 @@ function classifyLLMError(err: unknown): string {
     .slice(0, 200);
 }
 
-export async function analyzeText(text: string, agent: AgentType, settings: AISettings, existingSuggestions: Suggestion[] = [], onProgress?: (msg: string) => void, htmlContent?: string, signal?: AbortSignal): Promise<{ suggestions: Suggestion[], status: 'ok' | 'no_suggestions' | 'parsing_failed' | 'server_error', errorMessage?: string }> {
-  const activePrompt = settings.customPrompts?.[agent] || DEFAULT_AGENT_PROMPTS[agent];
+export async function analyzeText(text: string, agent: AgentType, settings: AISettings, existingSuggestions: Suggestion[] = [], onProgress?: (msg: string) => void, htmlContent?: string, signal?: AbortSignal): Promise<{ suggestions: Suggestion[], status: 'ok' | 'no_suggestions' | 'parsing_failed' | 'server_error', errorMessage?: string, salvaged?: number, dropped?: number }> {
+  const activePrompt = getActivePrompt(agent, settings);
 
   let existingContext = '';
   if (existingSuggestions.length > 0) {
@@ -970,37 +1644,63 @@ export async function analyzeText(text: string, agent: AgentType, settings: AISe
     const allSuggestions: Suggestion[] = [];
     let parsingFailed = false;
     let rawResponses: string[] = [];
+    let totalSalvaged = 0;
+    let totalDropped = 0;
     
     for (let i = 0; i < chunks.length; i++) {
       if (signal?.aborted) break;
       onProgress?.(`Chunk ${i + 1}/${chunks.length}`);
-      const shortRole = useFullText ? activePrompt : activePrompt.substring(0, 400);
+      // Chunked mode: use a complete compact prompt instead of truncating the
+      // full prompt mid-sentence. User-customized prompts are kept as-is.
+      const compactBase = documentContext.mode === 'grant'
+        ? (GRANT_COMPACT_AGENT_PROMPTS[agent] ?? COMPACT_AGENT_PROMPTS[agent])
+        : COMPACT_AGENT_PROMPTS[agent];
+      const shortRole = useFullText
+        ? activePrompt
+        : (settings.customPrompts?.[agent] ?? (compactBase ? compactBase + grantInstructionsBlock() : activePrompt));
+
+      // Find-then-fix (default for chunked/small-model mode): a "quote the
+      // problems" pass followed by a "write the replacements" pass. Each is a
+      // task a 4-8B model can actually do, versus the single compound call that
+      // small models frequently botch. Falls through to the single-pass path on
+      // any failure or empty result.
+      if (!useFullText && settings.pipelineMode !== 'single') {
+        try {
+          onProgress?.(`Chunk ${i + 1}/${chunks.length} — finding problems`);
+          const raw = await findThenFixChunk(chunks[i], shortRole, settings, signal);
+          if (raw.length > 0) {
+            const anchored = anchorSuggestions(raw, text, agent, `suggestion-${Date.now()}-${i}-ff`);
+            totalSalvaged += anchored.salvaged;
+            totalDropped += anchored.dropped;
+            allSuggestions.push(...anchored.suggestions);
+            if (anchored.suggestions.length > 0) {
+              existingContext += '\n' + JSON.stringify(anchored.suggestions.map(s => s.originalText).slice(0, 5));
+            }
+            continue; // chunk handled
+          }
+        } catch (e) {
+          if (signal?.aborted) break;
+          // fall through to the single-pass path below
+        }
+      }
+
       const prompt = useFullText
         ? buildFullTextPrompt(shortRole, chunks[i], existingContext)
         : buildLocalPrompt(shortRole, chunks[i], existingContext);
 
       try {
-        const textResponse = await callLocalLLM(prompt, settings, "Return only valid JSON. No markdown, no explanations.", undefined, signal);
+        const textResponse = await callLocalLLM(prompt, settings, "Return only valid JSON. No markdown, no explanations.", undefined, signal, undefined, true, SUGGESTIONS_JSON_SCHEMA);
         rawResponses.push(textResponse);
         
         if (textResponse) {
           try {
             const parsed = parseJSONRobust(textResponse);
             const suggestionsArr = Array.isArray(parsed) ? parsed : (parsed.suggestions || parsed.fixes || []);
-            const chunkSuggestions = suggestionsArr
-              .filter((s: any) => s.originalText && s.suggestedText)
-              .map((s: any, index: number) => ({
-                ...s,
-                id: `suggestion-${Date.now()}-${i}-${index}`,
-                agent: agent,
-                startIndex: text.indexOf(s.originalText),
-                endIndex: text.indexOf(s.originalText) + (s.originalText?.length || 0),
-                severity: ['critical', 'major', 'minor', 'style'].includes(s.severity) ? s.severity : 'minor',
-                category: ['grammar', 'flow', 'research', 'clarity', 'structure'].includes(s.category) ? s.category : 'grammar',
-                section: s.section || 'General'
-              }))
-              .filter((s: any) => s.startIndex !== -1);
-            
+            const anchored = anchorSuggestions(suggestionsArr, text, agent, `suggestion-${Date.now()}-${i}`);
+            const chunkSuggestions = anchored.suggestions;
+            totalSalvaged += anchored.salvaged;
+            totalDropped += anchored.dropped;
+
             allSuggestions.push(...chunkSuggestions);
             if (chunkSuggestions.length > 0) {
               existingContext += '\n' + JSON.stringify(chunkSuggestions.map((s: any) => s.originalText).slice(0, 5));
@@ -1012,21 +1712,11 @@ export async function analyzeText(text: string, agent: AgentType, settings: AISe
               const repaired = await repairJSONWithLLM(textResponse, settings);
               const parsedRepaired = parseJSONRobust(repaired);
               const arr = Array.isArray(parsedRepaired) ? parsedRepaired : (parsedRepaired.suggestions || parsedRepaired.fixes || []);
-              const repairSugs = arr
-                .filter((s: any) => s.originalText && s.suggestedText)
-                .map((s: any, index: number) => ({
-                  ...s,
-                  id: `suggestion-${Date.now()}-${i}-r${index}`,
-                  agent,
-                  startIndex: text.indexOf(s.originalText),
-                  endIndex: text.indexOf(s.originalText) + (s.originalText?.length || 0),
-                  severity: ['critical', 'major', 'minor', 'style'].includes(s.severity) ? s.severity : 'minor',
-                  category: ['grammar', 'flow', 'research', 'clarity', 'structure', 'citation'].includes(s.category) ? s.category : 'grammar',
-                  section: s.section || 'General',
-                }))
-                .filter((s: any) => s.startIndex !== -1);
-              allSuggestions.push(...repairSugs);
-              if (repairSugs.length === 0) parsingFailed = true;
+              const anchoredRepair = anchorSuggestions(arr, text, agent, `suggestion-${Date.now()}-${i}-r`);
+              totalSalvaged += anchoredRepair.salvaged;
+              totalDropped += anchoredRepair.dropped;
+              allSuggestions.push(...anchoredRepair.suggestions);
+              if (anchoredRepair.suggestions.length === 0) parsingFailed = true;
             } catch {
               console.error(`Chunk ${i + 1} parse+repair error. Raw:`, textResponse.substring(0, 300));
               parsingFailed = true;
@@ -1043,9 +1733,11 @@ export async function analyzeText(text: string, agent: AgentType, settings: AISe
       console.warn('All chunks failed to parse. Last raw responses:', rawResponses.slice(-2));
     }
     
-    return { 
-      suggestions: allSuggestions, 
-      status: allSuggestions.length > 0 ? 'ok' : (parsingFailed ? 'parsing_failed' : 'no_suggestions') 
+    return {
+      suggestions: allSuggestions,
+      status: allSuggestions.length > 0 ? 'ok' : (parsingFailed ? 'parsing_failed' : 'no_suggestions'),
+      salvaged: totalSalvaged,
+      dropped: totalDropped,
     };
   }
 
@@ -1055,15 +1747,17 @@ export async function analyzeText(text: string, agent: AgentType, settings: AISe
     ? `\nDetected sections: ${sections.map(s => s.section).join(', ')}. Tag each suggestion with its section.`
     : '';
 
-  const prompt = `${activePrompt}${sectionContext}${existingContext}
+  // The agent role goes in the SYSTEM prompt only. The previous version also
+  // prepended it to the user prompt, sending the full persona twice per call —
+  // wasted tokens and diluted instructions.
+  const prompt = `Analyze this manuscript text and provide specific, actionable suggestions.
 
-Analyze this manuscript text and provide specific, actionable suggestions.
-    
 Text:
 """
 ${text}
 """
-    
+${sectionContext}${existingContext}
+
 Return a JSON object: {"suggestions": [...]}
 Each suggestion must have:
 - originalText: EXACT quote from the text
@@ -1073,31 +1767,25 @@ Each suggestion must have:
 - category: "grammar" | "flow" | "research" | "clarity" | "structure"
 - section: which manuscript section
 
-Provide 8-15 highly specific suggestions. Each originalText MUST be an exact quote.`;
+Provide 8-15 highly specific suggestions.
+${EXACT_QUOTE_RULE}`;
 
   try {
-    let textResponse = await callLLM(prompt, settings, activePrompt, true, undefined, signal);
+    // 8192 output tokens: a 10-15 suggestion JSON payload does not fit in 4096.
+    // Constrained decoding (json_schema) keeps the shape valid on every provider
+    // that supports it, sharply reducing parse failures.
+    let textResponse = await callLLM(prompt, settings, activePrompt, true, undefined, signal, 8192, { jsonSchema: SUGGESTIONS_JSON_SCHEMA });
     if (!textResponse) return { suggestions: [], status: 'no_suggestions' };
 
     const parsed = parseJSONRobust(textResponse);
     const suggestionsArr = Array.isArray(parsed) ? parsed : (parsed.suggestions || []);
-    const result = suggestionsArr
-      .filter((s: any) => s.originalText && s.suggestedText)
-      .map((s: any, index: number) => ({
-        ...s,
-        id: `suggestion-${Date.now()}-${index}`,
-        agent: agent,
-        startIndex: text.indexOf(s.originalText),
-        endIndex: text.indexOf(s.originalText) + (s.originalText?.length || 0),
-        severity: ['critical', 'major', 'minor', 'style'].includes(s.severity) ? s.severity : 'minor',
-        category: ['grammar', 'flow', 'research', 'clarity', 'structure'].includes(s.category) ? s.category : 'grammar',
-        section: s.section || 'General'
-      }))
-      .filter((s: any) => s.startIndex !== -1);
-    
-    return { 
-      suggestions: result, 
-      status: result.length > 0 ? 'ok' : 'no_suggestions' 
+    const anchored = anchorSuggestions(suggestionsArr, text, agent, `suggestion-${Date.now()}`);
+
+    return {
+      suggestions: anchored.suggestions,
+      status: anchored.suggestions.length > 0 ? 'ok' : 'no_suggestions',
+      salvaged: anchored.salvaged,
+      dropped: anchored.dropped,
     };
   } catch (e) {
     // Propagate user cancellation immediately
@@ -1115,24 +1803,17 @@ Provide 8-15 highly specific suggestions. Each originalText MUST be an exact quo
 
     // Last-resort: try repairing malformed JSON via LLM
     try {
-      const textResponse = await callLLM(prompt, settings, activePrompt, true);
+      const textResponse = await callLLM(prompt, settings, activePrompt, true, undefined, undefined, 8192);
       const repaired = await repairJSONWithLLM(textResponse, settings);
       const parsed = parseJSONRobust(repaired);
       const arr = Array.isArray(parsed) ? parsed : (parsed.suggestions || []);
-      const result = arr
-        .filter((s: any) => s.originalText && s.suggestedText)
-        .map((s: any, index: number) => ({
-          ...s,
-          id: `suggestion-${Date.now()}-repair-${index}`,
-          agent,
-          startIndex: text.indexOf(s.originalText),
-          endIndex: text.indexOf(s.originalText) + (s.originalText?.length || 0),
-          severity: ['critical', 'major', 'minor', 'style'].includes(s.severity) ? s.severity : 'minor',
-          category: ['grammar', 'flow', 'research', 'clarity', 'structure', 'citation'].includes(s.category) ? s.category : 'grammar',
-          section: s.section || 'General',
-        }))
-        .filter((s: any) => s.startIndex !== -1);
-      return { suggestions: result, status: result.length > 0 ? 'ok' : 'no_suggestions' };
+      const anchored = anchorSuggestions(arr, text, agent, `suggestion-${Date.now()}-repair`);
+      return {
+        suggestions: anchored.suggestions,
+        status: anchored.suggestions.length > 0 ? 'ok' : 'no_suggestions',
+        salvaged: anchored.salvaged,
+        dropped: anchored.dropped,
+      };
     } catch {
       console.error(`Failed to parse suggestions for ${agent}:`, e);
       return { suggestions: [], status: 'parsing_failed' };
@@ -1164,9 +1845,11 @@ export async function chatWithAgent(
   settings: AISettings,
   attachedSources?: Array<{ name: string; text: string }>,
   images?: AttachedImage[],
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  tools?: AgentTool[],
+  onToolUse?: (name: string) => void
 ): Promise<{ text: string; suggestions?: Suggestion[] }> {
-  const activePrompt = settings.customPrompts?.[agent] || DEFAULT_AGENT_PROMPTS[agent];
+  const activePrompt = getActivePrompt(agent, settings);
   const isLocal = settings.provider === 'local';
   const localLargeContext = isLocal && settings.localChunkSize === 0;
 
@@ -1220,7 +1903,11 @@ ${intent !== 'info_question' ? `After your response, append any text edit sugges
 ]
 [SUGGESTIONS_END]` : 'Reply in plain text only — no suggestions block needed.'}`;
 
-  let textResponse = await callLLM(prompt, settings, activePrompt, false, images, signal);
+  // Tool loop only for text-only chats (images bypass it — vision + tool
+  // protocol confuses small models)
+  let textResponse = (tools && tools.length > 0 && (!images || images.length === 0))
+    ? await runWithTools(prompt, activePrompt, tools, settings, signal, onToolUse)
+    : await callLLM(prompt, settings, activePrompt, false, images, signal);
   if (!textResponse) textResponse = '';
 
   const suggestionsMatch = textResponse.match(/\[SUGGESTIONS_START\]([\s\S]*?)\[SUGGESTIONS_END\]/);
@@ -1231,18 +1918,7 @@ ${intent !== 'info_question' ? `After your response, append any text edit sugges
     try {
       const parsed = parseJSONRobust(suggestionsMatch[1].trim());
       const arr = Array.isArray(parsed) ? parsed : (parsed.suggestions || []);
-      suggestions = arr
-        .filter((s: any) => s.originalText && s.suggestedText)
-        .map((s: any, index: number) => ({
-          ...s,
-          id: `suggestion-chat-${Date.now()}-${index}`,
-          agent,
-          startIndex: referenceContext.indexOf(s.originalText),
-          endIndex: referenceContext.indexOf(s.originalText) + (s.originalText?.length || 0),
-          severity: s.severity || 'minor',
-          category: s.category || 'clarity',
-        }))
-        .filter((s: any) => s.startIndex !== -1);
+      suggestions = anchorSuggestions(arr, referenceContext, agent, `suggestion-chat-${Date.now()}`).suggestions;
       cleanText = textResponse.replace(/\[SUGGESTIONS_START\][\s\S]*?\[SUGGESTIONS_END\]/, '').trim();
     } catch (e) {
       console.error('Failed to parse chat suggestions:', e);
@@ -1288,7 +1964,7 @@ Respond as a knowledgeable academic peer. Be specific, critical, and grounded in
 }
 
 export async function rebutSuggestion(suggestion: Suggestion, feedback: string, fullText: string, settings: AISettings): Promise<Suggestion[]> {
-  const activePrompt = settings.customPrompts?.[suggestion.agent] || DEFAULT_AGENT_PROMPTS[suggestion.agent];
+  const activePrompt = getActivePrompt(suggestion.agent, settings);
   
   const prompt = `The researcher disagreed with your suggestion.
 Original text: "${suggestion.originalText}"
@@ -1321,7 +1997,46 @@ Reconsider and provide a refined suggestion. Return ONLY JSON:
   return [];
 }
 
-export async function manuscriptSummary(text: string, settings: AISettings): Promise<string> {
+/**
+ * Mock NIH study section: three reviewer personas critique the application
+ * independently (in parallel), then an SRO reconciles them into a panel
+ * summary. Divergent critiques are the whole value — an applicant learns which
+ * objections are consensus and which are one reviewer's hobbyhorse.
+ * Falls back to a single-reviewer critique if the multi-call flow fails.
+ */
+export async function runStudySectionPanel(text: string, settings: AISettings, onProgress?: (msg: string) => void, signal?: AbortSignal): Promise<string> {
+  const reviewPrompt = `Please review this grant application:\n\n"""\n${text}\n"""\n\nProvide your critique as your persona instructs. Be specific and quote the application.`;
+  try {
+    onProgress?.('Convening 3 reviewers…');
+    const critiques = await Promise.all(
+      STUDY_SECTION_PERSONAS.map(p =>
+        callLLM(reviewPrompt, settings, p.prompt + grantInstructionsBlock(), false, undefined, signal)
+          .then(r => `### ${p.name}\n${r || '(no critique returned)'}`)
+      )
+    );
+    onProgress?.('Reconciling into panel summary…');
+    const reconcilePrompt = `Three reviewers critiqued one NIH application. Reconcile them.\n\n${critiques.join('\n\n')}\n\nProduce the resolved panel summary as instructed.`;
+    const summary = await callLLM(reconcilePrompt, settings, SRO_RECONCILE_PROMPT + grantInstructionsBlock(), false, undefined, signal);
+    return `${summary}\n\n---\n\n## Individual Reviews\n\n${critiques.join('\n\n')}`;
+  } catch (e) {
+    if ((e as any)?.name === 'AbortError') throw e;
+    // Fall back to a single study-section critique.
+    const response = await callLLM(reviewPrompt, settings, STUDY_SECTION_REVIEW_PROMPT + grantInstructionsBlock(), false, undefined, signal);
+    return response || 'No review generated. Check your LLM connection.';
+  }
+}
+
+export async function manuscriptSummary(text: string, settings: AISettings, onProgress?: (msg: string) => void, signal?: AbortSignal): Promise<string> {
+  // Grant mode: a mock study-section panel instead of a journal review
+  if (documentContext.mode === 'grant') {
+    try {
+      return await runStudySectionPanel(text, settings, onProgress, signal);
+    } catch (error) {
+      if ((error as any)?.name === 'AbortError') throw error;
+      throw new Error(`Failed to generate study-section review: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
   const systemPrompt = `You are a senior academic peer reviewer. Provide a comprehensive, high-level review of this manuscript.
 
 Your review should be structured as follows:
@@ -1702,7 +2417,7 @@ Writing requirements:
 - Keep sentences under 35 words. One idea per sentence.
 - Avoid vague intensifiers ("very", "quite", "extremely"). Use precise, field-standard terminology.
 - Do not start sentences with conjunctions ("But", "And", "So") in formal scientific prose.
-Return ONLY the rewritten text, no commentary.`;
+Return ONLY the rewritten text, no commentary.${grantModeNote()}${grantInstructionsBlock()}`;
 
   const prompt = `Manuscript context (surrounding text):
 """
@@ -1740,7 +2455,7 @@ Writing requirements for the output:
 - Do NOT use rhetorical questions, exclamations, or conversational filler ("Indeed,", "Notably,", "Of note,").
 - Mix of active and passive voice appropriate to the section context.
 - Sentences under 35 words. Precise, field-standard terminology.
-Return ONLY the transformed text, no commentary, no quotation marks around the output.`;
+Return ONLY the transformed text, no commentary, no quotation marks around the output.${grantModeNote()}${grantInstructionsBlock()}`;
 
   const prompt = `Instruction: ${instruction}
 
@@ -1841,10 +2556,17 @@ If no sources are provided, say so and suggest the author consult the relevant l
   }
 }
 
-export async function generatePostDraftingContent(text: string, type: 'cover_letter' | 'rebuttal', settings: AISettings): Promise<string> {
-  const systemPrompt = type === 'cover_letter' ? POST_DRAFTING_PROMPTS.COVER_LETTER_AGENT : POST_DRAFTING_PROMPTS.REBUTTAL_AGENT;
+export async function generatePostDraftingContent(text: string, type: 'cover_letter' | 'rebuttal' | 'resubmission', settings: AISettings, reviewerComments?: string): Promise<string> {
+  const systemPrompt = type === 'cover_letter'
+    ? POST_DRAFTING_PROMPTS.COVER_LETTER_AGENT
+    : type === 'resubmission'
+      ? POST_DRAFTING_PROMPTS.RESUBMISSION_AGENT
+      : POST_DRAFTING_PROMPTS.REBUTTAL_AGENT;
 
-  const prompt = `Here is the manuscript text:\n\n"""\n${text}\n"""\n\nPlease generate the requested document based on your instructions.`;
+  const commentsBlock = reviewerComments?.trim()
+    ? `\n\nReviewer comments / summary statement to respond to:\n"""\n${reviewerComments.trim()}\n"""`
+    : '';
+  const prompt = `Here is the manuscript/application text:\n\n"""\n${text}\n"""${commentsBlock}\n\nPlease generate the requested document based on your instructions.`;
 
   try {
     const response = await callLLM(prompt, settings, systemPrompt, false);
@@ -1852,6 +2574,107 @@ export async function generatePostDraftingContent(text: string, type: 'cover_let
   } catch (error) {
     throw new Error(`Failed to generate content: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
+}
+
+/**
+ * Generate a grant template from a natural-language description or pasted FOA
+ * text. Returns a raw object for grantTemplates.normalizeTemplate() to validate.
+ */
+export async function generateGrantTemplate(description: string, settings: AISettings): Promise<any> {
+  const systemPrompt = `You design grant application templates. Given a funding-opportunity description, output the section structure an applicant must write.
+Return ONLY valid JSON, exactly this shape:
+{"name":"short template name","mechanism":"R01 or FOA number or funder acronym","description":"one sentence","sections":[{"title":"Section Title","pageLimit":2,"guidance":"2-3 sentences telling the applicant what this section must accomplish"}]}
+Rules:
+- 4-12 sections in the order they appear in the application
+- pageLimit: number of pages allowed; omit the field if the funder sets no limit. NEVER invent limits — use limits stated in the description, or well-known limits for the named mechanism (e.g. NIH R01: Specific Aims 1, Research Strategy 12)
+- guidance must be actionable and specific to this funder, not generic
+- No markdown, no commentary, JSON only`;
+
+  const prompt = `Funding opportunity / grant description:\n"""\n${truncateText(description, settings.provider === 'local' ? 4000 : 12000)}\n"""\n\nReturn the template JSON.`;
+  const raw = await callLLM(prompt, settings, systemPrompt, true, undefined, undefined, 2000);
+  return parseJSONRobust(raw);
+}
+
+/** Condense a section to fit its page budget. Returns the trimmed text. */
+export async function trimSectionToLimit(sectionText: string, sectionTitle: string, budgetWords: number, settings: AISettings): Promise<string> {
+  const systemPrompt = `You condense grant/manuscript sections to fit strict page limits without losing substance.
+Rules:
+- Target length: at most ${budgetWords} words (currently over the limit).
+- Preserve every distinct claim, aim, number, and citation marker like [3]; cut redundancy, filler, and over-explanation instead.
+- Keep the same heading-free plain prose structure and paragraph order.
+- Do NOT use em dashes or en dashes. Keep sentences under 30 words.
+Return ONLY the condensed section text, no commentary.${grantInstructionsBlock()}`;
+
+  const prompt = `Section "${sectionTitle}" (${budgetWords}-word budget):\n"""\n${sectionText}\n"""\n\nCondense it to fit the budget.`;
+  const out = await callLLM(prompt, settings, systemPrompt, false);
+  return out.trim();
+}
+
+// ─── Agent tools ──────────────────────────────────────────────────────────────
+
+export interface AgentTool {
+  name: string;
+  description: string;
+  /** executes the tool; returns plain text for the model */
+  run: (args: Record<string, any>) => Promise<string>;
+}
+
+const TOOL_CALL_RE = /\[TOOL_CALL\]([\s\S]*?)\[\/TOOL_CALL\]/;
+
+function toolProtocolPrompt(tools: AgentTool[]): string {
+  return `
+
+TOOLS AVAILABLE — you may call these before answering:
+${tools.map(t => `- ${t.name}: ${t.description}`).join('\n')}
+To call a tool, reply with ONLY:
+[TOOL_CALL]{"tool":"<name>","args":{...}}[/TOOL_CALL]
+You will receive the result and can then call another tool or give your final answer. Maximum 3 tool calls. Never mention the tool syntax in your final answer.`;
+}
+
+/**
+ * Provider-agnostic tool loop: works with any model (no native function-calling
+ * required). The model requests tools via a [TOOL_CALL] JSON block; we execute
+ * and feed results back, then return the final plain answer.
+ */
+export async function runWithTools(
+  prompt: string,
+  systemPrompt: string,
+  tools: AgentTool[],
+  settings: AISettings,
+  signal?: AbortSignal,
+  onToolUse?: (name: string) => void,
+): Promise<string> {
+  if (tools.length === 0) return callLLM(prompt, settings, systemPrompt, false, undefined, signal);
+
+  const system = systemPrompt + toolProtocolPrompt(tools);
+  let conversation = prompt;
+
+  for (let round = 0; round < 4; round++) {
+    const response = await callLLM(conversation, settings, system, false, undefined, signal);
+    const match = response.match(TOOL_CALL_RE);
+    if (!match || round === 3) {
+      return response.replace(TOOL_CALL_RE, '').trim();
+    }
+
+    let result = '';
+    let toolName = 'unknown';
+    try {
+      const call = parseJSONRobust(match[1]);
+      toolName = String(call.tool ?? '');
+      const tool = tools.find(t => t.name === toolName);
+      if (!tool) {
+        result = `Error: unknown tool "${toolName}". Available: ${tools.map(t => t.name).join(', ')}`;
+      } else {
+        onToolUse?.(toolName);
+        result = await tool.run(call.args ?? {});
+      }
+    } catch (e) {
+      result = `Error executing tool: ${e instanceof Error ? e.message : 'invalid tool call JSON'}`;
+    }
+
+    conversation += `\n\n[Assistant called tool ${toolName}]\n[TOOL_RESULT]\n${result.slice(0, 6000)}\n[/TOOL_RESULT]\n\nContinue: call another tool if needed, or give your final answer now.`;
+  }
+  return '';
 }
 
 export const POST_DRAFTING_PROMPTS = {
@@ -1869,5 +2692,19 @@ Based on the provided manuscript, draft a template for a rebuttal letter.
 Include:
 1. A polite, appreciative opening to the Editor and Reviewers.
 2. A bulleted summary of the major changes made to the manuscript.
-3. A structured "Point-by-Point Response" section with placeholder examples showing how to respectfully agree with, or push back on, reviewer comments using evidence from the text.`
+3. A structured "Point-by-Point Response" section with placeholder examples showing how to respectfully agree with, or push back on, reviewer comments using evidence from the text.`,
+
+  RESUBMISSION_AGENT: `You are an expert grant-writing consultant drafting the materials for an NIH resubmission (A1).
+Using the application text and, if provided, the reviewers' summary statement, produce:
+
+## Introduction to Revised Application (1 page)
+A confident, non-defensive opening that thanks the reviewers, then addresses each major concern in turn. For each: restate the concern briefly, state the specific change made in response, and point to where it now appears. Use "we have" language for completed changes. Do not concede more than the critique requires.
+
+## Point-by-Point Response Plan
+A numbered list mapping each reviewer concern to a concrete revision. Where a concern reflects a misunderstanding, respond respectfully with evidence rather than capitulating.
+
+## Suggested New Preliminary Data / Aims Adjustments
+Bulleted, concrete suggestions for what would most strengthen the resubmission, based on the weaknesses evident in the text.
+
+If no reviewer comments are provided, infer the likely study-section concerns from the application itself and structure the response around those, noting they are anticipated rather than received. Write in confident NIH grant style: future tense with agency for proposed work, no em dashes, sentences under 30 words.`,
 };

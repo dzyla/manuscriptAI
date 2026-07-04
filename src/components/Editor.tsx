@@ -26,6 +26,7 @@ import { AutoComplete } from '../extensions/AutoComplete';
 import { NodeSelection } from 'prosemirror-state';
 import { expandCitationNums, fetchCrossrefDoi, looksLikeDoi, normalizeDoi } from '../services/citations';
 import { useSourceStore } from '../stores/useSourceStore';
+import { findTextPositionRobust, flattenDoc } from '../utils/textMatch';
 
 interface EditorProps {
   content: string;
@@ -48,6 +49,8 @@ interface EditorProps {
   aiSettings?: AISettings;
   onAnalyzeImage?: (dataUrl: string, prompt: string, contextText?: string) => void;
   onInsertFigure?: () => void;
+  /** render dashed page-break guides at NIH-format intervals (grant mode) */
+  showPageGuides?: boolean;
 }
 
 export interface EditorRef {
@@ -55,11 +58,14 @@ export interface EditorRef {
   revertSuggestion: (originalText: string, suggestedText: string) => boolean;
   scrollToSuggestion: (text: string, id: string) => void;
   getHTML: () => string;
+  /** Canonical plain text (block-separated, citation markers included) — use for all LLM calls */
+  getPlainText: () => string;
   getJSON: () => Record<string, unknown>;
   setContent: (html: string) => void;
   getSelectedText: () => string;
   getCurrentSection: () => string | null;
   getCurrentSectionText: () => string | null;
+  getSectionTextByTitle: (title: string) => string | null;
   scrollToHeading: (headingText: string) => void;
   scrollToCitation: (num: number) => void;
   getCitationOrder: () => string[];
@@ -69,47 +75,10 @@ export interface EditorRef {
   insertFigureLabelNode: (figureId: string, num: number) => void;
 }
 
-const findTextPosition = (doc: any, searchText: string): { from: number; to: number } | null => {
-  let found: { from: number; to: number } | null = null;
-  doc.descendants((node: any, pos: number) => {
-    if (found) return false;
-    if (node.isText && node.text.includes(searchText)) {
-      const offset = node.text.indexOf(searchText);
-      found = { from: pos + offset, to: pos + offset + searchText.length };
-      return false;
-    }
-    return true;
-  });
-  if (found) return found;
-
-  const fullText = doc.textContent;
-  const searchIdx = fullText.indexOf(searchText);
-  if (searchIdx === -1) return null;
-
-  let charsSeen = 0;
-  let fromPos: number | null = null;
-  let toPos: number | null = null;
-  const targetEnd = searchIdx + searchText.length;
-
-  doc.descendants((node: any, pos: number) => {
-    if (toPos !== null) return false;
-    if (node.isText) {
-      const nodeStart = charsSeen;
-      const nodeEnd = charsSeen + node.text.length;
-      if (fromPos === null && searchIdx >= nodeStart && searchIdx < nodeEnd) {
-        fromPos = pos + (searchIdx - nodeStart);
-      }
-      if (fromPos !== null && targetEnd >= nodeStart && targetEnd <= nodeEnd) {
-        toPos = pos + (targetEnd - nodeStart);
-      }
-      charsSeen += node.text.length;
-    }
-    return true;
-  });
-
-  if (fromPos !== null && toPos !== null) return { from: fromPos, to: toPos };
-  return null;
-};
+// Tiered matcher (exact → normalized → fuzzy) with citation-aware position
+// mapping. Tolerates LLM misquotes that the old exact-only search rejected.
+const findTextPosition = (doc: any, searchText: string): { from: number; to: number } | null =>
+  findTextPositionRobust(doc, searchText);
 
 // Bubble actions: transform = produces accept/reject suggestion; analyze = produces chat reply only
 const BUBBLE_ACTIONS: { label: string; instruction: string; agent: AgentType; icon: any; mode: 'transform' | 'analyze' }[] = [
@@ -157,8 +126,33 @@ const BUBBLE_ACTIONS: { label: string; instruction: string; agent: AgentType; ic
   },
 ];
 
-const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggestions, onSuggestionClick, onSelectionQuery, onTransformSelection, onRewriteSection, onAnalyzeSection, onVerifyClaim, onSearchSimilar, sources, citationRegistry, onInsertCitation, isDistractionFree, editorZoom = 100, editorWidth = 'normal', aiSettings, onAnalyzeImage, onInsertFigure }, ref) => {
+const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggestions, onSuggestionClick, onSelectionQuery, onTransformSelection, onRewriteSection, onAnalyzeSection, onVerifyClaim, onSearchSimilar, sources, citationRegistry, onInsertCitation, isDistractionFree, editorZoom = 100, editorWidth = 'normal', aiSettings, onAnalyzeImage, onInsertFigure, showPageGuides = false }, ref) => {
   const [isMounted, setIsMounted] = useState(false);
+
+  // ── Page guides: dashed page-break lines at NIH-format intervals ──────────
+  // Page height scales with rendered content width (7.5in usable width → 10in
+  // usable height per page), so zoom and editor width are handled implicitly.
+  const pageGuideContainerRef = useRef<HTMLDivElement>(null);
+  const [pageGuideOffsets, setPageGuideOffsets] = useState<number[]>([]);
+  useEffect(() => {
+    if (!showPageGuides) { setPageGuideOffsets([]); return; }
+    const el = pageGuideContainerRef.current;
+    if (!el) return;
+    const compute = () => {
+      const prose = el.querySelector('.ProseMirror') as HTMLElement | null;
+      if (!prose) return;
+      const pageHeight = (prose.clientWidth / 7.5) * 10;
+      if (pageHeight < 100) return;
+      const contentTop = prose.offsetTop;
+      const n = Math.floor(prose.scrollHeight / pageHeight);
+      setPageGuideOffsets(Array.from({ length: Math.min(n, 200) }, (_, i) => contentTop + (i + 1) * pageHeight));
+    };
+    compute();
+    const ro = new ResizeObserver(compute);
+    const prose = el.querySelector('.ProseMirror');
+    if (prose) ro.observe(prose);
+    return () => ro.disconnect();
+  }, [showPageGuides, content, editorZoom, editorWidth]);
   const [showSelectionBar, setShowSelectionBar] = useState(false);
   const [selectionInstruction, setSelectionInstruction] = useState('');
   const [selectionAgent, setSelectionAgent] = useState<AgentType>('editor');
@@ -688,60 +682,44 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
     applySuggestion: (originalText, suggestedText) => {
       if (!editor) return false;
       const posMatch = findTextPosition(editor.state.doc, originalText);
-      if (posMatch) {
-        // First scroll to the text so user can see the change
-        editor.chain().focus()
-          .setTextSelection({ from: posMatch.from, to: posMatch.to })
-          .scrollIntoView()
-          .run();
+      if (!posMatch) return false;
 
-        // Brief pause so user sees what's being replaced, then apply
-        setTimeout(() => {
-          editor.chain().focus()
-            .setTextSelection({ from: posMatch.from, to: posMatch.to })
-            .insertContent(suggestedText)
-            .run();
-          
-          // Flash animation on the new text
-          const newPosMatch = findTextPosition(editor.state.doc, suggestedText);
-          if (newPosMatch) {
-            editor.chain()
-              .setTextSelection({ from: newPosMatch.from, to: newPosMatch.to })
-              .scrollIntoView()
-              .run();
-          }
+      // Apply synchronously so callers reading getHTML() right after see the
+      // new content (history recording and accept-all depend on this).
+      editor.chain().focus()
+        .setTextSelection({ from: posMatch.from, to: posMatch.to })
+        .insertContent(suggestedText)
+        .scrollIntoView()
+        .run();
 
-          // Apply DOM-level flash animation
-          setTimeout(() => {
-            const sel = window.getSelection();
-            if (sel && sel.rangeCount > 0) {
-              const range = sel.getRangeAt(0);
-              const span = document.createElement('span');
-              span.className = 'accept-flash';
-              try {
-                range.surroundContents(span);
-                setTimeout(() => {
-                  // Unwrap the flash span after animation
-                  if (span.parentNode) {
-                    const parent = span.parentNode;
-                    while (span.firstChild) parent.insertBefore(span.firstChild, span);
-                    parent.removeChild(span);
-                  }
-                }, 1200);
-              } catch (_) {
-                // Can fail if selection spans multiple elements — that's fine
+      const newHtml = editor.getHTML();
+      lastExternalContent.current = newHtml;
+      onChange(newHtml);
+
+      // Flash animation on the new text (purely cosmetic, async is fine)
+      setTimeout(() => {
+        const sel = window.getSelection();
+        if (sel && sel.rangeCount > 0) {
+          const range = sel.getRangeAt(0);
+          const span = document.createElement('span');
+          span.className = 'accept-flash';
+          try {
+            range.surroundContents(span);
+            setTimeout(() => {
+              // Unwrap the flash span after animation
+              if (span.parentNode) {
+                const parent = span.parentNode;
+                while (span.firstChild) parent.insertBefore(span.firstChild, span);
+                parent.removeChild(span);
               }
-            }
-          }, 50);
+            }, 1200);
+          } catch (_) {
+            // Can fail if selection spans multiple elements — that's fine
+          }
+        }
+      }, 50);
 
-          const newHtml = editor.getHTML();
-          lastExternalContent.current = newHtml;
-          onChange(newHtml);
-        }, 200);
-
-        return true;
-      }
-      return false;
+      return true;
     },
     revertSuggestion: (originalText, suggestedText) => {
       if (!editor) return false;
@@ -785,6 +763,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
       }
     },
     getHTML: () => editor?.getHTML() || '',
+    getPlainText: () => editor ? flattenDoc(editor.state.doc).text : '',
     getJSON: () => editor?.getJSON() ?? { type: 'doc', content: [] },
     setContent: (html: string) => {
       if (!editor) return;
@@ -796,6 +775,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
     getSelectedText,
     getCurrentSection: () => currentSectionTitle,
     getCurrentSectionText: () => currentSectionTitle ? getSectionText(currentSectionTitle) : null,
+    getSectionTextByTitle: (title: string) => title ? getSectionText(title) : null,
     scrollToHeading: (headingText: string) => {
       if (!editor) return;
       let targetPos: number | null = null;
@@ -1016,12 +996,22 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
         </div>
 
         <div
-          className="px-8 sm:px-12 md:px-16 py-12 md:py-20"
+          ref={pageGuideContainerRef}
+          className="px-8 sm:px-12 md:px-16 py-12 md:py-20 relative"
           style={{
             fontSize: `${editorZoom}%`,
 
           }}
         >
+          {showPageGuides && pageGuideOffsets.map((top, i) => (
+            <div key={i} className="absolute left-0 right-0 pointer-events-none z-10" style={{ top }} aria-hidden>
+              <div className="border-t border-dashed border-stone-300 relative">
+                <span className="absolute -top-2.5 right-1 text-[9px] font-bold px-1 rounded" style={{ color: 'var(--text-muted)', background: 'var(--surface-1)' }}>
+                  p. {i + 2}
+                </span>
+              </div>
+            </div>
+          ))}
           <EditorContent editor={editor} />
         </div>
 

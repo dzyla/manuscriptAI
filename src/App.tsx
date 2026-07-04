@@ -7,7 +7,11 @@ import VersionHistoryPopup from './components/VersionHistoryPopup';
 import { AgentType, Message, Suggestion, HistoryItem, AISettings, ManuscriptSource, AttachedImage, VersionSnapshot } from './types';
 import { searchSimilarManuscripts } from './services/manuscriptSearch';
 import { expandCitationNums, formatCitationGroup, mergeAdjacentCitations } from './services/citations';
-import { analyzeText, chatWithAgent, chatWithManuscript, resolveConflicts, runJudgeAgent, rebutSuggestion, manuscriptSummary, rewriteSection, transformWithInstruction, analyzeSourceAgainstManuscript, verifyClaimAgainstSources, AGENT_INFO, AGENT_ICONS, estimateTokens } from './services/ai';
+import { analyzeText, chatWithAgent, chatWithManuscript, resolveConflicts, runJudgeAgent, verifySuggestions, rebutSuggestion, manuscriptSummary, rewriteSection, transformWithInstruction, analyzeSourceAgainstManuscript, verifyClaimAgainstSources, AGENT_INFO, AGENT_ICONS, estimateTokens } from './services/ai';
+import { findTextSpan } from './utils/textMatch';
+import { setDocumentContext, trimSectionToLimit, type AgentTool } from './services/ai';
+import { GrantTemplatePicker, GrantInstructionsModal, GrantToolbar } from './components/GrantPanel';
+import { loadCustomTemplates, getGrantTemplate, WORDS_PER_PAGE, type GrantTemplate } from './services/grantTemplates';
 import { Sparkles, FileText, Settings, Download, Keyboard, Eye, Moon, Sun, ChevronDown, FilePlus, Coins, BookOpen, Github, Square } from 'lucide-react';
 import { saveAs } from 'file-saver';
 import * as mammoth from 'mammoth';
@@ -42,6 +46,8 @@ export default function App() {
     insertFigure: storeInsertFigure,
     renumberFigures: storeRenumberFigures,
     resetDocument, persist: persistDocument, initialize: initDocument,
+    mode, grantInstructions, grantTemplateId,
+    setMode, setGrantInstructions, setGrantTemplateId,
   } = useDocumentStore();
 
   const {
@@ -83,6 +89,101 @@ export default function App() {
   const [editorWidth, setEditorWidth] = useState<'normal' | 'wide' | 'full'>('normal');
   const [currentAgent, setCurrentAgent] = useState<AgentType>('manager');
   const [pendingDownloadFormat, setPendingDownloadFormat] = useState<'md' | 'docx' | 'json' | 'tex' | null>(null);
+  const [showTemplatePicker, setShowTemplatePicker] = useState(false);
+  const [showGrantInstructions, setShowGrantInstructions] = useState(false);
+
+  // Keep the AI service aware of the document mode + funder instructions,
+  // so every agent/chat/rewrite prompt resolves against the right prompt set.
+  useEffect(() => {
+    setDocumentContext({ mode, grantInstructions });
+  }, [mode, grantInstructions]);
+
+  useEffect(() => { void loadCustomTemplates(); }, []);
+
+  const [trimmingSection, setTrimmingSection] = useState<string | null>(null);
+  const handleTrimSection = async (sectionTitle: string, budgetWords: number) => {
+    const sectionText = editorRef.current?.getSectionTextByTitle(sectionTitle);
+    if (!sectionText) { showToast('Section not found in document', 'error'); return; }
+    // Body only — getSectionTextByTitle prepends the title line
+    const body = sectionText.split('\n\n').slice(1).join('\n\n').trim();
+    if (!body) return;
+    setTrimmingSection(sectionTitle);
+    try {
+      const trimmed = await trimSectionToLimit(body, sectionTitle, budgetWords, aiSettings);
+      if (!trimmed || trimmed === body) { showToast('Trim produced no change', 'info'); return; }
+      const plainText = editorRef.current?.getPlainText() || stripHtml(content);
+      const span = findTextSpan(plainText, body);
+      addSuggestions([{
+        id: `suggestion-trim-${Date.now()}`,
+        originalText: span?.matchedText ?? body,
+        suggestedText: trimmed,
+        explanation: `Condensed "${sectionTitle}" to fit its ${Math.round(budgetWords / WORDS_PER_PAGE * 10) / 10}-page NIH limit (~${budgetWords} words).`,
+        agent: 'editor',
+        startIndex: span?.start ?? 0,
+        endIndex: span?.end ?? body.length,
+        severity: 'major',
+        category: 'structure',
+        section: sectionTitle,
+      }]);
+      setSidebarTab('suggestions');
+      showToast(`Trim ready for "${sectionTitle}" — review in Suggestions`, 'success');
+    } catch (e) {
+      showToast(`Trim failed: ${e instanceof Error ? e.message : 'Unknown error'}`, 'error');
+    } finally {
+      setTrimmingSection(null);
+    }
+  };
+
+  // Tools the chat agents can call mid-conversation (provider-agnostic protocol)
+  const buildAgentTools = (): AgentTool[] => [
+    {
+      name: 'search_literature',
+      description: 'Semantic search over PubMed/bioRxiv/medRxiv/arXiv. args: {"query": "..."} — returns top matching papers with abstracts.',
+      run: async (args) => {
+        const results = await searchSimilarManuscripts(String(args.query ?? ''), 5);
+        if (results.length === 0) return 'No results found.';
+        return results.map((r, i) => `[${i + 1}] ${r.title} (${r.journal ?? r.source} ${r.year ?? ''}) DOI:${r.doi}\n${(r.abstract || '').slice(0, 400)}`).join('\n\n');
+      },
+    },
+    {
+      name: 'read_section',
+      description: 'Read the full text of one document section. args: {"title": "exact H2 heading"}',
+      run: async (args) => editorRef.current?.getSectionTextByTitle(String(args.title ?? '')) || `Section "${args.title}" not found. Use one of the document's H2 headings.`,
+    },
+    {
+      name: 'check_page_budgets',
+      description: 'Get current word/page counts per section vs the grant template limits. args: {}',
+      run: async () => {
+        const template = getGrantTemplate(grantTemplateId);
+        if (!template) return 'No grant template applied to this document.';
+        const plain = editorRef.current?.getPlainText() ?? '';
+        return template.sections.map(s => {
+          const text = editorRef.current?.getSectionTextByTitle(s.title);
+          const words = text ? text.split(/\s+/).filter(Boolean).length : 0;
+          const limit = s.pageLimit ? ` / limit ${s.pageLimit} pages (~${Math.round(s.pageLimit * WORDS_PER_PAGE)} words)` : '';
+          return `${s.title}: ${words} words${limit}`;
+        }).join('\n') + `\nTotal: ${plain.split(/\s+/).filter(Boolean).length} words`;
+      },
+    },
+    {
+      name: 'verify_claim',
+      description: 'Check a claim against the uploaded reference sources. args: {"claim": "..."}',
+      run: async (args) => {
+        const digested = sources.filter(s => s.text || s.digest).map(s => ({ name: s.name, text: s.text, digest: s.digest }));
+        return verifyClaimAgainstSources(String(args.claim ?? ''), digested, aiSettings);
+      },
+    },
+  ];
+
+  const handleApplyGrantTemplate = (template: GrantTemplate, html: string) => {
+    editorRef.current?.setContent(html);
+    setContent(html);
+    setMode('grant');
+    setGrantTemplateId(template.id);
+    setShowTemplatePicker(false);
+    persistDocument();
+    showToast(`${template.mechanism} template applied — fill in each section`, 'success');
+  };
 
   // Resize handler for Sidebar
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
@@ -247,9 +348,10 @@ export default function App() {
     setIsAnalyzing(true);
     setShowAnalyzeMenu(false);
     try {
-      // Get the latest text directly from the editor
+      // Get the latest text directly from the editor.
+      // getPlainText is the canonical representation (same one used for anchoring).
       const htmlContent = editorRef.current?.getHTML() || content;
-      const plainText = stripHtml(htmlContent);
+      const plainText = editorRef.current?.getPlainText() || stripHtml(htmlContent);
 
       if (plainText.length < 20) {
         showToast('Write some text first before analyzing.', 'info');
@@ -275,11 +377,16 @@ export default function App() {
         if (result.suggestions.length > 0) {
           const resolved = await resolveConflicts(result.suggestions, aiSettings);
           addSuggestions(resolved);
-          showToast(`${resolved.length} suggestions from ${AGENT_INFO[specificAgent].label}`, 'success');
+          const salvageNote = result.salvaged ? ` · ${result.salvaged} recovered by fuzzy match` : '';
+          showToast(`${resolved.length} suggestions from ${AGENT_INFO[specificAgent].label}${salvageNote}`, 'success');
         }
       } else {
-        // Run all agents in parallel
-        const agentsToRun: AgentType[] = ['editor', 'reviewer-2', 'researcher'];
+        // Run all agents in parallel. The crew is mode-aware: manuscripts get
+        // statistics + internal-consistency review; grants get statistics but
+        // skip cross-section consistency (aims pages read differently).
+        const agentsToRun: AgentType[] = mode === 'grant'
+          ? ['editor', 'reviewer-2', 'researcher', 'statistician']
+          : ['editor', 'reviewer-2', 'researcher', 'statistician', 'consistency'];
         setAnalysisProgress({ agent: 'Running all agents in parallel...', total: agentsToRun.length, done: 0 });
 
         const results = await Promise.all(
@@ -302,17 +409,33 @@ export default function App() {
 
         if (combinedSuggestions.length > 0) {
           const resolved = await resolveConflicts(combinedSuggestions, aiSettings);
-          addSuggestions(resolved);
-          totalNew = resolved.length;
-          // Run judge agent in the background to remove overlapping lower-impact suggestions
-          const resolvedIds = new Set(resolved.map(s => s.id));
-          runJudgeAgent(resolved, aiSettings).then(judged => {
-            if (judged.length < resolved.length) {
-              const judgedIds = new Set(judged.map(s => s.id));
-              setSuggestions(useAIStore.getState().suggestions.filter(s => !resolvedIds.has(s.id) || judgedIds.has(s.id)));
-              showToast(`Judge selected ${judged.length} best suggestions (${resolved.length - judged.length} overlapping removed)`, 'info');
-            }
-          }).catch(() => {});
+          // Run the Judge BEFORE displaying, so overlapping cards are removed
+          // up front instead of visibly vanishing a few seconds after they appear.
+          let judged = resolved;
+          try {
+            setAnalysisProgress({ agent: 'Judge selecting best suggestions…', total: agentsToRun.length, done: agentsToRun.length });
+            judged = await runJudgeAgent(resolved, aiSettings, signal);
+          } catch (e) {
+            if ((e as any)?.name === 'AbortError') throw e;
+            judged = resolved; // Judge failure is non-fatal; show everything
+          }
+          // Quality gate: drop edits that don't preserve meaning or don't improve.
+          let verifiedDropped = 0;
+          try {
+            setAnalysisProgress({ agent: 'Verifying suggestion quality…', total: agentsToRun.length, done: agentsToRun.length });
+            const v = await verifySuggestions(judged, aiSettings, signal);
+            judged = v.kept;
+            verifiedDropped = v.dropped;
+          } catch (e) {
+            if ((e as any)?.name === 'AbortError') throw e;
+          }
+          addSuggestions(judged);
+          totalNew = judged.length;
+          const removed = (combinedSuggestions.length - judged.length);
+          if (removed > 0) {
+            const verifyNote = verifiedDropped > 0 ? `, ${verifiedDropped} failed quality check` : '';
+            showToast(`Kept ${judged.length} best suggestions (${removed} filtered${verifyNote})`, 'info');
+          }
         }
 
         // Surface failures with specific diagnostics
@@ -327,7 +450,9 @@ export default function App() {
           showToast(`${prefix}⚠ JSON parse failed: ${parseFailures.join(', ')}. Try a larger model or cloud API.`, 'error');
         } else if (totalNew > 0) {
           const zeroNote = zeroes.length > 0 ? ` · No issues from: ${zeroes.join(', ')}` : '';
-          showToast(`${totalNew} suggestions found${zeroNote}`, 'success');
+          const totalSalvaged = results.reduce((n, r) => n + (r.salvaged ?? 0), 0);
+          const salvageNote = totalSalvaged > 0 ? ` · ${totalSalvaged} recovered by fuzzy match` : '';
+          showToast(`${totalNew} suggestions found${zeroNote}${salvageNote}`, 'success');
         } else {
           showToast('No suggestions from any agent. Your text looks good!', 'info');
         }
@@ -348,7 +473,7 @@ export default function App() {
     addMessage(userMsg);
 
     // Resolve manuscript scope: __full__ sends full text, __section__ sends current section only
-    const fullText = stripHtml(editorRef.current?.getHTML() || content);
+    const fullText = (editorRef.current?.getPlainText() || stripHtml(content));
     const extraSources = (attachedSources || []).filter(s => s.name !== '__full__' && s.name !== '__section__');
 
     const hasFullScope   = attachedSources?.some(s => s.name === '__full__');
@@ -372,7 +497,11 @@ export default function App() {
     try {
       const result = agent === 'manuscript-ai'
         ? await chatWithManuscript(text, manuscriptArg, aiSettings, sourcesWithContext.length > 0 ? sourcesWithContext : undefined, images, signal)
-        : await chatWithAgent(text, manuscriptArg, agent, aiSettings, sourcesWithContext.length > 0 ? sourcesWithContext : undefined, images, signal);
+        : await chatWithAgent(text, manuscriptArg, agent, aiSettings, sourcesWithContext.length > 0 ? sourcesWithContext : undefined, images, signal,
+            buildAgentTools(), (toolName) => {
+              const prev = useAIStore.getState().analysisProgress;
+              setAnalysisProgress({ agent: `Using tool: ${toolName}…`, total: prev?.total ?? 1, done: prev?.done ?? 0 });
+            });
       const suggestions: Suggestion[] | undefined = 'suggestions' in result ? (result as any).suggestions : undefined;
       const newSugs: Suggestion[] | undefined = 'suggestions' in result ? (result as any).suggestions : undefined;
       const assistantMsg: Message = {
@@ -582,7 +711,9 @@ export default function App() {
   };
 
   const handleAcceptAll = () => {
-    const currentSuggestions = [...suggestions];
+    // Apply bottom-up so earlier text is untouched while later suggestions
+    // are located — keeps remaining anchors valid as the document changes.
+    const currentSuggestions = [...suggestions].sort((a, b) => b.startIndex - a.startIndex);
     for (const s of currentSuggestions) {
       handleAcceptSuggestion(s);
     }
@@ -603,7 +734,7 @@ export default function App() {
     if (!suggestion) return;
     setIsAnalyzing(true);
     try {
-      const plainText = stripHtml(editorRef.current?.getHTML() || content);
+      const plainText = (editorRef.current?.getPlainText() || stripHtml(content));
       const newSugs = await rebutSuggestion(suggestion, feedback, plainText, aiSettings);
       if (newSugs?.length) {
         updateSuggestion(suggestionId, newSugs[0]);
@@ -632,7 +763,7 @@ export default function App() {
   // Handle selection-based agent query from the editor BubbleMenu
   const handleSelectionQuery = async (selectedText: string, instruction: string, agent: AgentType) => {
     setIsAnalyzing(true);
-    const fullText = stripHtml(editorRef.current?.getHTML() || content);
+    const fullText = (editorRef.current?.getPlainText() || stripHtml(content));
     
     // Switch sidebar to chat to show the reply
     setSidebarTab('chat');
@@ -682,17 +813,18 @@ export default function App() {
 
   const handleTransformSelection = async (selectedText: string, instruction: string, agent: AgentType) => {
     setIsAnalyzing(true);
-    const plainText = stripHtml(editorRef.current?.getHTML() || content);
+    const plainText = (editorRef.current?.getPlainText() || stripHtml(content));
     try {
       const transformed = await transformWithInstruction(selectedText, instruction, plainText, aiSettings);
+      const span = findTextSpan(plainText, selectedText);
       const suggestion: Suggestion = {
         id: `suggestion-transform-${Date.now()}`,
-        originalText: selectedText,
+        originalText: span?.matchedText ?? selectedText,
         suggestedText: transformed,
         explanation: instruction,
         agent,
-        startIndex: plainText.indexOf(selectedText),
-        endIndex: plainText.indexOf(selectedText) + selectedText.length,
+        startIndex: span?.start ?? 0,
+        endIndex: span?.end ?? selectedText.length,
         severity: 'major',
         category: 'clarity',
         section: 'Transform',
@@ -709,17 +841,18 @@ export default function App() {
 
   const handleRewriteSection = async (selectedText: string) => {
     setIsAnalyzing(true);
-    const plainText = stripHtml(editorRef.current?.getHTML() || content);
+    const plainText = (editorRef.current?.getPlainText() || stripHtml(content));
     try {
       const rewritten = await rewriteSection(selectedText, plainText, aiSettings);
+      const span = findTextSpan(plainText, selectedText);
       const suggestion: Suggestion = {
         id: `suggestion-rewrite-${Date.now()}`,
-        originalText: selectedText,
+        originalText: span?.matchedText ?? selectedText,
         suggestedText: rewritten,
         explanation: 'AI rewrite — improved clarity, flow, and scientific impact while preserving meaning.',
         agent: 'editor',
-        startIndex: plainText.indexOf(selectedText),
-        endIndex: plainText.indexOf(selectedText) + selectedText.length,
+        startIndex: span?.start ?? 0,
+        endIndex: span?.end ?? selectedText.length,
         severity: 'major',
         category: 'clarity',
         section: 'Rewrite',
@@ -768,7 +901,7 @@ export default function App() {
     addMessage(userMsg);
 
     try {
-      const plainText = stripHtml(editorRef.current?.getHTML() || content);
+      const plainText = (editorRef.current?.getPlainText() || stripHtml(content));
 
       if (plainText.length < 50) {
         showToast('Write more text first for a meaningful summary.', 'info');
@@ -1007,6 +1140,27 @@ export default function App() {
             <span className="text-[11px] font-medium shrink-0 hidden sm:inline" style={{ color: 'var(--text-muted)' }}>
               {wordCount} words
             </span>
+
+            {/* Document mode toggle: manuscript / grant */}
+            <div className="flex items-center rounded-lg p-0.5 shrink-0" style={{ border: '1px solid var(--border)', background: 'var(--surface-2)' }}>
+              <button
+                onClick={() => setMode('manuscript')}
+                className={`px-2 py-0.5 text-[10px] font-bold rounded-md transition-colors ${mode === 'manuscript' ? 'bg-white shadow text-stone-800' : ''}`}
+                style={mode === 'manuscript' ? {} : { color: 'var(--text-muted)' }}
+                title="Manuscript mode — journal-style agents"
+              >
+                Manuscript
+              </button>
+              <button
+                onClick={() => setMode('grant')}
+                className={`px-2 py-0.5 text-[10px] font-bold rounded-md transition-colors ${mode === 'grant' ? 'bg-emerald-700 text-white shadow' : ''}`}
+                style={mode === 'grant' ? {} : { color: 'var(--text-muted)' }}
+                title="Grant mode — NIH-style agents, templates, and page budgets"
+              >
+                Grant
+              </button>
+            </div>
+
             <div className="flex-1" />
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -1127,11 +1281,25 @@ export default function App() {
           </div>
         </header>
 
+        {/* Grant toolbar: templates, funder instructions, page budgets */}
+        {mode === 'grant' && (
+          <GrantToolbar
+            htmlContent={content}
+            templateId={grantTemplateId}
+            hasInstructions={grantInstructions.trim().length > 0}
+            onOpenTemplates={() => setShowTemplatePicker(true)}
+            onOpenInstructions={() => setShowGrantInstructions(true)}
+            onTrimSection={handleTrimSection}
+            trimmingSection={trimmingSection}
+          />
+        )}
+
         {/* Editor Area */}
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 md:p-8" style={{ background: 'var(--surface-0)' }}>
           <Editor
             ref={editorRef}
             content={content}
+            showPageGuides={mode === 'grant'}
             onChange={(html) => setContent(html)}
             suggestions={suggestions}
             onSuggestionClick={handleSuggestionClick}
@@ -1226,6 +1394,26 @@ export default function App() {
         settings={aiSettings}
         onUpdateSettings={(s) => { setAiSettings(s); void secureStorage.setItem('manuscript-ai-settings', JSON.stringify(s)); }}
       />
+      {showTemplatePicker && (
+        <GrantTemplatePicker
+          documentHasContent={stripHtml(content).replace(/Start writing your manuscript here.*$/, '').trim().length > 0}
+          aiSettings={aiSettings}
+          onApply={handleApplyGrantTemplate}
+          onClose={() => setShowTemplatePicker(false)}
+        />
+      )}
+      {showGrantInstructions && (
+        <GrantInstructionsModal
+          value={grantInstructions}
+          onSave={(text) => {
+            setGrantInstructions(text);
+            setShowGrantInstructions(false);
+            persistDocument();
+            showToast(text.trim() ? 'Grant instructions saved — all agents will follow them' : 'Grant instructions cleared', 'success');
+          }}
+          onClose={() => setShowGrantInstructions(false)}
+        />
+      )}
       <PostDraftingView
         isOpen={isPostDraftingOpen}
         onClose={() => setIsPostDraftingOpen(false)}
