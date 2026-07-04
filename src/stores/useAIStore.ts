@@ -2,18 +2,19 @@ import { create } from 'zustand';
 import { db } from '../db/manuscriptDb';
 import type { AISettings, Suggestion, Message, HistoryItem } from '../types';
 import * as secureStorage from '../services/secureStorage';
+import { DEFAULT_MODELS } from '../services/models';
 
 const DEFAULT_AI_SETTINGS: AISettings = {
   provider: 'local',
   geminiApiKey: '',
   openaiApiKey: '',
   anthropicApiKey: '',
-  geminiModel: 'gemini-3.1-pro-preview',
-  openaiModel: 'gpt-5.4-mini',
-  anthropicModel: 'claude-sonnet-4-6',
+  geminiModel: DEFAULT_MODELS.gemini,
+  openaiModel: DEFAULT_MODELS.openai,
+  anthropicModel: DEFAULT_MODELS.anthropic,
   localBaseUrl: 'http://localhost:1234/v1/chat/completions',
   localApiKey: '',
-  localModel: 'local-model',
+  localModel: DEFAULT_MODELS.local,
 };
 
 const DEFAULT_WELCOME_MSG: Message = {

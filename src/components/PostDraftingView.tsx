@@ -10,13 +10,24 @@ interface PostDraftingViewProps {
   aiSettings: AISettings;
 }
 
+type PostDraftingTab = 'cover_letter' | 'rebuttal' | 'resubmission';
+
+const TAB_LABEL: Record<PostDraftingTab, string> = {
+  cover_letter: 'Cover Letter',
+  rebuttal: 'Rebuttal Template',
+  resubmission: 'Resubmission (A1)',
+};
+
 export default function PostDraftingView({ isOpen, onClose, manuscriptText, aiSettings }: PostDraftingViewProps) {
-  const [activeTab, setActiveTab] = useState<'cover_letter' | 'rebuttal'>('cover_letter');
+  const [activeTab, setActiveTab] = useState<PostDraftingTab>('cover_letter');
   const [content, setContent] = useState('');
+  const [reviewerComments, setReviewerComments] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   if (!isOpen) return null;
+
+  const usesComments = activeTab === 'rebuttal' || activeTab === 'resubmission';
 
   const handleGenerate = async () => {
     if (!manuscriptText || manuscriptText.length < 50) {
@@ -27,7 +38,7 @@ export default function PostDraftingView({ isOpen, onClose, manuscriptText, aiSe
     setIsGenerating(true);
     setError(null);
     try {
-      const result = await generatePostDraftingContent(manuscriptText, activeTab, aiSettings);
+      const result = await generatePostDraftingContent(manuscriptText, activeTab, aiSettings, usesComments ? reviewerComments : undefined);
       setContent(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to generate content');
@@ -64,20 +75,16 @@ export default function PostDraftingView({ isOpen, onClose, manuscriptText, aiSe
 
         {/* Tabs */}
         <div className="flex px-6 pt-4 gap-4 border-b" style={{ borderColor: 'var(--border)', background: 'var(--surface-1)' }}>
-          <button
-            onClick={() => setActiveTab('cover_letter')}
-            className={`pb-3 text-sm font-semibold border-b-2 transition-colors ${activeTab === 'cover_letter' ? 'border-stone-800' : 'border-transparent text-stone-400 hover:text-stone-600'}`}
-            style={activeTab === 'cover_letter' ? { color: 'var(--text-primary)' } : {}}
-          >
-            Cover Letter
-          </button>
-          <button
-            onClick={() => setActiveTab('rebuttal')}
-            className={`pb-3 text-sm font-semibold border-b-2 transition-colors ${activeTab === 'rebuttal' ? 'border-stone-800' : 'border-transparent text-stone-400 hover:text-stone-600'}`}
-            style={activeTab === 'rebuttal' ? { color: 'var(--text-primary)' } : {}}
-          >
-            Rebuttal Template
-          </button>
+          {(['cover_letter', 'rebuttal', 'resubmission'] as PostDraftingTab[]).map(tab => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={`pb-3 text-sm font-semibold border-b-2 transition-colors ${activeTab === tab ? 'border-stone-800' : 'border-transparent text-stone-400 hover:text-stone-600'}`}
+              style={activeTab === tab ? { color: 'var(--text-primary)' } : {}}
+            >
+              {TAB_LABEL[tab]}
+            </button>
+          ))}
         </div>
 
         {/* Body */}
@@ -86,15 +93,29 @@ export default function PostDraftingView({ isOpen, onClose, manuscriptText, aiSe
             <p className="text-xs mb-3" style={{ color: 'var(--text-secondary)' }}>
               {activeTab === 'cover_letter'
                 ? 'Generate a persuasive cover letter to the Editor-in-Chief highlighting your core findings.'
-                : 'Generate a structured point-by-point response template based on your manuscript.'}
+                : activeTab === 'resubmission'
+                  ? 'Draft the Introduction to Revised Application and a point-by-point response plan for an NIH A1 resubmission. Paste the summary statement below for a tailored response.'
+                  : 'Generate a structured point-by-point response template based on your manuscript.'}
             </p>
+            {usesComments && (
+              <textarea
+                value={reviewerComments}
+                onChange={(e) => setReviewerComments(e.target.value)}
+                placeholder={activeTab === 'resubmission'
+                  ? 'Optional: paste the reviewers\' summary statement / critiques here for a tailored response.'
+                  : 'Optional: paste the reviewer comments here for a tailored point-by-point response.'}
+                className="w-full mb-3 p-3 border rounded-lg text-xs focus:outline-none focus:ring-1 resize-none"
+                rows={4}
+                style={{ background: 'var(--surface-0)', borderColor: 'var(--border)', color: 'var(--text-primary)' }}
+              />
+            )}
             <button
               onClick={handleGenerate}
               disabled={isGenerating}
               className="flex items-center gap-2 px-4 py-2 bg-stone-900 text-white rounded-lg text-xs font-semibold hover:bg-stone-800 transition-colors disabled:opacity-50"
             >
               <Sparkles size={14} className={isGenerating ? 'animate-spin' : ''} />
-              {isGenerating ? 'Generating...' : `Generate ${activeTab === 'cover_letter' ? 'Cover Letter' : 'Rebuttal'}`}
+              {isGenerating ? 'Generating...' : `Generate ${TAB_LABEL[activeTab]}`}
             </button>
           </div>
 

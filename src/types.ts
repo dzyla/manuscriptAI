@@ -1,4 +1,4 @@
-export type AgentType = 'manager' | 'editor' | 'reviewer-2' | 'researcher' | 'literature-reviewer' | 'manuscript-ai' | 'citation-checker';
+export type AgentType = 'manager' | 'editor' | 'reviewer-2' | 'researcher' | 'literature-reviewer' | 'manuscript-ai' | 'citation-checker' | 'statistician' | 'consistency' | 'reporting';
 
 export interface SemanticSearchResult {
   title: string;
@@ -50,6 +50,9 @@ export interface AISettings {
   localApiKey: string;
   localModel: string;
   localChunkSize?: number;  // 0 = no chunking (full manuscript), undefined/default = 2000 chars
+  /** Local chunked analysis strategy. 'find-fix' (default): two-pass find-then-fix
+   *  for small models. 'single': legacy one-shot per chunk. */
+  pipelineMode?: 'find-fix' | 'single';
   customPrompts?: Partial<Record<AgentType, string>>;
   zotero?: ZoteroSettings;
 }

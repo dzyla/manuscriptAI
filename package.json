@@ -10,7 +10,9 @@
     "build:electron": "vite build && electron-builder",
     "preview": "vite preview",
     "clean": "rm -rf dist dist-electron",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",
@@ -63,7 +65,8 @@
     "typescript": "~5.8.2",
     "vite": "^6.2.0",
     "vite-plugin-electron": "^0.29.1",
-    "vite-plugin-electron-renderer": "^0.14.6"
+    "vite-plugin-electron-renderer": "^0.14.6",
+    "vitest": "^2.1.9"
   },
   "build": {
     "appId": "com.manuscript.editor",

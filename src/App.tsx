@@ -7,7 +7,7 @@ import VersionHistoryPopup from './components/VersionHistoryPopup';
 import { AgentType, Message, Suggestion, HistoryItem, AISettings, ManuscriptSource, AttachedImage, VersionSnapshot } from './types';
 import { searchSimilarManuscripts } from './services/manuscriptSearch';
 import { expandCitationNums, formatCitationGroup, mergeAdjacentCitations } from './services/citations';
-import { analyzeText, chatWithAgent, chatWithManuscript, resolveConflicts, runJudgeAgent, rebutSuggestion, manuscriptSummary, rewriteSection, transformWithInstruction, analyzeSourceAgainstManuscript, verifyClaimAgainstSources, AGENT_INFO, AGENT_ICONS, estimateTokens } from './services/ai';
+import { analyzeText, chatWithAgent, chatWithManuscript, resolveConflicts, runJudgeAgent, verifySuggestions, rebutSuggestion, manuscriptSummary, rewriteSection, transformWithInstruction, analyzeSourceAgainstManuscript, verifyClaimAgainstSources, AGENT_INFO, AGENT_ICONS, estimateTokens } from './services/ai';
 import { findTextSpan } from './utils/textMatch';
 import { setDocumentContext, trimSectionToLimit, type AgentTool } from './services/ai';
 import { GrantTemplatePicker, GrantInstructionsModal, GrantToolbar } from './components/GrantPanel';
@@ -381,8 +381,12 @@ export default function App() {
           showToast(`${resolved.length} suggestions from ${AGENT_INFO[specificAgent].label}${salvageNote}`, 'success');
         }
       } else {
-        // Run all agents in parallel
-        const agentsToRun: AgentType[] = ['editor', 'reviewer-2', 'researcher'];
+        // Run all agents in parallel. The crew is mode-aware: manuscripts get
+        // statistics + internal-consistency review; grants get statistics but
+        // skip cross-section consistency (aims pages read differently).
+        const agentsToRun: AgentType[] = mode === 'grant'
+          ? ['editor', 'reviewer-2', 'researcher', 'statistician']
+          : ['editor', 'reviewer-2', 'researcher', 'statistician', 'consistency'];
         setAnalysisProgress({ agent: 'Running all agents in parallel...', total: agentsToRun.length, done: 0 });
 
         const results = await Promise.all(
@@ -405,17 +409,33 @@ export default function App() {
 
         if (combinedSuggestions.length > 0) {
           const resolved = await resolveConflicts(combinedSuggestions, aiSettings);
-          addSuggestions(resolved);
-          totalNew = resolved.length;
-          // Run judge agent in the background to remove overlapping lower-impact suggestions
-          const resolvedIds = new Set(resolved.map(s => s.id));
-          runJudgeAgent(resolved, aiSettings).then(judged => {
-            if (judged.length < resolved.length) {
-              const judgedIds = new Set(judged.map(s => s.id));
-              setSuggestions(useAIStore.getState().suggestions.filter(s => !resolvedIds.has(s.id) || judgedIds.has(s.id)));
-              showToast(`Judge selected ${judged.length} best suggestions (${resolved.length - judged.length} overlapping removed)`, 'info');
-            }
-          }).catch(() => {});
+          // Run the Judge BEFORE displaying, so overlapping cards are removed
+          // up front instead of visibly vanishing a few seconds after they appear.
+          let judged = resolved;
+          try {
+            setAnalysisProgress({ agent: 'Judge selecting best suggestions…', total: agentsToRun.length, done: agentsToRun.length });
+            judged = await runJudgeAgent(resolved, aiSettings, signal);
+          } catch (e) {
+            if ((e as any)?.name === 'AbortError') throw e;
+            judged = resolved; // Judge failure is non-fatal; show everything
+          }
+          // Quality gate: drop edits that don't preserve meaning or don't improve.
+          let verifiedDropped = 0;
+          try {
+            setAnalysisProgress({ agent: 'Verifying suggestion quality…', total: agentsToRun.length, done: agentsToRun.length });
+            const v = await verifySuggestions(judged, aiSettings, signal);
+            judged = v.kept;
+            verifiedDropped = v.dropped;
+          } catch (e) {
+            if ((e as any)?.name === 'AbortError') throw e;
+          }
+          addSuggestions(judged);
+          totalNew = judged.length;
+          const removed = (combinedSuggestions.length - judged.length);
+          if (removed > 0) {
+            const verifyNote = verifiedDropped > 0 ? `, ${verifiedDropped} failed quality check` : '';
+            showToast(`Kept ${judged.length} best suggestions (${removed} filtered${verifyNote})`, 'info');
+          }
         }
 
         // Surface failures with specific diagnostics
