@@ -2649,7 +2649,7 @@ export function bestTrimCandidate(
 export async function trimSectionToLimit(sectionText: string, sectionTitle: string, budgetWords: number, settings: AISettings): Promise<string> {
   const baseSystem = `You condense grant/manuscript sections to fit strict page limits WITHOUT losing substance.
 Rules:
-- The result MUST be at most ${budgetWords} words and MUST be shorter than the input. Target ${Math.max(1, budgetWords - 5)}-${budgetWords} words, not exactly ${budgetWords} — leave margin so small counting errors do not push you over the limit.
+- The result MUST be at most ${budgetWords} words and MUST be shorter than the input. Target ${Math.max(1, budgetWords - 5)}-${budgetWords} words, not exactly ${budgetWords}, to leave margin so small counting errors do not push you over the limit.
 - Before you answer, count the words in your draft. If it is over ${budgetWords} words, cut another sentence or clause and count again.
 - Preserve every distinct claim, aim, number, and citation marker like [3]. Cut redundancy, filler, hedging, and over-explanation only.
 - Keep the same heading-free plain prose and paragraph order.
@@ -2662,7 +2662,7 @@ Return ONLY the condensed section text. No preamble, no commentary.${grantInstru
   for (let attempt = 0; attempt < 3; attempt++) {
     const prompt = attempt === 0
       ? `Section "${sectionTitle}" (target: at most ${budgetWords} words):\n"""\n${sectionText}\n"""\n\nCondense it to fit the budget.`
-      : `Your previous draft was ${countWords(current)} words — still too long. Cut it to under ${budgetWords} words by removing redundancy and filler only. Keep every distinct claim, number, and citation marker.\n"""\n${current}\n"""`;
+      : `Your previous draft was ${countWords(current)} words, still too long. Cut it to under ${budgetWords} words by removing redundancy and filler only. Keep every distinct claim, number, and citation marker.\n"""\n${current}\n"""`;
     const out = (await callLLM(prompt, settings, baseSystem, false)).trim();
     if (!out) break;
     candidates.push(out);
