@@ -10,6 +10,9 @@
  *   EVAL_PROVIDER=local EVAL_LOCAL_URL=http://localhost:1234/v1/chat/completions \
  *   EVAL_LOCAL_MODEL=your-model npx tsx scripts/eval/run.ts
  *
+ *   # Local live model server (llama.cpp server on :8080, model id "ornith"):
+ *   npm run eval:local
+ *
  *   # Cloud
  *   EVAL_PROVIDER=anthropic ANTHROPIC_API_KEY=sk-... npx tsx scripts/eval/run.ts
  *   EVAL_PROVIDER=openai OPENAI_API_KEY=sk-... npx tsx scripts/eval/run.ts
@@ -26,6 +29,7 @@ import { analyzeText } from '../../src/services/ai';
 import { normalizeForMatch } from '../../src/utils/textMatch';
 import type { AISettings, AgentType, Suggestion } from '../../src/types';
 import { FIXTURE_MANUSCRIPT, SEEDS } from './fixture';
+import { runQualityChecks } from './checks';
 
 function buildSettings(): AISettings {
   const provider = (process.env.EVAL_PROVIDER || 'local') as AISettings['provider'];
@@ -88,6 +92,11 @@ async function main() {
   console.log(`Overall recall:   ${totalHit}/${totalSeeds} (${totalSeeds ? (100 * totalHit / totalSeeds).toFixed(0) : 0}%)`);
   console.log(`On-target rate:   ${onTarget}/${totalSuggestions} suggestions matched a seeded issue`);
   console.log('(On-target is a loose proxy — off-seed suggestions can still be valid.)\n');
+
+  if (process.env.EVAL_SKIP_CHECKS !== '1') {
+    try { await runQualityChecks(settings); }
+    catch (e) { console.log(`quality checks ERROR: ${e instanceof Error ? e.message : e}`); }
+  }
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

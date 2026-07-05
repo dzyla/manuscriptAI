@@ -10,6 +10,7 @@ import {
   bestTrimCandidate,
 } from './ai';
 import type { Suggestion } from '../types';
+import { looksLikeThinking, isForwardContinuation } from '../../scripts/eval/checks';
 
 describe('parseJSONRobust', () => {
   it('parses clean JSON', () => {
@@ -181,5 +182,19 @@ describe('bestTrimCandidate', () => {
     const r = bestTrimCandidate(input, [grew], 80);
     expect(r.text).toBe(input); // all candidates grew -> return input
     expect(r.withinBudget).toBe(false);
+  });
+});
+
+describe('eval predicates', () => {
+  it('looksLikeThinking flags preambles', () => {
+    expect(looksLikeThinking('Thinking Process: first I will...')).toBe(true);
+    expect(looksLikeThinking('Sure! Here is the continuation.')).toBe(true);
+    expect(looksLikeThinking(' and then the reaction proceeds.')).toBe(false);
+  });
+  it('isForwardContinuation rejects a verbatim restatement', () => {
+    const ctx = 'The reaction proceeds at room temperature.';
+    expect(isForwardContinuation(ctx, 'The reaction proceeds at room temperature.')).toBe(false);
+    expect(isForwardContinuation(ctx, ' It then yields the product.')).toBe(true);
+    expect(isForwardContinuation(ctx, '')).toBe(false);
   });
 });
