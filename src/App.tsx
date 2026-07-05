@@ -7,7 +7,9 @@ import VersionHistoryPopup from './components/VersionHistoryPopup';
 import { AgentType, Message, Suggestion, HistoryItem, AISettings, ManuscriptSource, AttachedImage, VersionSnapshot } from './types';
 import { searchSimilarManuscripts } from './services/manuscriptSearch';
 import { expandCitationNums, formatCitationGroup, mergeAdjacentCitations } from './services/citations';
-import { analyzeText, chatWithAgent, chatWithManuscript, resolveConflicts, runJudgeAgent, verifySuggestions, rebutSuggestion, manuscriptSummary, rewriteSection, transformWithInstruction, analyzeSourceAgainstManuscript, verifyClaimAgainstSources, AGENT_INFO, AGENT_ICONS, estimateTokens } from './services/ai';
+import { analyzeText, chatWithAgent, chatWithManuscript, resolveConflicts, runJudgeAgent, verifySuggestions, dedupeAdvisories, rebutSuggestion, manuscriptSummary, rewriteSection, transformWithInstruction, analyzeSourceAgainstManuscript, verifyClaimAgainstSources, AGENT_INFO, AGENT_ICONS, estimateTokens } from './services/ai';
+import { detectorSuggestions } from './services/detectors';
+import { buildReviewNote } from './utils/reviewNotes';
 import { findTextSpan } from './utils/textMatch';
 import { setDocumentContext, trimSectionToLimit, type AgentTool } from './services/ai';
 import { GrantTemplatePicker, GrantInstructionsModal, GrantToolbar } from './components/GrantPanel';
@@ -407,34 +409,51 @@ export default function App() {
           combinedSuggestions = [...combinedSuggestions, ...res.suggestions];
         });
 
-        if (combinedSuggestions.length > 0) {
-          const resolved = await resolveConflicts(combinedSuggestions, aiSettings);
-          // Run the Judge BEFORE displaying, so overlapping cards are removed
-          // up front instead of visibly vanishing a few seconds after they appear.
-          let judged = resolved;
-          try {
-            setAnalysisProgress({ agent: 'Judge selecting best suggestions…', total: agentsToRun.length, done: agentsToRun.length });
-            judged = await runJudgeAgent(resolved, aiSettings, signal);
-          } catch (e) {
-            if ((e as any)?.name === 'AbortError') throw e;
-            judged = resolved; // Judge failure is non-fatal; show everything
-          }
-          // Quality gate: drop edits that don't preserve meaning or don't improve.
+        // Deterministic detectors run regardless of provider — they never miss
+        // and never fabricate, so they set a recall floor under the LLM agents.
+        const detectorAdvisories = detectorSuggestions(plainText);
+
+        // Advisory suggestions (flag-only) bypass the Judge/verifier, which are
+        // built around edit ORIGINAL→REPLACE reasoning. Detector advisories go
+        // first so they win any span collision with an LLM advisory.
+        const advisories = dedupeAdvisories([
+          ...detectorAdvisories,
+          ...combinedSuggestions.filter(s => s.kind === 'advisory'),
+        ]);
+        const edits = combinedSuggestions.filter(s => s.kind !== 'advisory');
+
+        if (edits.length > 0 || advisories.length > 0) {
+          let judged: Suggestion[] = [];
           let verifiedDropped = 0;
-          try {
-            setAnalysisProgress({ agent: 'Verifying suggestion quality…', total: agentsToRun.length, done: agentsToRun.length });
-            const v = await verifySuggestions(judged, aiSettings, signal);
-            judged = v.kept;
-            verifiedDropped = v.dropped;
-          } catch (e) {
-            if ((e as any)?.name === 'AbortError') throw e;
+          if (edits.length > 0) {
+            const resolved = await resolveConflicts(edits, aiSettings);
+            // Run the Judge BEFORE displaying, so overlapping cards are removed
+            // up front instead of visibly vanishing a few seconds after they appear.
+            judged = resolved;
+            try {
+              setAnalysisProgress({ agent: 'Judge selecting best suggestions…', total: agentsToRun.length, done: agentsToRun.length });
+              judged = await runJudgeAgent(resolved, aiSettings, signal);
+            } catch (e) {
+              if ((e as any)?.name === 'AbortError') throw e;
+              judged = resolved; // Judge failure is non-fatal; show everything
+            }
+            // Quality gate: drop edits that don't preserve meaning or don't improve.
+            try {
+              setAnalysisProgress({ agent: 'Verifying suggestion quality…', total: agentsToRun.length, done: agentsToRun.length });
+              const v = await verifySuggestions(judged, aiSettings, signal);
+              judged = v.kept;
+              verifiedDropped = v.dropped;
+            } catch (e) {
+              if ((e as any)?.name === 'AbortError') throw e;
+            }
           }
-          addSuggestions(judged);
-          totalNew = judged.length;
-          const removed = (combinedSuggestions.length - judged.length);
+          const finalSuggestions = [...judged, ...advisories];
+          addSuggestions(finalSuggestions);
+          totalNew = finalSuggestions.length;
+          const removed = (edits.length - judged.length);
           if (removed > 0) {
             const verifyNote = verifiedDropped > 0 ? `, ${verifiedDropped} failed quality check` : '';
-            showToast(`Kept ${judged.length} best suggestions (${removed} filtered${verifyNote})`, 'info');
+            showToast(`Kept ${finalSuggestions.length} suggestions (${removed} filtered${verifyNote})`, 'info');
           }
         }
 
@@ -682,16 +701,24 @@ export default function App() {
   };
 
   const handleAcceptSuggestion = (suggestion: Suggestion) => {
+    // Advisory suggestions never replace text. Acting on one inserts a visible
+    // inline reminder next to the flagged span so the note travels with the text
+    // while the author fixes it by hand — no fabricated data ever enters the doc.
+    const isAdvisory = suggestion.kind === 'advisory';
+    const replacement = isAdvisory
+      ? suggestion.originalText + buildReviewNote(suggestion.recommendation || suggestion.explanation || 'review this')
+      : suggestion.suggestedText;
+
     const syncedOldContent = editorRef.current?.getHTML() || content;
-    const handledByEditor = editorRef.current?.applySuggestion(suggestion.originalText, suggestion.suggestedText);
+    const handledByEditor = editorRef.current?.applySuggestion(suggestion.originalText, replacement);
 
     if (!handledByEditor) {
       // Fallback: try raw HTML replacement
-      const newContent = content.replace(suggestion.originalText, suggestion.suggestedText);
+      const newContent = content.replace(suggestion.originalText, replacement);
       if (newContent !== content) {
         setContent(newContent);
       } else {
-        showToast('Could not find the text to replace. It may have been edited.', 'info');
+        showToast('Could not find the text to annotate. It may have been edited.', 'info');
       }
     }
 
@@ -702,7 +729,7 @@ export default function App() {
       oldContent: syncedOldContent,
       newContent,
       originalText: suggestion.originalText,
-      suggestedText: suggestion.suggestedText,
+      suggestedText: replacement,
       suggestionId: suggestion.id,
       agent: suggestion.agent,
     });
@@ -713,7 +740,10 @@ export default function App() {
   const handleAcceptAll = () => {
     // Apply bottom-up so earlier text is untouched while later suggestions
     // are located — keeps remaining anchors valid as the document changes.
-    const currentSuggestions = [...suggestions].sort((a, b) => b.startIndex - a.startIndex);
+    // Advisory suggestions are flag-only and are left untouched by "Accept All".
+    const currentSuggestions = [...suggestions]
+      .filter(s => s.kind !== 'advisory')
+      .sort((a, b) => b.startIndex - a.startIndex);
     for (const s of currentSuggestions) {
       handleAcceptSuggestion(s);
     }

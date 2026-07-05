@@ -134,3 +134,26 @@ valid," not a pass/fail gate, so it was not used to justify further prompt chang
 **Prompt changes kept:** `trimSectionToLimit`'s system prompt in `src/services/ai.ts` — target range
 (`N-5` to `N` words) plus a self-count-and-recheck instruction, replacing the flat "at most N
 words" phrasing that let the model land a few words over budget.
+
+---
+
+## 2026-07-05 — Advisory suggestions + detectors (ornith-9b, full-text, find-fix)
+
+Spec: `docs/superpowers/specs/2026-07-05-advisory-suggestions-design.md`.
+
+```
+editor            recall 4/4 (100%)  · 6  suggestions
+researcher        recall 4/4 (100%)  · 13 suggestions
+reviewer-2        recall 3/3 (100%)  · 12 suggestions [advisory]
+citation-checker  recall 2/2 (100%)  · 8  suggestions [advisory]
+statistician      recall 3/3 (100%)  · 8  suggestions [advisory]
+consistency       recall 1/1 (100%)  · 7  suggestions [advisory]
+manager           recall 1/1 (100%)  · 14 suggestions
+Overall recall:   18/18 (100%)
+No-fabrication:   PASS  (0/35 advisory items leaked replacement text)
+trim PASS · autocomplete PASS
+```
+
+The five data-dependent agents now run flag-only: 35 advisory items, zero with
+replacement text. Recommendations are specific and data-free ("Name the test
+behind this p-value", "Report the effect size and 95% CI and state SD vs SEM").

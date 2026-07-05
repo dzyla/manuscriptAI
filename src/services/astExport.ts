@@ -1,4 +1,5 @@
 // src/services/astExport.ts
+import { stripReviewNotes } from '../utils/reviewNotes';
 
 export interface Marks {
   bold?: boolean;
@@ -162,7 +163,8 @@ export function walkNode(node: PmNode, r: ASTRenderer, images?: Map<string, Imag
       return r.paragraph([]);
 
     case 'text':
-      return r.text(node.text ?? '', parseMarks(node.marks));
+      // Strip advisory review notes (《⚠ … 》) so they never reach exports.
+      return r.text(stripReviewNotes(node.text ?? ''), parseMarks(node.marks));
 
     case 'citation':
       return r.citationNode((node.attrs?.nums as number[]) ?? []);

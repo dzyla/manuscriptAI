@@ -25,7 +25,7 @@
  * again, compare the recall numbers.
  */
 
-import { analyzeText } from '../../src/services/ai';
+import { analyzeText, isAdvisoryAgent } from '../../src/services/ai';
 import { normalizeForMatch } from '../../src/utils/textMatch';
 import type { AISettings, AgentType, Suggestion } from '../../src/types';
 import { FIXTURE_MANUSCRIPT, SEEDS } from './fixture';
@@ -64,6 +64,7 @@ async function main() {
   console.log(`\nEval harness — provider=${settings.provider} model=${settings.provider === 'local' ? settings.localModel : settings[`${settings.provider}Model` as keyof AISettings] ?? '(default)'}\n`);
 
   let totalSeeds = 0, totalHit = 0, totalSuggestions = 0, onTarget = 0;
+  let advisorySuggestions = 0, advisoryLeaks = 0; // advisory items that leaked replacement text
 
   for (const agent of agents) {
     const seeds = SEEDS.filter(s => s.agent === agent);
@@ -82,8 +83,15 @@ async function main() {
     totalSeeds += seeds.length; totalHit += hitSeeds.length;
     totalSuggestions += suggestions.length; onTarget += onTargetHere;
 
+    // Anti-fabrication invariant: a flag-only agent must never emit replacement
+    // text. Any non-empty suggestedText here is a leak of (usually invented) data.
+    const advisoryAgent = isAdvisoryAgent(agent, settings);
+    const leaks = advisoryAgent ? suggestions.filter(s => s.kind !== 'advisory' || (s.suggestedText || '').trim() !== '').length : 0;
+    if (advisoryAgent) { advisorySuggestions += suggestions.length; advisoryLeaks += leaks; }
+
     const recall = seeds.length ? (100 * hitSeeds.length / seeds.length).toFixed(0) : '—';
-    console.log(`recall ${hitSeeds.length}/${seeds.length} (${recall}%)  · ${suggestions.length} suggestions`);
+    const tag = advisoryAgent ? ` [advisory${leaks ? `, ${leaks} LEAK` : ''}]` : '';
+    console.log(`recall ${hitSeeds.length}/${seeds.length} (${recall}%)  · ${suggestions.length} suggestions${tag}`);
     const missed = seeds.filter(seed => !hitSeeds.includes(seed));
     if (missed.length) console.log(`   missed: ${missed.map(m => m.id).join(', ')}`);
   }
@@ -91,7 +99,8 @@ async function main() {
   console.log('\n──────────────────────────────');
   console.log(`Overall recall:   ${totalHit}/${totalSeeds} (${totalSeeds ? (100 * totalHit / totalSeeds).toFixed(0) : 0}%)`);
   console.log(`On-target rate:   ${onTarget}/${totalSuggestions} suggestions matched a seeded issue`);
-  console.log('(On-target is a loose proxy — off-seed suggestions can still be valid.)\n');
+  console.log('(On-target is a loose proxy — off-seed suggestions can still be valid.)');
+  console.log(`No-fabrication:   ${advisoryLeaks === 0 ? 'PASS' : 'FAIL'}  (${advisoryLeaks}/${advisorySuggestions} advisory items leaked replacement text)\n`);
 
   if (process.env.EVAL_SKIP_CHECKS !== '1') {
     try { await runQualityChecks(settings); }

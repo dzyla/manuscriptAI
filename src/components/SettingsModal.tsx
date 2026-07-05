@@ -306,6 +306,18 @@ export default function SettingsModal({ isOpen, onClose, settings, onUpdateSetti
                           </select>
                           <p className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>Find-then-fix splits analysis into an easy "quote the problems" pass and a "write the fixes" pass — small models handle it far better. Only applies when chunking is on.</p>
                         </div>
+                        <label className="flex items-start gap-2.5 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={settings.recallPass !== false}
+                            onChange={(e) => onUpdateSettings({ ...settings, recallPass: e.target.checked })}
+                            className="mt-0.5"
+                          />
+                          <div className="space-y-0.5">
+                            <span className="text-[11px] font-semibold" style={{ color: 'var(--text-secondary)' }}>Recall pass (catch missed issues)</span>
+                            <p className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>Adds a second "what did you miss?" pass per chunk. Better coverage, one extra call per chunk.</p>
+                          </div>
+                        </label>
                         <div className="p-3 rounded-lg text-[10px] leading-relaxed space-y-1" style={{ background: 'var(--surface-2)', color: 'var(--text-tertiary)' }}>
                           <p className="font-semibold" style={{ color: 'var(--text-secondary)' }}>Local LLM Tips:</p>
                           <p>• Set "No chunking" for models with 32k+ context (Qwen2.5, Llama 3.1 70B, etc.)</p>
@@ -324,6 +336,18 @@ export default function SettingsModal({ isOpen, onClose, settings, onUpdateSetti
                         Customize each agent's system prompt to tune behavior and focus areas.
                       </p>
                     </div>
+                    <label className="flex items-start gap-2.5 cursor-pointer p-3 rounded-xl" style={{ background: 'var(--surface-2)' }}>
+                      <input
+                        type="checkbox"
+                        checked={!!settings.adviceOnly}
+                        onChange={(e) => onUpdateSettings({ ...settings, adviceOnly: e.target.checked })}
+                        className="mt-0.5"
+                      />
+                      <div className="space-y-0.5">
+                        <span className="text-[11px] font-semibold" style={{ color: 'var(--text-secondary)' }}>Advisory only — never auto-rewrite</span>
+                        <p className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>Every agent flags issues and recommends fixes without proposing replacement text. The statistics, consistency, reporting, Reviewer 2, and citation agents are always advisory regardless of this setting, because writing their "fix" means inventing data.</p>
+                      </div>
+                    </label>
                     {allAgents.map((agent) => (
                       <div key={agent} className="space-y-1.5">
                         <div className="flex items-center justify-between">

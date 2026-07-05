@@ -157,22 +157,21 @@ DO NOT comment on document structure, section ordering, or scientific validity.
 CRITICAL RULE: originalText must be copied CHARACTER-FOR-CHARACTER from the manuscript. suggestedText must be a direct, complete drop-in replacement. Provide 4-6 high-impact suggestions.
 ${SCIENTIFIC_WRITING_RULES}`,
 
-  'reviewer-2': `You are REVIEWER 2. You challenge the scientific rigor and logical integrity of the manuscript.
+  'reviewer-2': `You are REVIEWER 2. You challenge the scientific rigor and logical integrity of the manuscript. You FLAG weaknesses for the author to address; you never rewrite the text or supply data, because you do not have the underlying evidence.
 
-Focus EXCLUSIVELY on the most critical scientific weaknesses:
-- Claims stated as established fact without citation: "X is well established" requires a reference or qualification
-- Conclusions that exceed what the data supports: "These results prove X" should be "These results suggest X"
+Flag EXCLUSIVELY the most critical scientific weaknesses:
+- Claims stated as established fact without citation: "X is well established" needs a reference or qualification
+- Conclusions that exceed what the data supports: "These results prove X" overreaches
 - Missing sample sizes, statistical tests, p-values, confidence intervals, or effect sizes
 - Undefined abbreviations, undefined terms, or unexplained methodological choices
 - Confounding variables not addressed in the analysis or acknowledged in the discussion
 - Overgeneralization: findings from a specific context or population stated as universal
 - Missing alternative interpretations of the results
-- Limitations section that is absent, vague, or incomplete
+- A limitations section that is absent, vague, or incomplete
 
 DO NOT fix grammar or sentence style. Focus exclusively on scientific integrity and argumentation.
 
-For each issue: quote the EXACT problematic text, state the specific scientific weakness in one sentence, and provide a concrete revised version that addresses the problem. Assign severity: "critical" for conclusions that exceed the data; "major" for missing quantitative detail or methodology; "minor" for missing caveats or qualifications.
-${SCIENTIFIC_WRITING_RULES}`,
+For each issue: quote the EXACT problematic text, state the specific scientific weakness in one sentence, and in the recommendation say what the author must do (e.g. "report the sample size and test", "qualify this claim or cite a source", "acknowledge this confounder"). NEVER write the corrected sentence or invent a value. Assign severity: "critical" for conclusions that exceed the data; "major" for missing quantitative detail or methodology; "minor" for missing caveats or qualifications.`,
 
   researcher: `You are the CLARITY AND IMPACT SPECIALIST. You maximize the precision and communicative effectiveness of each paragraph.
 
@@ -220,7 +219,7 @@ Write in clear, direct scientific prose. Quote specific passages from both docum
 ${SCIENTIFIC_WRITING_RULES}`,
   'manuscript-ai': MANUSCRIPT_AI_SYSTEM_PROMPT,
 
-  'citation-checker': `You are a CITATION INTEGRITY SPECIALIST. Your sole task is to find claims that require a citation but have none.
+  'citation-checker': `You are a CITATION INTEGRITY SPECIALIST. Your sole task is to FLAG claims that require a citation but have none. You never rewrite the text or invent a reference.
 
 Scan the manuscript for:
 - Quantitative statements without a reference: "X% of patients...", "studies show that...", "the rate is..."
@@ -234,14 +233,11 @@ DO NOT flag:
 - Claims immediately followed by an existing citation
 - Common knowledge that genuinely requires no citation
 
-For each instance, quote the EXACT text needing a citation and in suggestedText append "[CITATION NEEDED]" to the end of the quoted sentence. Use severity "major" for quantitative claims and "minor" for qualitative assertions. Category is always "citation".
+For each instance, quote the EXACT text and in the recommendation say "Add a citation for this claim" (name the kind of source if useful). NEVER supply a specific reference or rewrite the sentence. Use severity "major" for quantitative claims and "minor" for qualitative assertions. Category is always "citation".`,
 
-CRITICAL: originalText must be an exact character-for-character copy from the manuscript.
-${SCIENTIFIC_WRITING_RULES}`,
+  statistician: `You are a STATISTICS REVIEWER. You audit ONLY the statistical reporting and quantitative rigor of the manuscript. You FLAG gaps for the author to fill; you never supply a number, statistic, or replacement sentence, because you do not have the underlying data.
 
-  statistician: `You are a STATISTICS REVIEWER. You audit ONLY the statistical reporting and quantitative rigor of the manuscript.
-
-Focus EXCLUSIVELY on:
+Flag EXCLUSIVELY:
 - p-values reported without the statistical test that produced them ("p < 0.05" with no named test)
 - "significant" or "significantly" used without a defined alpha threshold or a p-value
 - Missing effect sizes, confidence intervals, or measures of variability (SD/SEM) alongside point estimates
@@ -253,12 +249,11 @@ Focus EXCLUSIVELY on:
 
 DO NOT comment on grammar, structure, or non-statistical claims.
 
-For each issue: quote the EXACT problematic text and provide a concrete revised version that adds the missing statistic or names the test. severity: "critical" for missing tests/effect sizes on key results; "major" for missing CIs/sample sizes; "minor" for SD/SEM ambiguity. Category is always "statistics".
-${SCIENTIFIC_WRITING_RULES}`,
+For each issue: quote the EXACT problematic text and, in the recommendation, name WHAT the author must add or report (e.g. "name the test behind this p-value", "report the effect size and 95% CI", "state whether ± is SD or SEM"). NEVER invent the value or write the corrected text. severity: "critical" for missing tests/effect sizes on key results; "major" for missing CIs/sample sizes; "minor" for SD/SEM ambiguity. Category is always "statistics".`,
 
-  consistency: `You are an INTERNAL CONSISTENCY CHECKER. You find places where the manuscript contradicts itself.
+  consistency: `You are an INTERNAL CONSISTENCY CHECKER. You FLAG places where the manuscript contradicts itself. You never rewrite the text or decide which conflicting value is correct — only the author knows that.
 
-Focus EXCLUSIVELY on:
+Flag EXCLUSIVELY:
 - Numbers that disagree between sections: a value in the abstract that differs from the same value in the results
 - Sample sizes (N) that differ between the methods, results, figures, or abstract
 - Percentages and counts that are arithmetically inconsistent
@@ -268,19 +263,17 @@ Focus EXCLUSIVELY on:
 
 DO NOT propose stylistic rewrites or flag non-contradictory content.
 
-For each issue: quote the EXACT text of ONE side of the contradiction, and in suggestedText give the corrected version (or note the value it must match). Explain which two places disagree. severity: "critical" for contradictory key numbers; "major" for mismatched N or undefined-before-use abbreviations; "minor" for terminology drift. Category is always "structure".
-${SCIENTIFIC_WRITING_RULES}`,
+For each issue: quote the EXACT text of ONE side of the contradiction, name the two places that disagree in the issue, and in the recommendation say "Reconcile these values" (or "define at first use"). NEVER pick a value or write the corrected sentence. severity: "critical" for contradictory key numbers; "major" for mismatched N or undefined-before-use abbreviations; "minor" for terminology drift. Category is always "structure".`,
 
-  reporting: `You are a REPORTING-GUIDELINES CHECKER. You assess whether the manuscript reports the items its study type requires.
+  reporting: `You are a REPORTING-GUIDELINES CHECKER. You FLAG required items that a manuscript's study type appears to be missing. You never write the missing methodology — you do not know what the authors actually did.
 
-First infer the study type from the text (randomized trial → CONSORT; systematic review/meta-analysis → PRISMA; observational/cohort/case-control → STROBE; animal research → ARRIVE). Then check for the required items that appear to be MISSING or inadequately reported, for example:
+First infer the study type from the text (randomized trial → CONSORT; systematic review/meta-analysis → PRISMA; observational/cohort/case-control → STROBE; animal research → ARRIVE). Then check for required items that appear MISSING or inadequately reported, for example:
 - Trials: randomization method, allocation concealment, blinding, primary/secondary outcomes pre-specified, participant flow, registration number
 - Systematic reviews: search strategy and databases, eligibility criteria, study selection flow, risk-of-bias assessment
 - Observational studies: study design stated, setting and dates, eligibility, handling of confounders, missing-data handling
 - Animal studies: species/strain/sex, sample-size justification, randomization, blinding, humane endpoints
 
-For each missing item, quote the nearest EXACT sentence where it should appear (e.g. the start of Methods) and in suggestedText propose a sentence that supplies the item, prefixed with the checklist name, e.g. "[CONSORT] ...". If a required item genuinely cannot be located, say so in the explanation. severity: "major" for core methodology items; "minor" for supporting detail. Category is always "structure".
-${SCIENTIFIC_WRITING_RULES}`,
+For each missing item, quote the nearest EXACT sentence where it should appear (e.g. the start of Methods) and in the recommendation name the checklist item to add, prefixed with the checklist name, e.g. "[STROBE] state how confounders were handled". NEVER fabricate the methodological detail itself. severity: "major" for core methodology items; "minor" for supporting detail. Category is always "structure".`,
 };
 
 // ─── Grant mode ───────────────────────────────────────────────────────────────
@@ -332,9 +325,9 @@ DO NOT comment on scientific merit or document structure.
 CRITICAL RULE: originalText must be copied CHARACTER-FOR-CHARACTER from the text. suggestedText must be a direct, complete drop-in replacement. Provide 4-6 high-impact suggestions.
 ${GRANT_WRITING_RULES}`,
 
-  'reviewer-2': `You are an NIH STUDY SECTION REVIEWER. You evaluate the application against NIH review criteria: Significance, Innovation, Approach, and overall impact.
+  'reviewer-2': `You are an NIH STUDY SECTION REVIEWER. You evaluate the application against NIH review criteria: Significance, Innovation, Approach, and overall impact. You FLAG weaknesses for the applicant to fix; you never rewrite the application or invent preliminary data.
 
-Focus EXCLUSIVELY on what loses points in review:
+Flag EXCLUSIVELY what loses points in review:
 - Weak scientific premise: prior data cited without addressing its rigor, or premise stated without support
 - Overambitious scope: more work than the project period and budget can plausibly deliver
 - Missing rigor: no sample-size justification, no statistical plan, no consideration of relevant biological variables, no replication strategy
@@ -344,8 +337,7 @@ Focus EXCLUSIVELY on what loses points in review:
 - Innovation claims that are actually incremental, or significance framed as "gap filling" without stating why the gap matters
 - Expected outcomes that are vague or unfalsifiable
 
-For each issue: quote the EXACT problematic text, state the specific weakness a reviewer would cite, and provide a concrete revised version. Assign severity: "critical" for overambition, interdependent aims, or missing rigor; "major" for weak premise or missing alternatives; "minor" for missing caveats.
-${GRANT_WRITING_RULES}`,
+For each issue: quote the EXACT problematic text, state the specific weakness a reviewer would cite, and in the recommendation say what the applicant must add or change (e.g. "add a sample-size justification", "state an alternative strategy for this aim"). NEVER write the revised text or invent data. Assign severity: "critical" for overambition, interdependent aims, or missing rigor; "major" for weak premise or missing alternatives; "minor" for missing caveats.`,
 
   researcher: `You are the IMPACT AND FEASIBILITY SPECIALIST for grant applications. You maximize the persuasive force of every paragraph.
 
@@ -360,7 +352,7 @@ Focus EXCLUSIVELY on:
 For each suggestion, quote the EXACT weak text and provide a stronger, more precise replacement. List the most impactful suggestions first.
 ${GRANT_WRITING_RULES}`,
 
-  'citation-checker': `You are a CITATION INTEGRITY SPECIALIST for grant applications. Find claims that require a citation but have none.
+  'citation-checker': `You are a CITATION INTEGRITY SPECIALIST for grant applications. You FLAG claims that require a citation but have none. You never rewrite the text or invent a reference.
 
 Scan for:
 - Prevalence, burden, or cost statements without a reference: "X affects N million people..."
@@ -370,19 +362,16 @@ Scan for:
 
 DO NOT flag descriptions of the applicants' own preliminary data or proposed work, or claims immediately followed by a citation.
 
-For each instance, quote the EXACT text and in suggestedText append "[CITATION NEEDED]" to the end of the quoted sentence. Category is always "citation".
-
-CRITICAL: originalText must be an exact character-for-character copy from the text.
-${GRANT_WRITING_RULES}`,
+For each instance, quote the EXACT text and in the recommendation say "Add a citation for this claim". NEVER supply a specific reference. Category is always "citation".`,
 };
 
 /** Compact grant personas for chunked local-LLM mode. */
 export const GRANT_COMPACT_AGENT_PROMPTS: Partial<Record<AgentType, string>> = {
   manager: `You review the structure of an NIH grant application. Find problems in aims logic (hook, gap, hypothesis, independent aims, payoff), redundant or misplaced sections, missing timelines, and mismatches between summary and aims.`,
   editor: `You are a grant copy editor. Fix weak proposal language: "Experiments will be performed" becomes "We will...", hedging like "we hope to" or "may potentially", sentences over 30 words, undefined abbreviations, nominalizations, vague deliverables.`,
-  'reviewer-2': `You are an NIH study section reviewer. Flag weak premise, overambitious scope, missing rigor (sample sizes, statistics, replication), missing alternatives for each aim, interdependent aims, unsupported feasibility claims, vague expected outcomes.`,
+  'reviewer-2': `You are an NIH study section reviewer flagging weaknesses for the applicant to fix: weak premise, overambitious scope, missing rigor (sample sizes, statistics, replication), missing alternatives for each aim, interdependent aims, unsupported feasibility claims, vague expected outcomes. Quote the problem and recommend an action. Do NOT rewrite or invent data. Category "research".`,
   researcher: `You are a grant impact specialist. Fix buried payoffs (state significance early), activity framed without outcomes ("study X" becomes "determine whether X causes Y"), missing feasibility signals, weak impact statements, excessive hedging.`,
-  'citation-checker': `You find grant claims needing citations: prevalence/burden statistics, mechanistic claims stated as fact, state-of-the-field claims. Do NOT flag the applicants' own data or proposed work. Append "[CITATION NEEDED]" to the quoted sentence in suggestedText. Category "citation".`,
+  'citation-checker': `You flag grant claims needing citations: prevalence/burden statistics, mechanistic claims stated as fact, state-of-the-field claims. Do NOT flag the applicants' own data or proposed work. Quote the claim and recommend "Add a citation". Do NOT invent a reference. Category "citation".`,
 };
 
 const STUDY_SECTION_REVIEW_PROMPT = `You are an experienced NIH study section reviewer writing a full critique of this grant application.
@@ -491,16 +480,90 @@ function getActivePrompt(agent: AgentType, settings: AISettings): string {
 export const COMPACT_AGENT_PROMPTS: Partial<Record<AgentType, string>> = {
   manager: `You are a scientific manuscript structure reviewer. Find the highest-impact structural problems: missing or misordered sections, abstract that does not match the body, weak transitions, redundant content, conclusions that overstate the evidence.`,
   editor: `You are a scientific copy editor. Fix the highest-impact language problems: passive voice ("It was observed that X" becomes "We observed X"), wordy filler ("in order to" becomes "to"), sentences over 35 words, ambiguous pronouns ("this", "it"), nominalizations ("perform an analysis of" becomes "analyze"), tense inconsistencies.`,
-  'reviewer-2': `You are a rigorous peer reviewer. Find scientific weaknesses: claims stated as fact without support, conclusions exceeding the data ("prove" should be "suggest"), missing sample sizes or statistics, undefined terms or abbreviations, unaddressed confounders, overgeneralized findings.`,
+  'reviewer-2': `You are a rigorous peer reviewer flagging scientific weaknesses for the author to fix: claims stated as fact without support, conclusions exceeding the data, missing sample sizes or statistics, undefined terms, unaddressed confounders, overgeneralized findings. Quote the problem and recommend an action. Do NOT rewrite or invent data. Category "research".`,
   researcher: `You are a clarity and impact specialist. Fix buried main points (the topic sentence must state the finding), excessive hedging ("may possibly suggest" becomes "suggests"), vague quantifiers where numbers exist, paragraphs mixing two ideas, weak closing sentences.`,
-  'citation-checker': `You find claims that need citations: statistics without references, definitive scientific claims stated as fact, "studies show" without a source. Do NOT flag the authors' own methods or results, or claims already followed by a citation. In suggestedText, append "[CITATION NEEDED]" to the quoted sentence. Use category "citation".`,
-  statistician: `You are a statistics reviewer. Flag: p-values without the named test, "significant" without an alpha or p-value, missing effect sizes/confidence intervals/sample sizes, ambiguous SD vs SEM, percentages without counts, uncorrected multiple comparisons. Add the missing statistic in suggestedText. Category "statistics".`,
-  consistency: `You find internal contradictions: numbers that disagree between abstract and results, sample sizes (N) that differ across sections, arithmetically inconsistent counts/percentages, abbreviations used before they are defined. Quote one side and give the corrected value in suggestedText. Category "structure".`,
-  reporting: `You check the manuscript against the reporting checklist for its study type (CONSORT trials, PRISMA reviews, STROBE observational, ARRIVE animal). Flag missing required items (randomization, blinding, outcomes, search strategy, confounders, sample-size justification). Prefix suggestedText with the checklist name, e.g. "[STROBE] ...". Category "structure".`,
+  'citation-checker': `You flag claims that need citations: statistics without references, definitive claims stated as fact, "studies show" without a source. Do NOT flag the authors' own methods or results, or claims already followed by a citation. Quote the claim and recommend "Add a citation". Do NOT invent a reference. Category "citation".`,
+  statistician: `You flag statistical gaps for the author to fill: p-values without the named test, "significant" without an alpha or p-value, missing effect sizes/CIs/sample sizes, ambiguous SD vs SEM, percentages without counts, uncorrected multiple comparisons. Quote the problem and say what to add. Do NOT invent any number or statistic. Category "statistics".`,
+  consistency: `You flag internal contradictions for the author to reconcile: numbers that disagree between abstract and results, sample sizes (N) differing across sections, arithmetically inconsistent counts/percentages, abbreviations used before definition. Quote one side and recommend reconciling. Do NOT pick a value or rewrite. Category "structure".`,
+  reporting: `You flag missing reporting-checklist items for the study type (CONSORT trials, PRISMA reviews, STROBE observational, ARRIVE animal): randomization, blinding, outcomes, search strategy, confounders, sample-size justification. Quote the nearest sentence and recommend the item to add, prefixed with the checklist name. Do NOT fabricate the methodology. Category "structure".`,
 };
 
 /** The one rule small models most often break — stated identically everywhere. */
 const EXACT_QUOTE_RULE = `- originalText MUST be copied EXACTLY from the text above: same characters, same punctuation, same capitalization, including any citation markers like [3]. Never paraphrase, shorten, or "clean up" the quote.`;
+
+/**
+ * Agents that must NEVER propose replacement text. Their job depends on data the
+ * model does not have (the real statistics, the correct number, the actual
+ * source), so any "fix" they write is fabrication. They run in advisory mode:
+ * flag the span + recommend an action, no suggestedText. See docs spec
+ * 2026-07-05-advisory-suggestions-design.md.
+ */
+export const ADVISORY_AGENTS: Set<AgentType> = new Set([
+  'statistician', 'consistency', 'reporting', 'reviewer-2', 'citation-checker',
+]);
+
+/** True when this agent should run flag-only (by nature, or via the global override). */
+export function isAdvisoryAgent(agent: AgentType, settings?: AISettings): boolean {
+  if (settings?.adviceOnly) return true;
+  return ADVISORY_AGENTS.has(agent);
+}
+
+/** Injected into every advisory prompt — the non-negotiable no-fabrication rule. */
+const ADVISORY_DIRECTIVE = `You are flagging issues for a researcher to fix by hand. You do NOT have the underlying data, measurements, or sources, so you must NEVER invent, calculate, rewrite, or supply any numbers, statistics, p-values, sample sizes, citations, or replacement sentences. Only (1) quote the exact problem span verbatim and (2) say what the author must add, verify, or reconcile.`;
+
+/** Schema for advisory (flag-only) output: a quote, the issue, and an action. */
+export const ADVISORIES_JSON_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: { advisories: { type: 'array', items: {
+    type: 'object', additionalProperties: false,
+    properties: {
+      quote: { type: 'string' },
+      issue: { type: 'string' },
+      recommendation: { type: 'string' },
+      severity: { type: 'string', enum: ['critical', 'major', 'minor', 'style'] },
+      category: { type: 'string' },
+    }, required: ['quote', 'issue', 'recommendation'],
+  } } }, required: ['advisories'],
+} as const;
+
+/** Normalize raw advisory objects ({quote,issue,recommendation}) into anchor-ready
+ *  edit-shaped rows with kind:'advisory' and an empty suggestedText. */
+function mapAdvisories(parsed: any): any[] {
+  const items = Array.isArray(parsed) ? parsed : (parsed?.advisories ?? []);
+  return (items as any[])
+    .filter(a => a && typeof a.quote === 'string' && a.quote.trim())
+    .map(a => ({
+      originalText: a.quote,
+      suggestedText: '',
+      explanation: String(a.issue ?? ''),
+      recommendation: String(a.recommendation ?? ''),
+      severity: a.severity,
+      category: a.category,
+      kind: 'advisory' as const,
+    }));
+}
+
+/** Two suggestions cover overlapping text (by index range or containment). */
+export function spansOverlap(a: Suggestion, b: Suggestion): boolean {
+  if (a.startIndex !== undefined && b.startIndex !== undefined &&
+      a.startIndex <= b.endIndex && b.startIndex <= a.endIndex) return true;
+  return a.originalText.includes(b.originalText) || b.originalText.includes(a.originalText);
+}
+
+/**
+ * Collapse advisory suggestions that flag the same span. Order matters: pass the
+ * deterministic detector advisories FIRST so they win over an LLM advisory on the
+ * same passage (the detector quote is guaranteed exact and its recommendation is
+ * hallucination-free).
+ */
+export function dedupeAdvisories(list: Suggestion[]): Suggestion[] {
+  const kept: Suggestion[] = [];
+  for (const s of list) {
+    if (kept.some(k => spansOverlap(k, s))) continue;
+    kept.push(s);
+  }
+  return kept;
+}
 
 function truncateText(text: string, maxLen: number): string {
   return text.length > maxLen ? text.substring(0, maxLen) + '\n...[truncated]' : text;
@@ -1040,8 +1103,34 @@ export function anchorSuggestions(rawArr: any[], docText: string, agent: AgentTy
 
   for (let index = 0; index < rawArr.length; index++) {
     const s = rawArr[index];
-    if (!s || typeof s.originalText !== 'string' || typeof s.suggestedText !== 'string') continue;
-    if (!s.originalText.trim() || !s.suggestedText.trim()) { dropped++; continue; }
+    if (!s || typeof s.originalText !== 'string') continue;
+    if (!s.originalText.trim()) { dropped++; continue; }
+
+    // Advisory suggestions carry no replacement text — anchor by the quoted span
+    // only, and skip the lint + no-op checks that assume an edit.
+    if (s.kind === 'advisory') {
+      const advSpan = findTextSpan(docText, s.originalText);
+      if (!advSpan) { dropped++; continue; }
+      if (advSpan.method !== 'exact') salvaged++;
+      suggestions.push({
+        ...s,
+        id: `${idPrefix}-${index}`,
+        agent,
+        kind: 'advisory',
+        originalText: advSpan.matchedText,
+        suggestedText: '',
+        explanation: s.explanation || '',
+        recommendation: s.recommendation || s.explanation || '',
+        startIndex: advSpan.start,
+        endIndex: advSpan.end,
+        severity: VALID_SEVERITIES.includes(s.severity) ? s.severity : 'minor',
+        category: VALID_CATEGORIES.includes(s.category) ? s.category : 'clarity',
+        section: s.section || 'General',
+      });
+      continue;
+    }
+
+    if (typeof s.suggestedText !== 'string' || !s.suggestedText.trim()) { dropped++; continue; }
 
     const span = findTextSpan(docText, s.originalText);
     if (!span) { dropped++; continue; }
@@ -1494,7 +1583,13 @@ Return ONLY JSON: {"fixes":[{"index":0,"suggestedText":"the replacement text"}]}
  * then fall back to the single-pass path).
  */
 async function findThenFixChunk(chunkText: string, compactRole: string, settings: AISettings, signal?: AbortSignal): Promise<any[]> {
-  const problems = await findProblems(chunkText, compactRole, settings, signal);
+  let problems = await findProblems(chunkText, compactRole, settings, signal);
+  if (settings.recallPass !== false) {
+    try {
+      const more = await recallProblems(chunkText, compactRole, problems.map(p => p.quote), settings, signal);
+      problems = dedupeFoundProblems([...problems, ...more]);
+    } catch { /* recall is best-effort; a failure just means fewer finds */ }
+  }
   if (problems.length === 0) return [];
   const fixes = await writeFixes(problems, compactRole, settings, signal);
   const raw: any[] = [];
@@ -1509,6 +1604,90 @@ async function findThenFixChunk(chunkText: string, compactRole: string, settings
       category: p.category,
     });
   });
+  return raw;
+}
+
+/** Drop duplicate found problems by normalized quote (recall merge helper). */
+function dedupeFoundProblems(problems: FoundProblem[]): FoundProblem[] {
+  const seen = new Set<string>();
+  const out: FoundProblem[] = [];
+  for (const p of problems) {
+    const key = p.quote.trim().toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(p);
+  }
+  return out;
+}
+
+/**
+ * Recall pass — the "what did you miss?" second look. Small models routinely stop
+ * after 2-3 finds; handing back the already-found quotes and asking only for
+ * ADDITIONAL problems recovers issues the first pass skipped, without re-listing
+ * the ones already caught. Best-effort: any failure just leaves the first pass.
+ */
+async function recallProblems(chunkText: string, compactRole: string, found: string[], settings: AISettings, signal?: AbortSignal): Promise<FoundProblem[]> {
+  const priorList = found.length ? found.map(q => `- "${q}"`).join('\n') : '(none yet)';
+  const prompt = `${compactRole}
+
+You already flagged these passages:
+${priorList}
+
+Find any ADDITIONAL high-impact problems in the text below that you missed. Do NOT repeat anything above. If there are none, return an empty list.
+
+Text:
+"""
+${chunkText}
+"""
+
+Return ONLY JSON: {"problems":[{"quote":"exact verbatim span copied from the text","issue":"one short line naming the problem","severity":"critical|major|minor|style","category":"grammar|clarity|flow|structure|research|citation|evidence|statistics"}]}
+Rules: quote MUST be copied character-for-character. No prose outside the JSON.`;
+  const raw = await callLocalLLM(prompt, settings, 'Return only valid JSON. No markdown.', undefined, signal, undefined, true, PROBLEMS_JSON_SCHEMA);
+  const parsed = parseJSONRobust(raw);
+  const arr = Array.isArray(parsed) ? parsed : (parsed?.problems ?? []);
+  return (arr as any[])
+    .filter(p => p && typeof p.quote === 'string' && p.quote.trim())
+    .map(p => ({ quote: p.quote, issue: String(p.issue ?? ''), severity: p.severity, category: p.category }));
+}
+
+/**
+ * Advisory find pass — the flag-only counterpart to find-then-fix. There is no
+ * second "write the fix" pass, because advisory agents must never produce a
+ * replacement; skipping it is exactly what removes the fabrication. Returns
+ * anchor-ready advisory rows (quote → originalText, empty suggestedText).
+ */
+async function findAdvisories(chunkText: string, compactRole: string, settings: AISettings, signal?: AbortSignal, exclude?: string[]): Promise<any[]> {
+  const prior = exclude && exclude.length
+    ? `\nYou already flagged these — do NOT repeat them, only find ADDITIONAL issues:\n${exclude.map(q => `- "${q}"`).join('\n')}\n`
+    : '';
+  const prompt = `${compactRole}
+
+${ADVISORY_DIRECTIVE}
+${prior}
+Text:
+"""
+${chunkText}
+"""
+
+Return ONLY JSON: {"advisories":[{"quote":"exact verbatim span copied from the text","issue":"one short line naming the problem","recommendation":"one short line: what the author must add, verify, or reconcile — no invented values","severity":"critical|major|minor|style","category":"statistics|citation|structure|evidence|clarity"}]}
+Rules: quote MUST be copied character-for-character. Up to 6 items, fewer if the text is clean. No prose outside the JSON.`;
+  const raw = await callLocalLLM(prompt, settings, 'Return only valid JSON. No markdown.', undefined, signal, undefined, true, ADVISORIES_JSON_SCHEMA);
+  return mapAdvisories(parseJSONRobust(raw));
+}
+
+/** Advisory find + optional recall pass, deduped by quote. */
+async function findAdvisoriesChunk(chunkText: string, compactRole: string, settings: AISettings, signal?: AbortSignal): Promise<any[]> {
+  let raw = await findAdvisories(chunkText, compactRole, settings, signal);
+  if (settings.recallPass !== false) {
+    try {
+      const more = await findAdvisories(chunkText, compactRole, settings, signal, raw.map(r => r.originalText));
+      const seen = new Set(raw.map(r => String(r.originalText).trim().toLowerCase()));
+      for (const r of more) {
+        const key = String(r.originalText).trim().toLowerCase();
+        if (!seen.has(key)) { seen.add(key); raw.push(r); }
+      }
+    } catch { /* recall is best-effort */ }
+  }
   return raw;
 }
 
@@ -1609,6 +1788,35 @@ ${EXACT_QUOTE_RULE}
 }
 
 /**
+ * Advisory (flag-only) analysis prompt for the full-text / cloud paths. Same
+ * contract as findAdvisories but over the whole document at once. Never asks for
+ * replacement text — only a quote, the issue, and a recommendation.
+ */
+function buildAdvisoryPrompt(agentRole: string, text: string, existingContext: string): string {
+  return `${agentRole}
+
+${ADVISORY_DIRECTIVE}
+
+Text:
+"""
+${text}
+"""
+${existingContext}
+
+Return ONLY a JSON object: {"advisories":[...]}. Each advisory must have:
+- quote: the EXACT problem span copied verbatim from the text (including any [N] markers)
+- issue: one short line naming what is wrong
+- recommendation: one short line — what the author must add, verify, or reconcile (NO invented numbers, statistics, or replacement text)
+- severity: "critical" | "major" | "minor" | "style"
+- category: "statistics" | "citation" | "structure" | "evidence" | "clarity" | "research"
+
+Rules:
+- Return ONLY the JSON object — no markdown, no prose outside the JSON
+${EXACT_QUOTE_RULE}
+- Provide the highest-impact issues only; return an empty list if the text is clean`;
+}
+
+/**
  * Attempt to repair malformed JSON by asking the LLM to fix syntax errors only.
  * Used as a last-resort fallback when parseJSONRobust fails.
  */
@@ -1646,6 +1854,9 @@ function classifyLLMError(err: unknown): string {
 
 export async function analyzeText(text: string, agent: AgentType, settings: AISettings, existingSuggestions: Suggestion[] = [], onProgress?: (msg: string) => void, htmlContent?: string, signal?: AbortSignal): Promise<{ suggestions: Suggestion[], status: 'ok' | 'no_suggestions' | 'parsing_failed' | 'server_error', errorMessage?: string, salvaged?: number, dropped?: number }> {
   const activePrompt = getActivePrompt(agent, settings);
+  // Data-dependent agents (and the global adviceOnly override) run flag-only:
+  // no replacement text is ever generated, so nothing can be fabricated.
+  const advisory = isAdvisoryAgent(agent, settings);
 
   let existingContext = '';
   if (existingSuggestions.length > 0) {
@@ -1684,7 +1895,10 @@ export async function analyzeText(text: string, agent: AgentType, settings: AISe
       if (!useFullText && settings.pipelineMode !== 'single') {
         try {
           onProgress?.(`Chunk ${i + 1}/${chunks.length} — finding problems`);
-          const raw = await findThenFixChunk(chunks[i], shortRole, settings, signal);
+          // Advisory agents skip the "write the fix" pass entirely — they flag only.
+          const raw = advisory
+            ? await findAdvisoriesChunk(chunks[i], shortRole, settings, signal)
+            : await findThenFixChunk(chunks[i], shortRole, settings, signal);
           if (raw.length > 0) {
             const anchored = anchorSuggestions(raw, text, agent, `suggestion-${Date.now()}-${i}-ff`);
             totalSalvaged += anchored.salvaged;
@@ -1701,18 +1915,21 @@ export async function analyzeText(text: string, agent: AgentType, settings: AISe
         }
       }
 
-      const prompt = useFullText
-        ? buildFullTextPrompt(shortRole, chunks[i], existingContext)
-        : buildLocalPrompt(shortRole, chunks[i], existingContext);
+      const prompt = advisory
+        ? buildAdvisoryPrompt(shortRole, chunks[i], existingContext)
+        : useFullText
+          ? buildFullTextPrompt(shortRole, chunks[i], existingContext)
+          : buildLocalPrompt(shortRole, chunks[i], existingContext);
+      const singlePassSchema = advisory ? ADVISORIES_JSON_SCHEMA : SUGGESTIONS_JSON_SCHEMA;
 
       try {
-        const textResponse = await callLocalLLM(prompt, settings, "Return only valid JSON. No markdown, no explanations.", undefined, signal, undefined, true, SUGGESTIONS_JSON_SCHEMA);
+        const textResponse = await callLocalLLM(prompt, settings, "Return only valid JSON. No markdown, no explanations.", undefined, signal, undefined, true, singlePassSchema);
         rawResponses.push(textResponse);
-        
+
         if (textResponse) {
           try {
             const parsed = parseJSONRobust(textResponse);
-            const suggestionsArr = Array.isArray(parsed) ? parsed : (parsed.suggestions || parsed.fixes || []);
+            const suggestionsArr = advisory ? mapAdvisories(parsed) : (Array.isArray(parsed) ? parsed : (parsed.suggestions || parsed.fixes || []));
             const anchored = anchorSuggestions(suggestionsArr, text, agent, `suggestion-${Date.now()}-${i}`);
             const chunkSuggestions = anchored.suggestions;
             totalSalvaged += anchored.salvaged;
@@ -1728,7 +1945,7 @@ export async function analyzeText(text: string, agent: AgentType, settings: AISe
               onProgress?.(`Chunk ${i + 1}/${chunks.length} — repairing JSON...`);
               const repaired = await repairJSONWithLLM(textResponse, settings);
               const parsedRepaired = parseJSONRobust(repaired);
-              const arr = Array.isArray(parsedRepaired) ? parsedRepaired : (parsedRepaired.suggestions || parsedRepaired.fixes || []);
+              const arr = advisory ? mapAdvisories(parsedRepaired) : (Array.isArray(parsedRepaired) ? parsedRepaired : (parsedRepaired.suggestions || parsedRepaired.fixes || []));
               const anchoredRepair = anchorSuggestions(arr, text, agent, `suggestion-${Date.now()}-${i}-r`);
               totalSalvaged += anchoredRepair.salvaged;
               totalDropped += anchoredRepair.dropped;
@@ -1767,7 +1984,9 @@ export async function analyzeText(text: string, agent: AgentType, settings: AISe
   // The agent role goes in the SYSTEM prompt only. The previous version also
   // prepended it to the user prompt, sending the full persona twice per call —
   // wasted tokens and diluted instructions.
-  const prompt = `Analyze this manuscript text and provide specific, actionable suggestions.
+  const prompt = advisory
+    ? buildAdvisoryPrompt('', text, `${sectionContext}${existingContext}`)
+    : `Analyze this manuscript text and provide specific, actionable suggestions.
 
 Text:
 """
@@ -1786,16 +2005,17 @@ Each suggestion must have:
 
 Provide 8-15 highly specific suggestions.
 ${EXACT_QUOTE_RULE}`;
+  const cloudSchema = advisory ? ADVISORIES_JSON_SCHEMA : SUGGESTIONS_JSON_SCHEMA;
 
   try {
     // 8192 output tokens: a 10-15 suggestion JSON payload does not fit in 4096.
     // Constrained decoding (json_schema) keeps the shape valid on every provider
     // that supports it, sharply reducing parse failures.
-    let textResponse = await callLLM(prompt, settings, activePrompt, true, undefined, signal, 8192, { jsonSchema: SUGGESTIONS_JSON_SCHEMA });
+    let textResponse = await callLLM(prompt, settings, activePrompt, true, undefined, signal, 8192, { jsonSchema: cloudSchema });
     if (!textResponse) return { suggestions: [], status: 'no_suggestions' };
 
     const parsed = parseJSONRobust(textResponse);
-    const suggestionsArr = Array.isArray(parsed) ? parsed : (parsed.suggestions || []);
+    const suggestionsArr = advisory ? mapAdvisories(parsed) : (Array.isArray(parsed) ? parsed : (parsed.suggestions || []));
     const anchored = anchorSuggestions(suggestionsArr, text, agent, `suggestion-${Date.now()}`);
 
     return {
@@ -1823,7 +2043,7 @@ ${EXACT_QUOTE_RULE}`;
       const textResponse = await callLLM(prompt, settings, activePrompt, true, undefined, undefined, 8192);
       const repaired = await repairJSONWithLLM(textResponse, settings);
       const parsed = parseJSONRobust(repaired);
-      const arr = Array.isArray(parsed) ? parsed : (parsed.suggestions || []);
+      const arr = advisory ? mapAdvisories(parsed) : (Array.isArray(parsed) ? parsed : (parsed.suggestions || []));
       const anchored = anchorSuggestions(arr, text, agent, `suggestion-${Date.now()}-repair`);
       return {
         suggestions: anchored.suggestions,

@@ -53,6 +53,12 @@ export interface AISettings {
   /** Local chunked analysis strategy. 'find-fix' (default): two-pass find-then-fix
    *  for small models. 'single': legacy one-shot per chunk. */
   pipelineMode?: 'find-fix' | 'single';
+  /** Global override: run EVERY agent in advisory (flag-only) mode — no agent
+   *  ever proposes replacement text. Default off; the data-dependent agents are
+   *  advisory regardless of this flag. */
+  adviceOnly?: boolean;
+  /** Add a second "what did you miss?" recall pass to the find step. Default on. */
+  recallPass?: boolean;
   customPrompts?: Partial<Record<AgentType, string>>;
   zotero?: ZoteroSettings;
 }
@@ -60,6 +66,7 @@ export interface AISettings {
 export interface Suggestion {
   id: string;
   originalText: string;
+  /** Replacement text for edit suggestions; empty string for advisory ones. */
   suggestedText: string;
   explanation: string;
   agent: AgentType;
@@ -69,6 +76,11 @@ export interface Suggestion {
   severity?: SuggestionSeverity;
   category?: SuggestionCategory;
   section?: string;
+  /** 'edit' (default): a drop-in replacement the author can Accept. 'advisory':
+   *  a flag with a recommendation — no replacement text, never auto-applied. */
+  kind?: 'edit' | 'advisory';
+  /** For advisory suggestions: the concrete action the author should take. */
+  recommendation?: string;
 }
 
 export interface AttachedImage {

@@ -8,6 +8,10 @@ import {
   stripThinkingBlocks,
   countWords,
   bestTrimCandidate,
+  isAdvisoryAgent,
+  ADVISORY_AGENTS,
+  spansOverlap,
+  dedupeAdvisories,
 } from './ai';
 import type { Suggestion } from '../types';
 import { looksLikeThinking, isForwardContinuation } from '../../scripts/eval/checks';
@@ -77,6 +81,24 @@ describe('anchorSuggestions', () => {
     const raw = [{ originalText: 'the mice were injected', suggestedText: 'the mice received saline', explanation: '', severity: 'minor', category: 'clarity' }];
     const { dropped } = anchorSuggestions(raw, doc, 'editor', 'p');
     expect(dropped).toBe(1);
+  });
+
+  it('anchors an advisory suggestion with no suggestedText and keeps the recommendation', () => {
+    const raw = [{ kind: 'advisory', originalText: 'the cells died rapidly', explanation: 'no measurement given', recommendation: 'report the timescale', severity: 'major', category: 'statistics' }];
+    const { suggestions, dropped } = anchorSuggestions(raw, doc, 'statistician', 'p');
+    expect(dropped).toBe(0);
+    expect(suggestions).toHaveLength(1);
+    expect(suggestions[0].kind).toBe('advisory');
+    expect(suggestions[0].suggestedText).toBe('');
+    expect(suggestions[0].recommendation).toBe('report the timescale');
+    expect(doc).toContain(suggestions[0].originalText);
+  });
+
+  it('does NOT drop an advisory whose quote equals the source (no no-op rule)', () => {
+    const raw = [{ kind: 'advisory', originalText: 'the cells died rapidly', explanation: 'x', recommendation: 'y', severity: 'minor', category: 'statistics' }];
+    const { suggestions, dropped } = anchorSuggestions(raw, doc, 'statistician', 'p');
+    expect(suggestions).toHaveLength(1);
+    expect(dropped).toBe(0);
   });
 
   it('salvages a lightly misquoted suggestion via fuzzy match', () => {
@@ -200,5 +222,49 @@ describe('eval predicates', () => {
     expect(isForwardContinuation(ctx, 'The reaction proceeds at room temperature.')).toBe(false);
     expect(isForwardContinuation(ctx, ' It then yields the product.')).toBe(true);
     expect(isForwardContinuation(ctx, '')).toBe(false);
+  });
+});
+
+describe('advisory agent classification', () => {
+  it('marks the data-dependent agents advisory by nature', () => {
+    for (const a of ['statistician', 'consistency', 'reporting', 'reviewer-2', 'citation-checker'] as const) {
+      expect(ADVISORY_AGENTS.has(a)).toBe(true);
+      expect(isAdvisoryAgent(a)).toBe(true);
+    }
+  });
+  it('leaves the text-quality agents as edit agents', () => {
+    for (const a of ['editor', 'researcher', 'manager'] as const) {
+      expect(isAdvisoryAgent(a)).toBe(false);
+    }
+  });
+  it('adviceOnly override makes every agent advisory', () => {
+    expect(isAdvisoryAgent('editor', { adviceOnly: true } as any)).toBe(true);
+    expect(isAdvisoryAgent('manager', { adviceOnly: true } as any)).toBe(true);
+  });
+});
+
+describe('dedupeAdvisories', () => {
+  const mk = (id: string, text: string, start: number): Suggestion => ({
+    id, originalText: text, suggestedText: '', explanation: '', recommendation: 'r',
+    agent: 'statistician', startIndex: start, endIndex: start + text.length,
+    kind: 'advisory', severity: 'major', category: 'statistics',
+  });
+
+  it('detects overlap by containment and by index range', () => {
+    expect(spansOverlap(mk('a', 'the cells died rapidly', 5), mk('b', 'cells died', 9))).toBe(true);
+    expect(spansOverlap(mk('a', 'foo', 0), mk('b', 'bar', 50))).toBe(false);
+  });
+
+  it('keeps the first (detector) advisory when two flag the same span', () => {
+    const detector = mk('detector-0', 'p < 0.05 in the treated group', 10);
+    const llm = mk('llm-1', 'p < 0.05', 10);
+    const kept = dedupeAdvisories([detector, llm]);
+    expect(kept).toHaveLength(1);
+    expect(kept[0].id).toBe('detector-0');
+  });
+
+  it('keeps advisories on disjoint spans', () => {
+    const kept = dedupeAdvisories([mk('a', 'foo', 0), mk('b', 'bar', 100)]);
+    expect(kept).toHaveLength(2);
   });
 });

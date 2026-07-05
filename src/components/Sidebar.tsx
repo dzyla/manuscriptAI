@@ -767,24 +767,41 @@ export default function Sidebar({
                           onClick={() => onSuggestionCardClick(s)}
                         >
                           <div className="flex items-center gap-2 mb-2">
-                            <span className="font-bold" style={{ color: 'var(--text-primary)' }}>Proposed Change</span>
+                            <span className="font-bold" style={{ color: 'var(--text-primary)' }}>
+                              {s.kind === 'advisory' ? 'Issue to Address' : 'Proposed Change'}
+                            </span>
                             <CategoryBadge category={s.category} />
                             <span className="text-[9px] ml-auto" style={{ color: 'var(--text-muted)' }}>Click to locate</span>
                           </div>
-                          <DiffView original={s.originalText} suggested={s.suggestedText} />
+                          {s.kind === 'advisory' ? (
+                            <div className="space-y-1.5">
+                              <div className="text-[11px] leading-relaxed px-2 py-1.5 rounded italic" style={{ background: 'var(--surface-2)', color: 'var(--text-tertiary)' }}>
+                                "{s.originalText.length > 180 ? s.originalText.slice(0, 180) + '…' : s.originalText}"
+                              </div>
+                              <p className="text-[11px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}>{s.explanation}</p>
+                              {s.recommendation && (
+                                <p className="text-[11px] leading-relaxed font-medium flex gap-1.5" style={{ color: '#b45309' }}>
+                                  <ArrowRight size={12} className="mt-0.5 shrink-0" />
+                                  <span>{s.recommendation}</span>
+                                </p>
+                              )}
+                            </div>
+                          ) : (
+                            <DiffView original={s.originalText} suggested={s.suggestedText} />
+                          )}
                           <div className="flex gap-1.5 mt-2">
-                            <button 
+                            <button
                               onClick={(e) => { e.stopPropagation(); onAcceptSuggestion(s); }}
                               className="flex-1 py-1.5 bg-stone-800 text-white rounded-lg text-[11px] font-medium hover:bg-stone-700 transition-colors"
                             >
-                              Accept
+                              {s.kind === 'advisory' ? 'Insert note' : 'Accept'}
                             </button>
-                            <button 
+                            <button
                               onClick={(e) => { e.stopPropagation(); onRejectSuggestion(s); }}
                               className="flex-1 py-1.5 border rounded-lg text-[11px] font-medium hover:bg-stone-50 transition-colors"
                               style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
                             >
-                              Reject
+                              {s.kind === 'advisory' ? 'Dismiss' : 'Reject'}
                             </button>
                           </div>
                         </div>
@@ -918,11 +935,29 @@ export default function Sidebar({
                         </div>
                       </div>
 
-                      <DiffView original={s.originalText} suggested={s.suggestedText} />
-
-                      <p className="text-[11px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
-                        {s.explanation}
-                      </p>
+                      {s.kind === 'advisory' ? (
+                        <div className="space-y-1.5">
+                          <div className="text-[11px] leading-relaxed px-2 py-1.5 rounded italic" style={{ background: 'var(--surface-2)', color: 'var(--text-tertiary)' }}>
+                            "{s.originalText.length > 180 ? s.originalText.slice(0, 180) + '…' : s.originalText}"
+                          </div>
+                          <p className="text-[11px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+                            {s.explanation}
+                          </p>
+                          {s.recommendation && (
+                            <p className="text-[11px] leading-relaxed font-medium flex gap-1.5" style={{ color: '#b45309' }}>
+                              <ArrowRight size={12} className="mt-0.5 shrink-0" />
+                              <span>{s.recommendation}</span>
+                            </p>
+                          )}
+                        </div>
+                      ) : (
+                        <>
+                          <DiffView original={s.originalText} suggested={s.suggestedText} />
+                          <p className="text-[11px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+                            {s.explanation}
+                          </p>
+                        </>
+                      )}
 
                       {s.section && s.section !== 'General' && (
                         <span className="inline-block text-[9px] px-1.5 py-0.5 rounded border font-medium" style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-tertiary)' }}>
@@ -935,14 +970,16 @@ export default function Sidebar({
                           onClick={(e) => { e.stopPropagation(); onAcceptSuggestion(s); }}
                           className="flex-1 py-2 bg-stone-800 text-white rounded-lg text-[11px] font-semibold flex items-center justify-center gap-1.5 hover:bg-stone-700 transition-colors shadow-sm"
                         >
-                          <Check size={12} /> Accept
+                          {s.kind === 'advisory'
+                            ? (<><MessageSquare size={12} /> Insert note</>)
+                            : (<><Check size={12} /> Accept</>)}
                         </button>
                         <button
                           onClick={(e) => { e.stopPropagation(); onRejectSuggestion(s); }}
                           className="flex-1 py-2 border rounded-lg text-[11px] font-semibold flex items-center justify-center gap-1.5 hover:bg-stone-50 transition-colors"
                           style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
                         >
-                          <X size={12} /> Reject
+                          <X size={12} /> {s.kind === 'advisory' ? 'Dismiss' : 'Reject'}
                         </button>
                       </div>
                       
