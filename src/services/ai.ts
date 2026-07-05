@@ -1286,17 +1286,20 @@ async function callLLM(prompt: string, settings: AISettings, systemPrompt: strin
  * to the prefilled assistant turn, producing leaked instructions instead
  * of a clean continuation.
  */
-export async function generateCompletion(contextText: string, settings: AISettings, signal?: AbortSignal): Promise<string> {
+export async function generateCompletion(contextText: string, settings: AISettings, signal?: AbortSignal, heading?: string): Promise<string> {
   const docKind = documentContext.mode === 'grant' ? 'grant application' : 'scientific manuscript';
   const system =
     `You are a ${docKind} autocomplete engine. ` +
-    'The user sends you manuscript text. Your entire response must be the continuation — nothing else. ' +
-    'Start immediately with the next word. No preamble, no analysis, no explanation, no labels, no reasoning. ' +
-    'Do NOT show a thinking process, reasoning steps, or numbered analysis. ' +
-    'Wrong: "Sure! The next sentence is: X." Wrong: "Thinking Process: 1. ..." Right: "X."';
+    (heading ? `The author is writing the "${heading}" section. ` : '') +
+    'The user sends you the text so far. Reply with ONLY the next 1-2 sentences that naturally continue it. ' +
+    'Continue the author\'s thought forward — never restate, summarize, or re-explain what they already wrote. ' +
+    'Start immediately with the next word (add a leading space if the text does not end with one). ' +
+    'No preamble, no analysis, no labels, no reasoning, no quotes around your answer. ' +
+    'Wrong: "Sure! The next sentence is: X." Wrong: "Thinking Process: 1. ..." Right: " X."';
 
-  const raw = await callLLM(contextText, settings, system, false, undefined, signal, 150);
-
+  const raw = await callLLM(contextText, settings, system, false, undefined, signal, 80, {
+    stop: ['\n\n', '\n#'],
+  });
   return raw.trim();
 }
 

@@ -211,9 +211,9 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
       FigureLabel,
       AutoComplete.configure({
         getEnabled: () => autocompleteEnabledRef.current,
-        onSuggest: (contextText, signal) => {
+        onSuggest: (contextText, signal, meta) => {
           if (!aiSettingsRef.current) return Promise.resolve('');
-          return generateCompletion(contextText, aiSettingsRef.current, signal);
+          return generateCompletion(contextText, aiSettingsRef.current, signal, meta?.heading);
         },
         onLoadingChange: setAutocompleteLoading,
       }),

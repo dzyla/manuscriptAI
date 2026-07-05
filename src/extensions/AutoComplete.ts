@@ -5,8 +5,8 @@ import { Decoration, DecorationSet } from '@tiptap/pm/view';
 export interface AutoCompleteOptions {
   /** Reads a live ref — returns true when the feature is toggled on */
   getEnabled: () => boolean;
-  /** Called with text before cursor + abort signal; resolves to the completion string */
-  onSuggest: (contextText: string, signal: AbortSignal) => Promise<string>;
+  /** Called with text before cursor + abort signal (+ section heading); resolves to the completion string */
+  onSuggest: (contextText: string, signal: AbortSignal, meta?: { heading?: string }) => Promise<string>;
   /** Notifies Editor when a request is in-flight so a spinner can show */
   onLoadingChange?: (loading: boolean) => void;
 }
@@ -48,7 +48,12 @@ export const AutoComplete = Extension.create<AutoCompleteOptions>({
       options.onLoadingChange?.(true);
 
       try {
-        const suggestion = await options.onSuggest(contextText, abortCtrl.signal);
+        let heading: string | undefined;
+        view.state.doc.descendants((node: any, pos: number) => {
+          if (pos < from && node.type.name === 'heading') heading = node.textContent || heading;
+          return pos < from; // stop descending past the cursor
+        });
+        const suggestion = await options.onSuggest(contextText, abortCtrl.signal, { heading });
         if (!abortCtrl.signal.aborted && suggestion.trim()) {
           view.dispatch(
             view.state.tr.setMeta(autocompleteKey, { suggestion: suggestion.trimEnd() })
