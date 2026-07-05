@@ -140,4 +140,11 @@ describe('stripThinkingBlocks', () => {
   it('leaves normal prose untouched', () => {
     expect(stripThinkingBlocks('A clean sentence.')).toBe('A clean sentence.');
   });
+  it('keeps an unmarked numbered-list answer with no trailing prose', () => {
+    const input = '1. The intro lacks a hypothesis.\n2. Methods omit sample size.\n3. Add effect sizes.';
+    expect(stripThinkingBlocks(input)).toBe(input);
+  });
+  it('still discards a marked thinking block that has no answer', () => {
+    expect(stripThinkingBlocks('Thinking Process:\n1. Consider the ask.\n2. Formulate a reply.')).toBe('');
+  });
 });

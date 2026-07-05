@@ -853,11 +853,10 @@ export function stripThinkingBlocks(text: string): string {
   //    Rather than discarding everything, split into paragraphs and skip thinking sections;
   //    models like Gemma output their reasoning first and the actual answer after.
   const THINKING_SECTION = /^(?:Thinking\s+Process:|Thought\s+Process:|Let\s+me\s+think(?:ing)?:|Step-by-step(?:\s+analysis)?:|My\s+(?:thinking|reasoning|analysis):|Analysis:|Here(?:'s|\s+is)\s+my\s+(?:thinking|reasoning|analysis|thought)|\*\*(?:Thinking|Reasoning|Analysis)\*\*:?)/i;
+  const NUMBERED_STEP = /^\d+\.\s+(?:\*\*|[A-Z])/;
 
-  if (THINKING_SECTION.test(cleaned) || /^\d+\.\s+(?:\*\*|[A-Z])/.test(cleaned)) {
+  if (THINKING_SECTION.test(cleaned) || NUMBERED_STEP.test(cleaned)) {
     // Split into paragraphs; collect everything that isn't a thinking step.
-    // A "thinking" paragraph starts with a numbered step (bold or plain) or is the
-    // opening preamble itself. The actual answer follows once the list ends.
     const paragraphs = cleaned.split(/\n{2,}/);
     const answerParts: string[] = [];
     let pastThinking = false;
@@ -865,12 +864,20 @@ export function stripThinkingBlocks(text: string): string {
     for (const para of paragraphs) {
       const trimmed = para.trim();
       if (!trimmed) continue;
-      const isThinkingPara = THINKING_SECTION.test(trimmed) || /^\d+\.\s+(?:\*\*|[A-Z])/.test(trimmed);
+      const isThinkingPara = THINKING_SECTION.test(trimmed) || NUMBERED_STEP.test(trimmed);
       if (!pastThinking && isThinkingPara) continue;
       pastThinking = true;
       answerParts.push(trimmed);
     }
 
+    if (answerParts.length === 0) {
+      // Nothing followed the leading list. An explicitly-marked thinking block
+      // ("Thinking Process:" etc.) was pure reasoning — correctly discarded.
+      // But an unmarked numbered list with no trailing prose is almost always
+      // the real answer (e.g. a list of review points), so keep it rather than
+      // nuking a valid response to empty.
+      return THINKING_SECTION.test(cleaned) ? '' : cleaned;
+    }
     return answerParts.join('\n\n');
   }
 
