@@ -5,6 +5,7 @@ import {
   lintSuggestedText,
   buildConflictGroups,
   detectH2Sections,
+  stripThinkingBlocks,
 } from './ai';
 import type { Suggestion } from '../types';
 
@@ -124,5 +125,19 @@ describe('detectH2Sections', () => {
 
   it('returns nothing when there are no h2 headings', () => {
     expect(detectH2Sections('<p>flat text</p>')).toEqual([]);
+  });
+});
+
+describe('stripThinkingBlocks', () => {
+  it('removes a bare "Thinking Process:" preamble and keeps the answer', () => {
+    const input = 'Thinking Process:\nThe user wants a greeting.\n\nHello there.';
+    expect(stripThinkingBlocks(input)).toBe('Hello there.');
+  });
+  it('removes a non-bold numbered analysis preamble', () => {
+    const input = '1. Analyze the request.\n2. Draft the reply.\n\nThe final answer.';
+    expect(stripThinkingBlocks(input)).toBe('The final answer.');
+  });
+  it('leaves normal prose untouched', () => {
+    expect(stripThinkingBlocks('A clean sentence.')).toBe('A clean sentence.');
   });
 });

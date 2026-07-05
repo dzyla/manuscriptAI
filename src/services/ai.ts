@@ -682,9 +682,13 @@ async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: 
     messages,
     temperature: temperature ?? 0.3,
     max_tokens: resolvedMaxTokens,
-    // Disable thinking/reasoning mode where the server supports these flags
+    // Disable thinking/reasoning mode. Different servers read different flags:
+    // top-level enable_thinking/think (Ollama, some vLLM builds) and
+    // chat_template_kwargs.enable_thinking (llama.cpp b9827+ — the one that
+    // actually stops ornith-9b's always-on "Thinking Process"). All additive.
     enable_thinking: false,
     think: false,
+    chat_template_kwargs: { enable_thinking: false },
   };
   // Constrained JSON output — supported by LM Studio, Ollama, vLLM, llama.cpp.
   // A json_schema grammar (when provided) forces the exact shape and near-
@@ -833,7 +837,7 @@ async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: 
  * Handles: <think>…</think>, <thinking>…</thinking>,
  *          "Thinking Process: … (Self" style preambles, and numbered step preambles.
  */
-function stripThinkingBlocks(text: string): string {
+export function stripThinkingBlocks(text: string): string {
   if (!text) return text;
   let cleaned = text;
 
@@ -850,9 +854,9 @@ function stripThinkingBlocks(text: string): string {
   //    models like Gemma output their reasoning first and the actual answer after.
   const THINKING_SECTION = /^(?:Thinking\s+Process:|Thought\s+Process:|Let\s+me\s+think(?:ing)?:|Step-by-step(?:\s+analysis)?:|My\s+(?:thinking|reasoning|analysis):|Analysis:|Here(?:'s|\s+is)\s+my\s+(?:thinking|reasoning|analysis|thought)|\*\*(?:Thinking|Reasoning|Analysis)\*\*:?)/i;
 
-  if (THINKING_SECTION.test(cleaned) || /^\d+\.\s+\*\*/.test(cleaned)) {
+  if (THINKING_SECTION.test(cleaned) || /^\d+\.\s+(?:\*\*|[A-Z])/.test(cleaned)) {
     // Split into paragraphs; collect everything that isn't a thinking step.
-    // A "thinking" paragraph starts with a numbered bold step (\d+.  **) or is the
+    // A "thinking" paragraph starts with a numbered step (bold or plain) or is the
     // opening preamble itself. The actual answer follows once the list ends.
     const paragraphs = cleaned.split(/\n{2,}/);
     const answerParts: string[] = [];
@@ -861,7 +865,7 @@ function stripThinkingBlocks(text: string): string {
     for (const para of paragraphs) {
       const trimmed = para.trim();
       if (!trimmed) continue;
-      const isThinkingPara = THINKING_SECTION.test(trimmed) || /^\d+\.\s+\*\*/.test(trimmed);
+      const isThinkingPara = THINKING_SECTION.test(trimmed) || /^\d+\.\s+(?:\*\*|[A-Z])/.test(trimmed);
       if (!pastThinking && isThinkingPara) continue;
       pastThinking = true;
       answerParts.push(trimmed);
