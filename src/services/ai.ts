@@ -2649,7 +2649,8 @@ export function bestTrimCandidate(
 export async function trimSectionToLimit(sectionText: string, sectionTitle: string, budgetWords: number, settings: AISettings): Promise<string> {
   const baseSystem = `You condense grant/manuscript sections to fit strict page limits WITHOUT losing substance.
 Rules:
-- The result MUST be at most ${budgetWords} words and MUST be shorter than the input.
+- The result MUST be at most ${budgetWords} words and MUST be shorter than the input. Target ${Math.max(1, budgetWords - 5)}-${budgetWords} words, not exactly ${budgetWords} — leave margin so small counting errors do not push you over the limit.
+- Before you answer, count the words in your draft. If it is over ${budgetWords} words, cut another sentence or clause and count again.
 - Preserve every distinct claim, aim, number, and citation marker like [3]. Cut redundancy, filler, hedging, and over-explanation only.
 - Keep the same heading-free plain prose and paragraph order.
 - Do NOT use em dashes or en dashes. Keep sentences under 30 words.
