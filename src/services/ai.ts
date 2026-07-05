@@ -856,8 +856,14 @@ export function stripThinkingBlocks(text: string): string {
   const THINKING_SECTION = /^(?:Thinking\s+Process:|Thought\s+Process:|Let\s+me\s+think(?:ing)?:|Step-by-step(?:\s+analysis)?:|My\s+(?:thinking|reasoning|analysis):|Analysis:|Here(?:'s|\s+is)\s+my\s+(?:thinking|reasoning|analysis|thought)|\*\*(?:Thinking|Reasoning|Analysis)\*\*:?)/i;
   const NUMBERED_STEP = /^\d+\.\s+(?:\*\*|[A-Z])/;
 
-  if (THINKING_SECTION.test(cleaned) || NUMBERED_STEP.test(cleaned)) {
-    // Split into paragraphs; collect everything that isn't a thinking step.
+  // Only strip a leading numbered list as "thinking" when an explicit thinking
+  // MARKER is present. Source-level suppression (chat_template_kwargs.
+  // enable_thinking:false) already handles unmarked reasoning, and an unmarked
+  // numbered list is almost always a real answer (e.g. a chat reply listing
+  // review points), which must not be dropped.
+  if (THINKING_SECTION.test(cleaned)) {
+    // Skip the marked preamble and any numbered reasoning steps that follow it,
+    // keeping everything from the first real answer paragraph onward.
     const paragraphs = cleaned.split(/\n{2,}/);
     const answerParts: string[] = [];
     let pastThinking = false;
@@ -871,14 +877,7 @@ export function stripThinkingBlocks(text: string): string {
       answerParts.push(trimmed);
     }
 
-    if (answerParts.length === 0) {
-      // Nothing followed the leading list. An explicitly-marked thinking block
-      // ("Thinking Process:" etc.) was pure reasoning — correctly discarded.
-      // But an unmarked numbered list with no trailing prose is almost always
-      // the real answer (e.g. a list of review points), so keep it rather than
-      // nuking a valid response to empty.
-      return THINKING_SECTION.test(cleaned) ? '' : cleaned;
-    }
+    // If nothing followed the marked block, it was pure reasoning: discard it.
     return answerParts.join('\n\n');
   }
 

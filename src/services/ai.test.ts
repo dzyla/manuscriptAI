@@ -136,9 +136,13 @@ describe('stripThinkingBlocks', () => {
     const input = 'Thinking Process:\nThe user wants a greeting.\n\nHello there.';
     expect(stripThinkingBlocks(input)).toBe('Hello there.');
   });
-  it('removes a non-bold numbered analysis preamble', () => {
+  it('keeps an unmarked numbered list even when prose follows (chat answer, not thinking)', () => {
     const input = '1. Analyze the request.\n2. Draft the reply.\n\nThe final answer.';
-    expect(stripThinkingBlocks(input)).toBe('The final answer.');
+    expect(stripThinkingBlocks(input)).toBe(input);
+  });
+  it('strips a MARKED preamble with numbered reasoning steps, keeping the answer', () => {
+    const input = 'Thinking Process:\n1. The user wants a summary.\n2. Keep it short.\n\nThe study shows a clear effect.';
+    expect(stripThinkingBlocks(input)).toBe('The study shows a clear effect.');
   });
   it('leaves normal prose untouched', () => {
     expect(stripThinkingBlocks('A clean sentence.')).toBe('A clean sentence.');
