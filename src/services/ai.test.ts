@@ -6,6 +6,8 @@ import {
   buildConflictGroups,
   detectH2Sections,
   stripThinkingBlocks,
+  countWords,
+  bestTrimCandidate,
 } from './ai';
 import type { Suggestion } from '../types';
 
@@ -146,5 +148,38 @@ describe('stripThinkingBlocks', () => {
   });
   it('still discards a marked thinking block that has no answer', () => {
     expect(stripThinkingBlocks('Thinking Process:\n1. Consider the ask.\n2. Formulate a reply.')).toBe('');
+  });
+});
+
+describe('countWords', () => {
+  it('counts whitespace-delimited words', () => {
+    expect(countWords('one two   three\nfour')).toBe(4);
+  });
+  it('is 0 for empty/whitespace', () => {
+    expect(countWords('   ')).toBe(0);
+  });
+});
+
+describe('bestTrimCandidate', () => {
+  const input = 'w '.repeat(100).trim(); // 100 words
+  it('prefers the longest candidate that is within budget', () => {
+    const under50 = 'w '.repeat(40).trim();
+    const under80 = 'w '.repeat(70).trim();
+    const r = bestTrimCandidate(input, [under50, under80], 80);
+    expect(r.text).toBe(under80);
+    expect(r.withinBudget).toBe(true);
+  });
+  it('falls back to the shortest candidate when none meet budget', () => {
+    const c90 = 'w '.repeat(90).trim();
+    const c95 = 'w '.repeat(95).trim();
+    const r = bestTrimCandidate(input, [c95, c90], 80);
+    expect(r.text).toBe(c90);
+    expect(r.withinBudget).toBe(false);
+  });
+  it('never returns text longer than the input', () => {
+    const grew = 'w '.repeat(150).trim();
+    const r = bestTrimCandidate(input, [grew], 80);
+    expect(r.text).toBe(input); // all candidates grew -> return input
+    expect(r.withinBudget).toBe(false);
   });
 });

@@ -2606,19 +2606,63 @@ Rules:
   return parseJSONRobust(raw);
 }
 
+/** Whitespace-delimited word count. */
+export function countWords(text: string): number {
+  const t = text.trim();
+  return t ? t.split(/\s+/).length : 0;
+}
+
+/**
+ * Choose the best trim result. Candidates that grew beyond the input are
+ * discarded; among the rest, prefer the longest that fits the budget (most
+ * content retained), else the shortest. If every candidate grew, return the
+ * input unchanged — a "trim" must never make text longer.
+ */
+export function bestTrimCandidate(
+  input: string,
+  candidates: string[],
+  budgetWords: number,
+): { text: string; withinBudget: boolean } {
+  const inputWords = countWords(input);
+  const scored = candidates
+    .map(text => ({ text, words: countWords(text) }))
+    .filter(c => c.words > 0 && c.words <= inputWords);
+  if (scored.length === 0) return { text: input, withinBudget: inputWords <= budgetWords };
+
+  const underBudget = scored.filter(c => c.words <= budgetWords);
+  if (underBudget.length > 0) {
+    const best = underBudget.reduce((a, b) => (b.words > a.words ? b : a));
+    return { text: best.text, withinBudget: true };
+  }
+  const shortest = scored.reduce((a, b) => (b.words < a.words ? b : a));
+  return { text: shortest.text, withinBudget: false };
+}
+
 /** Condense a section to fit its page budget. Returns the trimmed text. */
 export async function trimSectionToLimit(sectionText: string, sectionTitle: string, budgetWords: number, settings: AISettings): Promise<string> {
-  const systemPrompt = `You condense grant/manuscript sections to fit strict page limits without losing substance.
+  const baseSystem = `You condense grant/manuscript sections to fit strict page limits WITHOUT losing substance.
 Rules:
-- Target length: at most ${budgetWords} words (currently over the limit).
-- Preserve every distinct claim, aim, number, and citation marker like [3]; cut redundancy, filler, and over-explanation instead.
-- Keep the same heading-free plain prose structure and paragraph order.
+- The result MUST be at most ${budgetWords} words and MUST be shorter than the input.
+- Preserve every distinct claim, aim, number, and citation marker like [3]. Cut redundancy, filler, hedging, and over-explanation only.
+- Keep the same heading-free plain prose and paragraph order.
 - Do NOT use em dashes or en dashes. Keep sentences under 30 words.
-Return ONLY the condensed section text, no commentary.${grantInstructionsBlock()}`;
+- Example: "In order to be able to determine whether X occurs, we performed" -> "To test whether X occurs, we".
+Return ONLY the condensed section text. No preamble, no commentary.${grantInstructionsBlock()}`;
 
-  const prompt = `Section "${sectionTitle}" (${budgetWords}-word budget):\n"""\n${sectionText}\n"""\n\nCondense it to fit the budget.`;
-  const out = await callLLM(prompt, settings, systemPrompt, false);
-  return out.trim();
+  const candidates: string[] = [];
+  let current = sectionText;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const prompt = attempt === 0
+      ? `Section "${sectionTitle}" (target: at most ${budgetWords} words):\n"""\n${sectionText}\n"""\n\nCondense it to fit the budget.`
+      : `Your previous draft was ${countWords(current)} words — still too long. Cut it to under ${budgetWords} words by removing redundancy and filler only. Keep every distinct claim, number, and citation marker.\n"""\n${current}\n"""`;
+    const out = (await callLLM(prompt, settings, baseSystem, false)).trim();
+    if (!out) break;
+    candidates.push(out);
+    current = out;
+    if (countWords(out) <= budgetWords) break; // good enough, stop early
+  }
+
+  return bestTrimCandidate(sectionText, candidates, budgetWords).text;
 }
 
 // ─── Agent tools ──────────────────────────────────────────────────────────────
