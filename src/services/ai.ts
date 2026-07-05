@@ -627,7 +627,7 @@ export function localModelSupportsVision(modelName: string): boolean {
   return /vl\b|vision|visual|llava|clip|multimodal|bakllava|minicpm-v|moondream|qwen.*vl|phi.*vision|internvl|cogvlm|pixtral|molmo|paligemma/.test(lower);
 }
 
-async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: string = "", images?: AttachedImage[], signal?: AbortSignal, maxTokens?: number, jsonMode: boolean = false, jsonSchema?: Record<string, any>, temperature?: number): Promise<string> {
+async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: string = "", images?: AttachedImage[], signal?: AbortSignal, maxTokens?: number, jsonMode: boolean = false, jsonSchema?: Record<string, any>, temperature?: number, stop?: string[]): Promise<string> {
   let baseUrl = settings.localBaseUrl.trim();
   if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
 
@@ -689,6 +689,7 @@ async function callLocalLLM(prompt: string, settings: AISettings, systemPrompt: 
     enable_thinking: false,
     think: false,
     chat_template_kwargs: { enable_thinking: false },
+    ...(stop && stop.length ? { stop } : {}),
   };
   // Constrained JSON output — supported by LM Studio, Ollama, vLLM, llama.cpp.
   // A json_schema grammar (when provided) forces the exact shape and near-
@@ -1205,12 +1206,14 @@ interface LLMOptions {
   jsonSchema?: Record<string, any>;
   /** Sampling temperature; providers that reject it (Anthropic 4.7+) ignore it. */
   temperature?: number;
+  /** Stop sequences to end generation early (local + openai paths). */
+  stop?: string[];
 }
 
 async function callLLM(prompt: string, settings: AISettings, systemPrompt: string, jsonMode: boolean = false, images?: AttachedImage[], signal?: AbortSignal, maxTokens?: number, opts: Omit<LLMOptions, 'jsonMode' | 'images' | 'signal' | 'maxTokens'> = {}): Promise<string> {
-  const { jsonSchema, temperature } = opts;
+  const { jsonSchema, temperature, stop } = opts;
   if (settings.provider === 'local') {
-    return callLocalLLM(prompt, settings, systemPrompt, images, signal, maxTokens, jsonMode, jsonSchema, temperature);
+    return callLocalLLM(prompt, settings, systemPrompt, images, signal, maxTokens, jsonMode, jsonSchema, temperature, stop);
   } else if (settings.provider === 'anthropic') {
     return callAnthropicLLM(prompt, settings, systemPrompt, images, signal, maxTokens);
   } else if (settings.provider === 'openai') {
@@ -1238,6 +1241,7 @@ async function callLLM(prompt: string, settings: AISettings, systemPrompt: strin
       ],
       ...responseFormat,
       ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
+      ...(stop && stop.length ? { stop } : {}),
     }, { signal }).then(r => r.choices[0].message.content || ''), signal), signal);
   } else {
     // Gemini
