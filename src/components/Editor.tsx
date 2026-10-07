@@ -1,19 +1,11 @@
 import { useEditor, EditorContent } from '@tiptap/react';
 import { BubbleMenu } from '@tiptap/react/menus';
-import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
-import Highlight from '@tiptap/extension-highlight';
-import Underline from '@tiptap/extension-underline';
-import TextAlign from '@tiptap/extension-text-align';
-import Link from '@tiptap/extension-link';
-import { TableKit } from '@tiptap/extension-table';
 import { forwardRef, useImperativeHandle, useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { AgentType, Suggestion, ManuscriptSource } from '../types';
 import { GrammarChecker } from '../extensions/GrammarChecker';
-import { ResizableImage } from '../extensions/ResizableImage';
-import { CitationNode } from '../extensions/CitationNode';
-import { FigureLabel } from '../extensions/FigureLabel';
+import { getSchemaExtensions } from '../extensions/schema';
 import {
   Bold, Italic, Underline as UnderlineIcon, List, ListOrdered,
   AlignLeft, AlignCenter, AlignRight, AlignJustify, Quote, Heading2,
@@ -198,17 +190,9 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
 
   const editor = useEditor({
     extensions: [
-      StarterKit.configure({ heading: { levels: [1, 2, 3] } }),
+      ...getSchemaExtensions(),
       Placeholder.configure({ placeholder: 'Start writing your manuscript here...' }),
-      Highlight.configure({ multicolor: true }),
-      Underline,
-      TextAlign.configure({ types: ['heading', 'paragraph'] }),
-      Link.configure({ openOnClick: false }),
       GrammarChecker,
-      TableKit.configure({ table: { resizable: true } }),
-      ResizableImage,
-      CitationNode,
-      FigureLabel,
       AutoComplete.configure({
         getEnabled: () => autocompleteEnabledRef.current,
         onSuggest: (contextText, signal, meta) => {
