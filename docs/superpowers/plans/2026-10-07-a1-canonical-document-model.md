@@ -361,7 +361,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 Run:
 ```bash
-npm install --save @xmldom/xmldom@0.8.10
+npm install --save @xmldom/xmldom@^0.8.11
 npm install --save-dev jsdom@25.0.1 fake-indexeddb@6.0.0
 ```
 Expected: installs succeed; `package.json` lists them.
