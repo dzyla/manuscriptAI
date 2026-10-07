@@ -1,315 +1,540 @@
-# Document Engine (Word Fidelity, Page Setup, NIH Formatting) — Design
+# Document Engine (Word Fidelity, Revisions, Dynamic Citations, NIH Pages) — Design
 
-**Date:** 2026-10-07
+**Date:** 2026-10-07 (rev 2, after external design review)
 **Branch:** feat/document-engine
-**Status:** Approved design, pending user review of this spec
-**Supersedes:** `2026-07-03-nih-page-view-design.md` (never implemented; its goals are folded in here)
+**Status:** Revised design, pending user review
+**Supersedes:** `2026-07-03-nih-page-view-design.md` (never implemented; folded in here)
+
+## Guiding principle
+
+> **Editing a supported part of a collaborator's Word document must not damage unrelated
+> content, metadata, citations, or revision history.**
+
+Every implementation decision is checked against this. Where full Word fidelity is not
+achievable, the design preserves rather than approximates, and says so in the import report.
 
 ## Program context
 
 The app is being overhauled toward a Grantease-class grant + manuscript writing tool.
-Deployment stays **client-side, SaaS-ready** (no backend now; persistence and LLM access
-sit behind interfaces so auth/sync/key-proxy can be added later). The overhaul is split
-into four sub-projects, built in order, each with its own spec → plan → build:
+Deployment: **client-side, SaaS-ready** (no backend now; persistence and LLM access behind
+interfaces so auth/sync/key-proxy can be added later).
 
-| | Sub-project | Depends on |
+Delivery order (user-approved, rev 2):
+
+```
+A1 → A2 → A3 → B → A4 → A5 → C → D
+```
+
+| Phase | Scope | Gate to pass before moving on |
 |---|---|---|
-| **A** | **Document engine** (this spec): DOCX fidelity, page setup/styles, paged view, NIH compliance, track-changes + comments model | — |
-| B | Suggestion engine: decoration highlights, PM-mapped anchors, AI edits as tracked changes, AI notes as comments, streaming | A |
-| C | Agent pipeline + reviewer: fewer calls, section-aware context, NIH 2025 Simplified Review Framework study section | B |
-| D | Grant workspace: full NIH mechanism/attachment catalog, drafting wizard, FOA→template agent, writing-skill library, citation engine (OpenAlex/PubMed) | A–C |
+| **A1** | Canonical document + format model, asset store, repository, preservation layer, fidelity contract | Migration of existing docs lossless; repository atomicity tests |
+| **A2** | Core DOCX interop: paragraphs, runs, styles, headings, lists, tables, images, page setup | Word harness: untouched round-trip + edit-one-paragraph round-trip pass on real Word docs |
+| **A3** | Revision + comment engine (inline + structural), DOCX serialization | Word harness: Accept All / Reject All in Word yield the expected structure |
+| **B** | Suggestion engine on A3 (AI edits = tracked changes, AI notes = comments) | Own spec |
+| **A4** | Dynamic citations (CSL) + Paperpile / EndNote / Mendeley field preservation | Manual Word + Paperpile check (see §7) |
+| **A5** | Pagination, formatting UI polish, NIH compliance profile, PDF output + validation | Pagination prototype gate, then calibration gate against Word |
+| C, D | Agent pipeline + reviewer; grant workspace | Own specs |
 
-A deliberately builds the **tracked-change and comment primitives** that B uses: AI edit
-suggestions become tracked insertions/deletions; AI reviewer notes become comments.
+## Problem (2026-10-07 audit)
 
-## Problem (from the 2026-10-07 audit)
-
-1. **DOCX cannot be opened as the manuscript.** `App.tsx:1014-1053` accepts `.docx` but
-   always `readAsText` + `JSON.parse` → "Failed to load workspace file". The only DOCX
-   path (`docxWorker.ts`, `mammoth.extractRawText`) makes a plain-text *source*.
-2. **DOCX export ignores formatting.** `docxExport.ts` uses `docx` library defaults
-   (Calibri, 1" margins); nested lists flattened, table structure lost, alignment/links/
-   super/subscript dropped, WebP images dropped, citations become literal `[N]`.
-3. **No page or format model.** Font hard-coded (Crimson Pro, `index.css:6`); page guides
-   (`Editor.tsx:132-155`) assume a 7.5"-wide column, so page counts are fiction; grant
+1. DOCX cannot be opened as the manuscript (`App.tsx:1014-1053` always `JSON.parse`s).
+2. DOCX export ignores page setup and fonts; nested lists, table structure, alignment,
+   links, super/subscript, WebP images lost; citations become literal `[N]`.
+3. No page/format model: font hard-coded, page guides are a proportional guess, grant
    budgets are words ÷ 500.
-4. **Toolbar** lacks font family, size, styles, line spacing, super/sub, page break,
-   review tools.
+4. Citations are static `[N]` text with a manual registry; no citation styles, no live
+   bibliography.
+5. Toolbar lacks font family/size, styles, spacing, super/sub, page break, review tools.
 
-## Goals / success criteria
-
-- Open a collaborator's `.docx` and see it with its fonts, sizes, margins, headings,
-  nested lists, tables (merged cells), images, captions, tracked changes, comments and
-  Zotero/EndNote citations intact.
-- Export back to `.docx` such that Word shows the same formatting, real tracked changes,
-  real comments, and live Zotero fields (Zotero "Refresh" works). Parts the app does not
-  model (headers/footers, theme, footnotes, equations) are preserved unchanged.
-- One-click NIH preset (Arial 11 pt, 0.5" margins, US Letter, compliant spacing) with a
-  live compliance checker.
-- Page view whose page count matches Word/LibreOffice within ±¼ page on a 12-page doc.
-- Word-class formatting UI: styles + per-selection overrides.
-
-## Non-goals (A)
+## Non-goals (all of A)
 
 Header/footer editing (preserved only), multiple sections with differing page setup,
-columns, line numbering, footnote editing (preserved as read-only chips), equation editing
-(passthrough), real-time collaboration, the AI suggestion rework (B).
+columns, line numbering, footnote/endnote editing (preserved), equation editing (preserved),
+Word "move" revisions as moves (imported as delete + insert), writing Paperpile's native
+field format, real-time collaboration.
 
-## 1. Data model and architecture
+---
 
-### 1.1 Storage: ProseMirror JSON
+## 1. Fidelity contract
 
-Documents are stored as ProseMirror JSON (`editor.getJSON()`), not HTML. HTML cannot
-losslessly carry tracked-change metadata, comment ids, style references or CSL payloads.
-`DocumentRow` gains `docJson`; legacy `content` (HTML) is migrated once on load
-(`setContent(html)` → `getJSON()`) and retained for HTML-based exporters until they move.
+Every OOXML feature belongs to exactly one category. The import report lists counts per
+category; category 4 always produces a visible warning.
 
-### 1.2 Format model (per document, on `useDocumentStore`)
+| Category | Meaning | Features |
+|---|---|---|
+| **1. Editable, round-trippable** | Edited in the app; exported semantically equivalent | Paragraphs, runs (font, size, bold/italic/underline, color, super/sub), paragraph + character styles, alignment, spacing, indents, headings, bullet/numbered lists incl. nesting, tables (header row, merged cells, widths), inline images + captions, page breaks, hyperlinks, page size + margins, tracked insert/delete (inline + paragraph mark + table row), formatting-change revisions, comments with replies/resolved, native citations |
+| **2. Approximated, semantically preserved** | Displayed approximately; original XML kept and re-emitted | Floating/anchored drawings (shown inline), tab stops, keep-with-next/keep-lines, widow control, table borders/shading, complex numbering formats, external citation fields (Paperpile/EndNote/Mendeley/Zotero: shown with their stored visible text) |
+| **3. Opaque, preserved while untouched** | Read-only chip; emitted verbatim with its dependencies; deletable as a unit | Equations (OMML), footnote/endnote references, content controls (SDT), bookmarks, unknown fields, embedded OLE objects, paragraph-level section breaks |
+| **4. Unsupported** | Explicit import warning; best-effort text kept | Macros (`.docm` rejected outright), ActiveX, text boxes with complex layout, SmartArt (preserved as cat. 3 where its XML is self-contained, else warned) |
+
+**Success criteria are split:**
+- *Formatting fidelity* — category 1 features look the same in Word after export.
+- *Package preservation* — category 2–3 content survives **as long as its containing
+  paragraph is not edited**, and survives editing of its paragraph **if the opaque atom
+  itself is not deleted**. Nothing is promised beyond that.
+
+## 2. Canonical model (A1)
+
+### 2.1 ProseMirror JSON is the only source of truth
+
+- `DocumentRow.docJson` holds `editor.getJSON()`. Legacy `content` (HTML) is migrated once
+  (`setContent(html)` → `getJSON()`) and then **removed from the row**.
+- Code that still needs HTML (LaTeX/Markdown export, existing helpers) receives HTML
+  **generated** from the JSON via `generateHTML(json, extensions)`. No second mutable copy.
+
+### 2.2 Format model
 
 ```ts
 interface PageSetup {
-  size: 'letter' | 'a4';
-  orientation: 'portrait';
+  size: 'letter' | 'a4'; orientation: 'portrait';
   marginsIn: { top: number; right: number; bottom: number; left: number };
 }
 interface StyleDef {
-  id: string;            // 'normal' | 'heading1'..'heading3' | 'caption' | 'bibliography' | imported ids
-  name: string;
-  basedOn?: string;
+  id: string; name: string; type: 'paragraph' | 'character' | 'table' | 'numbering';
+  basedOn?: string; next?: string;
+  // editable (category 1)
   fontFamily?: string; fontSizePt?: number; bold?: boolean; italic?: boolean; color?: string;
-  lineSpacing?: number;  // multiple of "single"
-  spaceBeforePt?: number; spaceAfterPt?: number; indentFirstIn?: number;
+  lineSpacing?: { rule: 'auto' | 'exact' | 'atLeast'; value: number };
+  spaceBeforePt?: number; spaceAfterPt?: number;
+  indent?: { leftIn?: number; firstLineIn?: number; hangingIn?: number };
   align?: 'left' | 'center' | 'right' | 'justify';
+  // preserved only (category 2): keepNext, keepLines, widowControl, tabs, borders, …
+  preserved?: { pPrXml?: string; rPrXml?: string };
 }
 interface DocFormat {
   page: PageSetup;
   styles: Record<string, StyleDef>;
+  defaults: { fontFamily: string; fontSizePt: number };
   preset: 'nih' | 'manuscript' | 'a4' | 'custom';
-}
-interface Comment {
-  id: string; author: string; date: string; text: string;
-  replies: Comment[]; resolved: boolean; source: 'user' | 'docx' | 'ai';
 }
 ```
 
-- `DocFormat` persisted on the document row. Default for new documents: NIH preset.
-- Comments: new Dexie table `comments` (indexed by `documentId`); the anchor is a
-  `CommentRange` mark in the doc, the thread lives in the table.
-- Original package: new Dexie table `docxPackages` holding the imported `.docx` blob per
-  document, used on export to preserve unmodelled parts.
-- Dexie schema → v3 (adds `comments`, `docxPackages`; documents gain `docJson`, `format`).
+When a document came from DOCX, `styles.xml` is **patched, never regenerated**: only
+modelled properties of styles the user changed are rewritten; everything else is copied.
 
-### 1.3 Editor extensions (`src/extensions/format/`, one small file each)
+### 2.3 Assets
 
-- **Run overrides:** `TextStyle`-based marks `fontFamily`, `fontSize`, `color`,
-  superscript/subscript (use official TipTap extensions where they exist).
-- **Paragraph attributes:** `styleId`, `lineSpacing`, `spaceBefore/After`, `indentFirst`
-  on paragraph + heading; rendered CSS = resolved style ⊕ overrides.
-- **Track changes:** `Insertion` / `Deletion` marks `{id, author, date}`; a `trackChanges`
-  editor mode where typing creates insertions and deletes wrap text in `Deletion` instead
-  of removing it. Commands: `acceptChange(id)`, `rejectChange(id)`, `acceptAll`,
-  `rejectAll`, `goToNextChange`, `goToPrevChange`.
-- **Comments:** `CommentRange` mark `{commentId}`; commands `addComment`, `resolveComment`.
-- **`PageBreak`** block node.
-- **Citations:** existing `CitationNode` gains optional `{cslJson, fieldCode}` so Zotero /
-  EndNote payloads survive editing.
-- **`Passthrough`** inline + block atom nodes `{kind, label, xml}` for OOXML the app does
-  not model (equations, footnote refs, content controls, unknown fields). Rendered as a
-  small read-only chip ("equation", "footnote 3").
+Images live in a new Dexie table `assets` (`{id, documentId, mime, blob, sha256}`); image
+nodes reference `assetId`. Rendering uses object URLs. De-duplicated by hash; unreferenced
+assets garbage-collected on save. Replaces data URLs in the document JSON.
 
-### 1.4 Converters (`src/docx/`, pure TypeScript, no React)
+### 2.4 Preservation layer (`src/docx/preserve/`)
 
-- `read/` — `.docx` bytes → `{ doc: PMJson, format: DocFormat, comments: Comment[],
-  citations: CitationImport[], report: ImportReport }`. Runs in a new Comlink worker
-  `src/workers/docxImportWorker.ts`.
-- `write/` — `{ doc, format, comments, sources, package?: Blob }` → `.docx` bytes.
-- `ooxml/` — shared namespaces, unit conversion (twips, half-points, EMU), XML helpers
-  (DOMParser / XMLSerializer; JSZip already a dependency).
-- `docxExport.ts` and the `docx` npm dependency are removed. LaTeX/Markdown export keep
-  `astExport`, switched to read PM JSON.
-- `mammoth` + `docxWorker.ts` remain only for the Sources uploader (plain-text extraction
-  of reference docs).
+Fixes the weakness of a bare `{xml}` passthrough: raw fragments depend on relationship ids,
+namespaces and other parts.
 
-### 1.5 SaaS-ready seam
+- **Block provenance.** Every block imported from DOCX carries
+  `attrs.ooxml = { blockId, sourceHash }`. The package store keeps
+  `blockId → { xml, relIds: string[], nsDecls: Record<string,string> }`.
+  `sourceHash` is a hash of the block's ProseMirror JSON at import time, computed with
+  the `ooxml` attribute itself excluded.
+- **Verbatim reuse.** On export, a block whose current JSON hash equals `sourceHash` is
+  written as its **original `<w:p>`/`<w:tbl>` XML**, and every relationship it references
+  is carried into the new `document.xml.rels` with its original id and target. This is the
+  mechanism that enforces the guiding principle: untouched paragraphs cannot degrade.
+- **Opaque atoms.** Category 3 content becomes an inline or block atom
+  `{ kind, label, fragmentId }`. The fragment stores XML **with all in-scope namespace
+  declarations captured at parse time** and its relationship dependencies. When the
+  containing paragraph is regenerated, the atom's fragment is emitted verbatim and its
+  dependencies re-registered (ids kept if free, else remapped and rewritten in the fragment).
+- **Defined behaviors.**
+  - Atom deleted by the user → fragment dropped; its relationships dropped if no other
+    block references them.
+  - Atom copied → second copy gets a new fragment id; relationships shared (read-only parts).
+  - Paired markers (bookmark start/end, comment range markers from foreign tools) are kept
+    as two atoms linked by id; if one half is deleted, the other is dropped on export.
+  - Paragraph-level `sectPr` → preserved block attribute; only the body-level `sectPr` is
+    editable via `PageSetup`.
+- **Package parts** kept verbatim from the original: headers, footers, theme, fontTable,
+  footnotes, endnotes, settings (with `trackRevisions` toggled from app state), custom XML,
+  `people.xml`. Regenerated: `document.xml`, `numbering.xml` (merged: original definitions
+  kept, new ones appended), comment parts, `[Content_Types].xml`, rels.
 
-All document persistence goes through a `DocumentRepository` interface
-(`load`, `save`, `loadPackage`, `savePackage`, `listComments`, `saveComments`) with a
-Dexie implementation. Stores depend on the interface, not Dexie directly.
+### 2.5 Repository, atomicity, recovery
 
-## 2. Import / export pipeline
+`DocumentRepository` (Dexie implementation; interface is the SaaS seam):
 
-### 2.1 Import (`src/docx/read`)
+```ts
+interface DocumentRepository {
+  load(id): Promise<LoadedDocument>;                 // doc + format + comments + citations meta
+  save(doc: LoadedDocument): Promise<void>;          // single Dexie rw transaction across tables
+  importDocx(result: ImportResult, decisions: ReconcileDecisions): Promise<string>;
+  getAsset(id) / putAsset(blob)
+  getPackage(docId)                                   // original .docx + preservation store
+  listVersions(docId) / restoreVersion(versionId)
+}
+```
 
-1. Unzip. Parse `styles.xml`: `docDefaults` + `basedOn` chain resolved into `StyleDef`s.
-   Headings identified by `outlineLvl` or "Heading N" style name.
-2. `sectPr` of the body (`pgSz`, `pgMar`) → `PageSetup`. Multi-section docs: last section
-   wins; others listed in the import report.
-3. Body:
-   - `w:p` → paragraph/heading with `styleId` + direct paragraph overrides (`spacing`,
-     `ind`, `jc`).
-   - `w:r` → text with marks from `rPr` (`rFonts@ascii`, `sz`, `b`, `i`, `u`, `color`,
-     `vertAlign`).
-   - `numbering.xml` (`abstractNum` levels, `numFmt`) → nested bullet/ordered lists.
-   - `w:tbl` → table; `gridSpan` → colspan, `vMerge` → rowspan, `tblHeader` → header row,
-     `tblGrid` widths kept.
-   - `w:drawing` → image (resolve `r:embed` via rels → media → data URL; extent EMU → size).
-     Paragraphs in the Caption style → figure caption.
-   - `w:br w:type="page"` → `PageBreak`.
-   - `w:hyperlink` → link mark.
-4. Revisions: `w:ins` / `w:del` (author, date) → `Insertion` / `Deletion` marks
-   (`w:delText` read as text).
-5. Comments: `commentRangeStart/End` → `CommentRange`; `comments.xml` +
-   `commentsExtended.xml` (`paraIdParent`, `done`) → threads with replies + resolved.
-6. Citations:
-   - Complex/simple fields with `ADDIN ZOTERO_ITEM CSL_CITATION {json}` → citation nodes
-     carrying `cslJson` + raw `fieldCode`. Each CSL item matched to an existing Source by
-     DOI (then normalized title), else a new Source is created; registry renumbered via
-     `renumberCitations()`.
-   - `ADDIN EN.CITE` → parse the embedded EndNote record XML (title, authors, year, DOI)
-     the same way.
-   - `ZOTERO_BIBL` / `ADDIN EN.REFLIST` field result → bibliography block (marked so the
-     writer can regenerate or preserve it).
-7. Anything unrecognized → `Passthrough` node holding the raw XML; never silently dropped.
-8. `ImportReport` → toast: pages, tracked changes, comments, linked citations,
-   passthrough items, warnings.
+- `save` writes the document row, comment threads, and asset references in **one IndexedDB
+  transaction** (atomic by IndexedDB semantics). Comment threads are stored in the document
+  row itself (they are small), so a document and its anchors can never diverge.
+- Before each save, the previous row is kept as the newest entry in the existing
+  `versionSnapshots` table (bounded ring), giving recovery from a bad save.
+- Dexie v3 migration: adds `assets`, `docxPackages`; documents gain `docJson`, `format`,
+  `comments`, `citationStyle`; migrates HTML → JSON and data-URL images → assets.
+  Migration is idempotent and tested on a snapshot of a real v2 database.
 
-The workspace loader in `App.tsx` dispatches by extension: `.json` → existing workspace
-path, `.docx` → this importer (fixing the audit P0), `.md/.txt` → text import.
+### 2.6 Import transaction boundary
 
-### 2.2 Export (`src/docx/write`)
+The importer is **pure**: `.docx bytes → ImportResult` with no side effects.
+`ImportResult` includes `reconciliationCandidates` (external citation items ↔ existing
+Sources by DOI/PMID/normalized title). The UI shows the import report + candidates; only on
+confirm does `repository.importDocx` commit everything in one transaction. Sources are never
+created or modified by the parser.
 
-- **Doc originated from DOCX:** start from the stored original package. Keep headers,
-  footers, theme, `fontTable`, `footnotes.xml`, `endnotes.xml`, settings and their rels.
-  Regenerate `document.xml`, `numbering.xml`, `comments.xml` (+ extended), media and
-  rels. **Patch** `styles.xml` only for styles whose modelled properties changed, so
-  unmodelled properties (tabs, borders) survive.
-- **New doc:** build from a minimal built-in base package; `styles.xml` generated from
-  `DocFormat`.
-- `sectPr` written from `PageSetup` (`pgSz` in twips, `pgMar`).
-- Citations with `fieldCode` → written back as Zotero/EndNote complex fields (begin /
-  instrText / separate / result / end) so the reference manager's Refresh keeps working.
-  App-native citations → `[N]` text + a generated bibliography section from Sources.
-- Tracked changes → `w:ins` / `w:del` with author/date. AI-authored changes (sub-project
-  B) use author names like "AI · Language Surgeon".
-- Comments → `commentRangeStart/End`, `commentReference`, `comments.xml`,
-  `commentsExtended.xml`.
-- `Passthrough` → raw XML emitted verbatim.
+### 2.7 Import security
 
-## 3. Editor UI, page view, compliance
+- Reject `.docm`/`.dotm` and any package containing `vbaProject.bin`.
+- Limits: compressed size ≤ 50 MB, total uncompressed ≤ 300 MB, ≤ 2000 entries, max
+  compression ratio 100:1 per entry (zip-bomb guard), checked from the central directory
+  **before** inflating.
+- Entry names normalized; reject absolute paths and `..` segments.
+- Relationships with `TargetMode="External"` are recorded but **never fetched**;
+  linked images render as a placeholder.
+- Hyperlinks: only `http`, `https`, `mailto` schemes become clickable; others shown as text.
+- ActiveX/OLE binaries are kept as opaque bytes, never executed or rendered.
+- XML parsed with `DOMParser` (no DTD/entity expansion in browsers); parse errors →
+  category 4 warning for that part.
 
-### 3.1 Metric-compatible bundled fonts
+## 3. Core DOCX interop (A2)
 
-Accurate pagination requires on-screen glyph widths identical to Word's. Bundle via
-`@fontsource` (offline-capable for Electron; works on Linux):
+Converters live in `src/docx/` as pure TypeScript; import runs in a new Comlink worker
+`src/workers/docxImportWorker.ts`. (`docxWorker.ts` + `mammoth` remain only for the Sources
+uploader's plain-text extraction.)
 
-| Document font | Bundled metric-compatible stand-in |
+**Import** — `styles.xml` (docDefaults, `basedOn` chains, paragraph + character styles,
+headings by `outlineLvl`/"Heading N"); body `sectPr` → `PageSetup`; `w:p` → paragraph/
+heading with `styleId` + direct overrides; `w:r` → text with marks from `rPr` and `rStyle`;
+`numbering.xml` → nested lists (original numbering ids kept on list nodes for export);
+`w:tbl` → table (`gridSpan`, `vMerge`, `tblHeader`, `tblGrid`); `w:drawing` inline →
+image asset (anchored drawings → category 2); Caption-style paragraphs → caption;
+`w:br type=page` → `PageBreak`; `w:hyperlink` → link.
+
+**Export** — package assembled per §2.4. New documents start from a minimal built-in base
+package with `styles.xml` generated from `DocFormat`. Fonts are written by their real
+names.
+
+The workspace loader in `App.tsx` dispatches by extension: `.json` → workspace,
+`.docx` → importer (fixes audit P0), `.md/.txt` → text import.
+`docxExport.ts` and the `docx` npm dependency are removed.
+
+## 4. Revision engine (A3)
+
+Marks alone cannot represent structural revisions. The model combines marks and node
+attributes (the approach used by Fidus Writer's ProseMirror track-changes), with one
+transaction policy.
+
+### 4.1 Representation
+
+| Revision | Representation | OOXML |
+|---|---|---|
+| Inserted text | `insertion` mark `{id, author, date}` | `w:ins` around runs |
+| Deleted text | `deletion` mark `{id, author, date}` (text stays in doc, rendered struck) | `w:del` + `w:delText` |
+| Formatting change | `formatChange` mark `{id, author, date, before: MarkSpec[]}` | `w:rPrChange` |
+| Inserted paragraph mark (split) | paragraph attr `markRevision: {type:'ins', id, author, date}` | `w:pPr/w:rPr/w:ins` |
+| Deleted paragraph mark (merge) | paragraph attr `markRevision: {type:'del', …}` | `w:pPr/w:rPr/w:del` |
+| Paragraph property change | paragraph attr `pPrChange: {id, author, date, before}` | `w:pPrChange` |
+| Inserted / deleted table row | row attr `rowRevision: {type, id, author, date}` | `w:trPr/w:ins` / `w:del` |
+| Inserted / deleted image or atom | `insertion`/`deletion` mark on the inline atom | `w:ins`/`w:del` around the run |
+
+Revision ids are stable strings generated once per revision and kept through import and
+export (Word's numeric `w:id` is mapped on write).
+
+### 4.2 Transaction policy (`src/extensions/revisions/trackPlugin.ts`)
+
+When track changes is on, a plugin rewrites each user transaction before it applies:
+
+- **Typing / paste** → inserted content gets an `insertion` mark (current author). Pasted
+  block content also gets `markRevision: ins` on new paragraph marks.
+- **Delete over normal text** → content is not removed; it gets a `deletion` mark.
+- **Delete over own `insertion`** → content is actually removed (cancels the insertion).
+- **Delete over another author's `insertion`** → marked `deletion` (Word behavior).
+- **Delete over existing `deletion`** → no-op; cursor moves past it.
+- **Typing inside a `deletion`** → insertion placed after the deleted span.
+- **Deleting a paragraph boundary** → both paragraphs stay; the first gets
+  `markRevision: del`. **Splitting** a paragraph → new paragraph gets `markRevision: ins`.
+- **Formatting a range** → `formatChange` mark recording the prior marks (first change
+  wins; later changes keep the original `before`).
+- **Table row insert / delete** → `rowRevision`.
+- **Undo / redo** operate on the rewritten transactions, so undoing a tracked delete
+  removes the `deletion` mark (history plugin sees one coherent step).
+
+### 4.3 Accept / reject semantics
+
+Commands `acceptRevision(id)`, `rejectRevision(id)`, `acceptAll`, `rejectAll`,
+`acceptInRange`, `nextRevision`, `prevRevision`:
+
+- Accept insertion → remove mark. Reject insertion → delete content.
+- Accept deletion → delete content. Reject deletion → remove mark.
+- Accept paragraph-mark deletion → join with next paragraph. Reject → clear attr.
+- Accept paragraph-mark insertion → clear attr. Reject → join.
+- Accept format change → drop `before`. Reject → restore `before` marks.
+- Row revisions analogous on table rows.
+
+Pure function core `applyRevisionDecision(doc, id, decision) → Transaction`, unit-tested
+on structural cases (multi-paragraph replace, merged paragraphs, deleted row, deleted image).
+
+### 4.4 Comments
+
+Word stores comment anchors **in-band** (`commentRangeStart/End` markers inside the
+content stream). The app mirrors that rather than keeping out-of-band anchors, so anchors
+survive undo, copy/paste and save atomically with the document.
+
+- `comment` mark `{commentId}` with `excludes: ''` → **overlapping** comments allowed; a
+  range spanning paragraphs or table cells is the same mark on each text node.
+- `commentPoint` zero-width inline atom `{commentId}` for insertion-point comments.
+- Threads (`{id, author, initials, date, text, replies, resolved, wordIds}`) stored in the
+  document row (§2.5). `wordIds` keep original `w:id`, `w14:paraId`, `w16cid:durableId`.
+- Anchor deleted entirely → thread marked `orphaned`, shown in the rail's "Detached"
+  section, never silently deleted; exported as a point comment at the deletion site.
+- DOCX parts read + written: `comments.xml`, `commentsExtended.xml` (`paraIdParent`,
+  `done`), `commentsIds.xml` (durable ids), `commentsExtensible.xml` (UTC dates),
+  `people.xml` (authors).
+
+### 4.5 Gate
+
+The Word harness (§8.2) must show: Word opens exports without repair; Word's
+`Revisions.AcceptAll` and `RejectAll` on our exported file produce text and paragraph
+structure equal to the app's own accept-all / reject-all; Word-authored revisions and
+comments import and re-export unchanged.
+
+## 5. Dynamic citations (A4)
+
+### 5.1 Native citations (CSL, live)
+
+- `citation` inline atom `{clusterId, items: [{sourceId, locator?, prefix?, suffix?,
+  suppressAuthor?}]}` — one node per citation cluster (`[3–5]`, `(Smith 2020; Lee 2021)`).
+- Sources hold CSL-JSON (`useSourceStore`; BibTeX / DOI / PubMed / PDF imports convert to
+  CSL-JSON).
+- Document has `citationStyle` (CSL style id). Rendering via **citation-js** (already a
+  dependency) with bundled styles: NLM/Vancouver, NIH-common numeric, APA, Nature, Cell,
+  PNAS, Science, Chicago author-date; any `.csl` file can be added.
+- Cluster text and the `bibliography` block are **computed**, never stored as text: they
+  re-render on any citation insert/remove/reorder or style change. Numbering in numeric
+  styles follows first appearance automatically. This replaces `citationRegistry` +
+  `renumberCitations()`; A4 migrates the remaining call sites (B leaves citation code
+  untouched so it does not depend on A4).
+- The existing `@` picker inserts clusters; a cluster popover edits items, locators,
+  prefix/suffix.
+
+### 5.2 External citations (Paperpile / EndNote / Mendeley / Zotero)
+
+Verified from the installed Paperpile Word add-in: it stores clusters as
+`ADDIN paperpile_citation <clusterId>…</clusterId><metadata>…</metadata><data>BASE64-JSON</data>`
+with an `ADDIN paperpile_bibliography` field, and it ships converters from Mendeley
+(`ADDIN CSL_CITATION {CSL-JSON}`), Zotero and EndNote fields into its own.
+
+- External fields import as an `externalCitation` atom `{manager, fieldCode,
+  resultXml, items: CSL-JSON[] | null, clusterKey}` — **category 2**: the stored visible
+  result is displayed exactly as the manager rendered it; the field code is kept verbatim.
+  - Paperpile: `<data>` base64 JSON decoded (best effort) to list items in the popover.
+  - Mendeley / Zotero: CSL-JSON in the field parsed directly.
+  - EndNote: `EN.CITE` record XML parsed for title/authors/year/DOI.
+- External bibliography fields → `externalBibliography` block, preserved verbatim.
+- External citations are **not renumbered and not restyled** by the app.
+- **Reconciliation is separate and non-destructive**: a "Link to library" action matches
+  items to Sources (DOI → PMID → normalized title + year) and stores the link on the node;
+  the field and its visible text are untouched.
+- User edits to an external cluster (add/remove item) convert that cluster to a native
+  citation and record it in the report; the original field is not partially rewritten.
+
+### 5.3 Export rules
+
+| Citation | Exported as |
 |---|---|
-| Arial, Helvetica | Arimo |
-| Georgia | Gelasio |
-| Palatino Linotype | TeX Gyre Pagella |
-| Times New Roman | Tinos |
-| Calibri | Carlito |
+| External, untouched | Original field verbatim (begin / instrText / separate / result / end) |
+| Native (or converted) | Live **`ADDIN CSL_CITATION {CSL-JSON}`** field (Mendeley schema) with the rendered text as field result; native bibliography → `ADDIN CSL_BIBLIOGRAPHY` field |
 
-CSS font stacks list the real font first (used if installed), the stand-in second.
-Export always writes the real font name.
+CSL_CITATION is an open, documented format. Mendeley Cite reads it natively and Paperpile's
+add-in converts it into live Paperpile citations ("Convert Mendeley citations"), so citations
+written in the app remain refreshable in Word.
 
-### 3.2 Page view (`src/extensions/pagination/`)
+### 5.4 Gate (manual, documented checklist)
 
-- Page cards sized from `PageSetup` (Letter = 816×1056 CSS px at 96 dpi), content box
-  inset by margins. Zoom via `transform: scale()` on the canvas; geometry stays in real px.
-- **Line-level breaks:** measure line boxes of top-level blocks (`getClientRects`); when a
-  line crosses the content-box bottom, insert a block-level widget spacer *at that line's
-  start position* (`posAtCoords`), pushing the remainder to the next page's top margin.
-  Tables and images break at block level; a block taller than a page overflows its card.
-- **Word line-height calibration:** "single" spacing = per-font factor (Arial ≈ 1.149,
-  others measured from font metrics `ascent+descent+lineGap`) so lines-per-page match Word.
-- Re-measure on doc change + `ResizeObserver`, debounced via `requestAnimationFrame`.
-- Pure core: `computeBreaks(lines: {top, height, pos}[], geometry) → {breaks, pageCount}`,
-  unit-tested. Plugin exposes `pageCount` and `pageForPos(pos)`.
-- "Draft" toggle = continuous view (no cards). Page view is the default.
-- `pageForPos` feeds grant budgets ("Research Strategy ends p. 12.4 / 12"), replacing
-  `wordsToPages` and the proportional `pageGuideOffsets` code (removed).
+On the Windows host with Word + Paperpile: (1) open an exported doc with untouched
+Paperpile citations → Paperpile Refresh succeeds; (2) native citations → Paperpile
+"Convert Mendeley citations" yields live Paperpile citations that refresh; (3) EndNote and
+Mendeley fixtures preserved byte-identical. Automatable parts (field codes present and
+well-formed, Word opens without repair, `Fields.Count` unchanged) run in the Word harness.
 
-### 3.3 Toolbar (Word-style compact ribbon)
+## 6. Pagination, formatting UI, NIH (A5)
 
-Groups: **Styles** dropdown with live previews · **Font** family (an "NIH-compliant" group
-with ✓ badge, then others), size, B/I/U, super/sub, color · **Paragraph** align, line
-spacing, lists, indent/outdent · **Insert** table, figure, page break, citation ·
-**Review** track changes toggle, accept / reject, prev / next change, new comment.
-Overflow "⋯" menu at narrow widths. Existing BubbleMenu keeps working.
+### 6.1 Metric-compatible fonts
 
-### 3.4 Page setup dialog + ruler
+Bundled via `@fontsource` (offline-capable): Arial/Helvetica → Arimo, Georgia → Gelasio,
+Palatino Linotype → TeX Gyre Pagella, Times New Roman → Tinos, Calibri → Carlito. CSS
+stacks list the real font first, stand-in second; export writes real names. Fonts reduce
+but do not eliminate layout divergence from Word (shaping, line-breaking), which is why
+calibration (§6.3) is a gate, not an assumption.
 
-- Presets: **NIH** (Arial 11, 0.5" margins, Letter, single), **Journal manuscript**
-  (Times 12, double-spaced, 1" margins), **A4**, **Custom**.
-- Edit paper size, margins, Normal / Heading 1–3 / Caption styles.
-- Horizontal ruler above the page with draggable left/right margin handles.
+### 6.2 Pagination — prototype first
 
-### 3.5 Comments rail
+**Prototype (gate P):** a non-destructive paginator, document stays continuous:
 
-Threads rendered in the right margin aligned to their anchors (Google-Docs style):
-reply, resolve, delete, jump. Clicking a `CommentRange` focuses its thread.
+- Measure line boxes with `Range.getClientRects()` over each text block's DOM and map
+  each line start to a document position with `view.posAtDOM()` (not `posAtCoords`).
+- Measurement is done on **natural geometry**: known spacer heights above a line are
+  subtracted, so inserted spacers do not feed back into the layout plan. Re-pagination is
+  incremental from the first changed block; a pass must converge in ≤ 2 iterations
+  (asserted; oscillation falls back to block-level breaks for that block).
+- Breaks rendered as ProseMirror **widget decorations** (`side: -1`, `ignoreSelection`,
+  `<span contenteditable=false style="display:block">` sized to the remaining page + top
+  margin of the next card). Card backgrounds are absolutely positioned behind the editor.
+- Tables, images and opaque blocks break at block level. Keep-with-next on headings
+  honored (heading never last line of a page). No widow/orphan control in v1.
+- Pure core `planPages(lines, geometry, keepRules) → {breaks, pageCount, posToPage}`.
 
-### 3.6 Status bar + compliance checker
+Prototype acceptance: selection drag, shift-click, copy/paste, IME typing, comments,
+tracked revisions and find/scroll all behave identically across page breaks; typing at
+the bottom of a page stays smooth (≤ 16 ms re-plan for a 15-page doc on the dev machine).
 
-Status bar: "Page X of Y", word count, compliance badge ("NIH ✓" or "2 issues" →
-popover list; click jumps to the offending range).
+**Fallback if P fails:** block-level cards for display + `planPages` run on measured line
+boxes for **page counts and section end positions only** (accurate numbers, less pretty
+cards). Decided at the gate, recorded in the plan.
 
-`checkCompliance(doc, format, preset) → Issue[]` — pure function:
-- **Error:** any margin < 0.5"; body text < 11 pt; > 6 lines per vertical inch;
-  > 15 characters per linear inch (computed from font metrics via canvas `measureText`).
-- **Warning:** font outside {Arial, Georgia, Helvetica, Palatino Linotype}; figure/table
-  text < 9 pt.
-Only runs the NIH rules when `preset === 'nih'` or a grant template is active.
+"Draft" toggle = continuous view. Page view is the default.
 
-## Error handling
+### 6.3 Calibration — mandatory gate
 
-- Malformed `.docx` (bad zip, missing `document.xml`) → clear toast, existing document
-  untouched.
-- Per-element parse failure → element becomes `Passthrough` + report warning; import
-  continues.
-- Export failure → toast with the reason; never write a partial file.
-- Missing fonts → stand-in used; a one-time notice names the substitution.
+Baseline is **Microsoft Word**, driven via PowerShell COM from WSL (verified available:
+Word 16.0). For each calibration document: export → Word opens → `ComputeStatistics(pages)`
+and per-section end positions via `Range.Information(wdActiveEndPageNumber)` +
+line number → compare with `planPages`.
 
-## Testing
+- **Page count: exact match** on every calibration document.
+- **Section end position: within ±3 lines** of Word.
+- Calibration set: ≥ 5 representative NIH-format documents, 5–15 pages (user-supplied real
+  documents + generated stress docs: dense text, many headings, tables, figures).
+- Per-font "single" line-height factors are fitted from Word measurements, not guessed.
 
-- **Vitest (converters):** one small fixture `.docx` per feature (styles, nested lists,
-  merged cells, images + captions, track changes, comments with replies, Zotero
-  citations, EndNote citations, passthrough equation, page setup). Assert import result
-  shape and **import → export → import stability**. Fixtures are generated by a script
-  (raw OOXML templates) so they are reviewable in git.
-- **Vitest (pure units):** `computeBreaks`, `checkCompliance`, style resolution, unit
-  conversion, HTML→JSON migration.
-- **Playwright smoke** (scratchpad pattern from prior work): import a fixture, toggle page
-  view, change font/preset, add a comment, accept a tracked change, export.
-- **Acceptance fixture:** one real NIH-format document supplied by the user.
-- **Optional pagination calibration:** export → LibreOffice headless PDF → page count vs
-  editor `pageCount`, target ±¼ page on a 12-page doc. Requires
-  `sudo apt install libreoffice-writer` (not currently installed); skipped if absent.
-- Gate: `npx tsc --noEmit` + `npm test`.
+### 6.4 Formatting UI
 
-## Files
+- **Toolbar** (compact Word-style ribbon): Styles dropdown with live previews · Font family
+  ("NIH recommended" group with ✓, then others) · size · B/I/U · super/sub · color ·
+  alignment · line spacing · lists · indent · Insert (table, figure, page break, citation)
+  · Review (track changes, accept/reject, prev/next, new comment). Overflow "⋯" at narrow
+  widths.
+- **Page setup dialog:** presets NIH (Arial 11, 0.5" margins, Letter, single), Journal
+  manuscript (Times 12, double, 1"), A4, Custom; paper size, margins, Normal/Heading/
+  Caption styles.
+- **Ruler** with draggable left/right margin handles.
+- **Comments rail** in the right margin aligned to anchors; reply, resolve, detached section.
+- **Status bar:** "Page X of Y", words, compliance badge.
+- **Citation style picker** + bibliography placement.
+- A dedicated visual-design pass (frontend-design skill) during implementation.
+
+### 6.5 NIH compliance — three levels
+
+`ComplianceProfile = { ruleset: 'nih-2025', attachment: AttachmentType, opportunity?:
+{ pageLimit?, hyperlinksAllowed?: boolean, extraRules? } }`. The profile is chosen
+explicitly (grant template or user), **independent of the formatting preset**.
+
+Rules verified against NIH "Format Attachments" (grants.nih.gov, fetched 2026-10-07):
+
+| Level | Checks | Severity |
+|---|---|---|
+| **1. Document formatting** | Body text ≥ 11 pt; ≤ 15 chars per linear inch (font metrics); ≤ 6 lines per vertical inch; margins ≥ 0.5"; paper ≤ 8.5×11 | Error |
+| | Font outside Arial/Georgia/Helvetica/Palatino Linotype | Info ("acceptable if it meets the density/size rules", which are checked separately) |
+| | Figure/table text < 11 pt | Info ("must be legible at 100%"; no fixed cutoff) |
+| **2. Attachment requirements** | Page limit for the attachment type (from the grant template / opportunity); headers or footers present ("Do not include headers or footers"); content in margins; hyperlinks present when `hyperlinksAllowed` is false; when allowed, link text must show the actual URL | Error / warning |
+| **3. Submission validation** | Run on the **exported PDF**: page size, page count vs limit, minimum rendered body font size, fonts embedded, not encrypted | Error |
+
+### 6.6 PDF output + validation
+
+NIH accepts PDF only. The app produces the submission PDF **from its own page view**:
+Electron `webContents.printToPDF` (exact page size, zero margins since the cards include
+them); browser build uses print CSS (`@page` size + margins) via `window.print()`.
+Level-3 validation parses the produced PDF with `pdfjs-dist` (already a dependency): page
+dimensions, page count, text item font sizes (scaled by transform), font embedding flags.
+The DOCX path remains for collaborators; "NIH-compliant" is only claimed for a PDF that
+passed level 3.
+
+## 7. Error handling
+
+- Malformed / oversized / macro-enabled `.docx` → clear toast; current document untouched
+  (nothing committed until the import transaction).
+- Per-element parse failure → element becomes an opaque atom (category 3) or category 4
+  warning; import continues.
+- Export failure → toast with reason; never writes a partial file.
+- Save failure → previous version kept in `versionSnapshots`; toast offers restore.
+- Missing fonts → stand-in used; one-time notice names the substitution.
+
+## 8. Testing
+
+### 8.1 Unit (vitest, CI)
+
+Converters per feature, `planPages`, `applyRevisionDecision`, track-plugin policy cases,
+comment anchor mapping, compliance rules, style resolution, unit conversion, preservation
+(verbatim reuse + rel remapping), migrations, zip-bomb/path-traversal guards, CSL rendering.
+Synthetic fixtures generated by `scripts/fixtures/make-docx-fixtures.ts` (reviewable).
+
+CI: `.github/workflows/webpack.yml` currently only builds; add `npx tsc --noEmit` and
+`npm test`.
+
+### 8.2 Word interoperability harness (local, `npm run verify:word`)
+
+Node script → copies files to a Windows temp dir → PowerShell COM (`Word.Application`,
+invisible) → per file: open (detect repair prompts via `Documents.Open` errors /
+`OpenAndRepair:false`), counts (paragraphs, tables, comments, revisions, fields, inline
+shapes), page count, `ExportAsFixedFormat` PDF, `Revisions.AcceptAll`/`RejectAll` on
+copies → saves → re-imported by the app's reader for structural comparison. Results
+written as JSON + a markdown summary. Skips with a clear message when Word is unavailable.
+
+### 8.3 Acceptance matrix
+
+| Test | Required result | How |
+|---|---|---|
+| Untouched Word DOCX → export | Byte-identical blocks for all paragraphs; no Word repair; counts equal | Harness, real docs |
+| Edit one paragraph → export | All other blocks verbatim; counts equal except the edited block | Harness |
+| Word tracked changes round-trip | Accept/Reject All in Word == app accept/reject all | Harness |
+| Multi-paragraph / merged-paragraph / table-row revisions | Structure correct after accept and after reject, in app and in Word | Unit + harness |
+| Comments with replies + overlaps + point comments | Threads, authors, resolved state, anchors intact in Word | Harness |
+| Paperpile / EndNote / Mendeley citations | Fields verbatim; Paperpile Refresh works; native CSL fields convert in Paperpile | Harness + manual §5.4 |
+| Nested lists, merged tables | Numbering and spans correct in Word | Harness |
+| Pagination | Gate P + calibration §6.3 | Harness + Playwright |
+| Repeated edit/export ×10 | No cumulative change in untouched content (hash-stable) | Unit + harness |
+| Malformed, huge, zip-bomb, macro docs | Safe rejection, existing data intact | Unit |
+| NIH PDF | Level-3 validation passes on a compliant doc, fails on seeded violations | Unit + Playwright |
+
+Real Word-created documents are required alongside synthetic fixtures (user to supply ≥ 5
+NIH-format documents, including ones with Paperpile citations, tracked changes, comments).
+
+### 8.4 UI
+
+Playwright smoke (scratchpad pattern from prior work): import, page view, font/preset
+change, comment, tracked edit + accept, citation insert + style switch, export DOCX + PDF.
+
+Gate for every phase: `npx tsc --noEmit` + `npm test` + that phase's harness checks.
+
+## 9. Files
 
 New:
-- `src/docx/read/*`, `src/docx/write/*`, `src/docx/ooxml/*`, `src/docx/*.test.ts`,
-  `scripts/fixtures/make-docx-fixtures.ts`
-- `src/extensions/format/*` (TextStyle marks, paragraph attrs, Insertion/Deletion,
-  CommentRange, PageBreak, Passthrough)
-- `src/extensions/pagination/*`
+- `src/docx/read/*`, `src/docx/write/*`, `src/docx/preserve/*`, `src/docx/ooxml/*`,
+  `src/docx/security.ts`, tests alongside
 - `src/workers/docxImportWorker.ts`
-- `src/services/compliance.ts`, `src/services/formatPresets.ts`
+- `src/extensions/format/*` (text-style marks, paragraph attrs, PageBreak, opaque atoms)
+- `src/extensions/revisions/*` (marks, attrs, `trackPlugin`, `applyRevisionDecision`)
+- `src/extensions/comments/*` (comment mark, point atom)
+- `src/extensions/citations/*` (cluster atom, external citation atom, bibliography blocks)
+- `src/extensions/pagination/*` (`planPages`, plugin)
+- `src/services/csl.ts` (citation-js rendering, bundled styles)
+- `src/services/compliance/*` (profiles, rules, PDF validator)
+- `src/services/formatPresets.ts`, `src/services/pdfExport.ts`
 - `src/db/documentRepository.ts`
 - `src/components/editor/Toolbar.tsx`, `PageSetupDialog.tsx`, `Ruler.tsx`,
-  `CommentsRail.tsx`, `StatusBar.tsx`
+  `CommentsRail.tsx`, `StatusBar.tsx`, `ImportReportDialog.tsx`, `CitationPopover.tsx`
+- `scripts/fixtures/make-docx-fixtures.ts`, `scripts/verify-word/*` (Node + PowerShell)
 
 Changed:
-- `src/types.ts`, `src/db/manuscriptDb.ts` (v3), `src/stores/useDocumentStore.ts`
+- `src/types.ts`, `src/db/manuscriptDb.ts` (v3), `src/stores/useDocumentStore.ts`,
+  `src/stores/useSourceStore.ts` (CSL-JSON)
 - `src/components/Editor.tsx` (extensions, page canvas; toolbar extracted)
-- `src/extensions/CitationNode.tsx` (cslJson/fieldCode)
-- `src/App.tsx` (DOCX open, export wiring; workspace loader dispatch)
-- `src/components/GrantPanel.tsx` (real page budgets)
-- `src/services/astExport.ts` (read PM JSON)
-- `src/index.css` (page canvas, font stacks)
-- `package.json` (+ `@fontsource/*`, TipTap text-style/super/subscript; − `docx`)
+- `src/extensions/CitationNode.tsx` → replaced by `src/extensions/citations/`
+- `src/App.tsx` (DOCX open, export wiring, loader dispatch)
+- `src/components/GrantPanel.tsx` (real page budgets, compliance profile)
+- `src/services/astExport.ts` (HTML generated from JSON)
+- `src/index.css`, `package.json` (+ `@fontsource/*`, TipTap text-style/sub/superscript;
+  − `docx`), `.github/workflows/webpack.yml`
 
-Removed: `src/services/docxExport.ts`, proportional page-guide code in `Editor.tsx`, unused `mammoth` import in `App.tsx`.
+Removed: `src/services/docxExport.ts`, proportional page-guide code in `Editor.tsx`, unused
+`mammoth` import in `App.tsx`, `citationRegistry`/`renumberCitations` (in A4).
