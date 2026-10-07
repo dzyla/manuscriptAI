@@ -130,6 +130,63 @@ export interface ZoteroSettings {
   lastSynced?: number;
 }
 
+// ─── Document format model (spec §2.2) ────────────────────────────────────────
+
+export interface PageSetup {
+  size: 'letter' | 'a4';
+  orientation: 'portrait';
+  marginsIn: { top: number; right: number; bottom: number; left: number };
+}
+
+export interface LineSpacing {
+  /** 'auto' = multiple of single spacing; 'exact'/'atLeast' = points */
+  rule: 'auto' | 'exact' | 'atLeast';
+  value: number;
+}
+
+export interface StyleDef {
+  id: string;
+  name: string;
+  type: 'paragraph' | 'character' | 'table' | 'numbering';
+  basedOn?: string;
+  next?: string;
+  fontFamily?: string;
+  fontSizePt?: number;
+  bold?: boolean;
+  italic?: boolean;
+  color?: string;
+  lineSpacing?: LineSpacing;
+  spaceBeforePt?: number;
+  spaceAfterPt?: number;
+  indent?: { leftIn?: number; firstLineIn?: number; hangingIn?: number };
+  align?: 'left' | 'center' | 'right' | 'justify';
+  /** Category-2 properties kept verbatim from styles.xml (keepNext, tabs, borders, …) */
+  preserved?: { pPrXml?: string; rPrXml?: string };
+}
+
+export type FormatPreset = 'nih' | 'manuscript' | 'a4' | 'custom';
+
+export interface DocFormat {
+  page: PageSetup;
+  styles: Record<string, StyleDef>;
+  defaults: { fontFamily: string; fontSizePt: number };
+  preset: FormatPreset;
+}
+
+/** A style with its basedOn chain and document defaults fully applied. */
+export interface ResolvedStyle {
+  fontFamily: string;
+  fontSizePt: number;
+  bold: boolean;
+  italic: boolean;
+  color: string;
+  lineSpacing: LineSpacing;
+  spaceBeforePt: number;
+  spaceAfterPt: number;
+  indent: { leftIn: number; firstLineIn: number; hangingIn: number };
+  align: 'left' | 'center' | 'right' | 'justify';
+}
+
 // ─── Dexie row types ──────────────────────────────────────────────────────────
 
 export interface DocumentRow {
