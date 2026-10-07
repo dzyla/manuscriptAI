@@ -7,6 +7,7 @@ import { TableKit } from '@tiptap/extension-table';
 import { ResizableImage } from './ResizableImage';
 import { CitationNode } from './CitationNode';
 import { FigureLabel } from './FigureLabel';
+import { OpaqueInline, OpaqueBlock } from './preserve/OpaqueNodes';
 import { OoxmlProvenance } from './preserve/OoxmlProvenance';
 
 /**
@@ -25,6 +26,8 @@ export function getSchemaExtensions(): Extensions {
     ResizableImage,
     CitationNode,
     FigureLabel,
+    OpaqueInline,
+    OpaqueBlock,
     OoxmlProvenance,
   ];
 }
