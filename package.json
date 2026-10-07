@@ -30,7 +30,7 @@
     "@tiptap/react": "^3.20.4",
     "@tiptap/starter-kit": "^3.20.4",
     "@vitejs/plugin-react": "^5.0.4",
-    "@xmldom/xmldom": "^0.8.10",
+    "@xmldom/xmldom": "^0.8.15",
     "citation-js": "^0.7.22",
     "clsx": "^2.1.1",
     "comlink": "^4.4.2",
