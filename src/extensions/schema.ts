@@ -7,6 +7,7 @@ import { TableKit } from '@tiptap/extension-table';
 import { ResizableImage } from './ResizableImage';
 import { CitationNode } from './CitationNode';
 import { FigureLabel } from './FigureLabel';
+import { OoxmlProvenance } from './preserve/OoxmlProvenance';
 
 /**
  * The document schema, shared by the live editor and headless conversion.
@@ -24,6 +25,7 @@ export function getSchemaExtensions(): Extensions {
     ResizableImage,
     CitationNode,
     FigureLabel,
+    OoxmlProvenance,
   ];
 }
 
