@@ -62,10 +62,17 @@ category; category 4 always produces a visible warning.
 
 | Category | Meaning | Features |
 |---|---|---|
-| **1. Editable, round-trippable** | Edited in the app; exported semantically equivalent | Paragraphs, runs (font, size, bold/italic/underline, color, super/sub), paragraph + character styles, alignment, spacing, indents, headings, bullet/numbered lists incl. nesting, tables (header row, merged cells, widths), inline images + captions, page breaks, hyperlinks, page size + margins, tracked insert/delete (inline + paragraph mark + table row), formatting-change revisions, comments with replies/resolved, native citations |
-| **2. Approximated, semantically preserved** | Displayed approximately; original XML kept and re-emitted | Floating/anchored drawings (shown inline), tab stops, keep-with-next/keep-lines, widow control, table borders/shading, complex numbering formats, external citation fields (Paperpile/EndNote/Mendeley/Zotero: shown with their stored visible text) |
-| **3. Opaque, preserved while untouched** | Read-only chip; emitted verbatim with its dependencies; deletable as a unit | Equations (OMML), footnote/endnote references, content controls (SDT), bookmarks, unknown fields, embedded OLE objects, paragraph-level section breaks |
+| **1. Editable, round-trippable** | Edited in the app; exported semantically equivalent | Paragraphs, runs (font, size, bold/italic/underline, color, super/sub), paragraph + character styles, alignment, spacing, indents, headings, bullet/numbered lists incl. nesting, tables (header row, merged cells, widths), inline images + captions, **floating images with square/tight wrap** (rendered as CSS floats left/right with wrap distance; original anchor XML reused while position/size untouched), page breaks, hyperlinks, page size + margins, tracked insert/delete (inline + paragraph mark + table row), formatting-change revisions, comments with replies/resolved, native citations |
+| **2. Approximated, semantically preserved** | Displayed approximately; original XML kept and re-emitted | Floating drawings with other wrap modes (behind/in front of text, top-and-bottom: shown as block images), tab stops, keep-with-next/keep-lines, widow control, table borders/shading, complex numbering formats, external citation fields (Paperpile/EndNote/Mendeley/Zotero: shown with their stored visible text) |
+| **3. Opaque, preserved while untouched** | Read-only chip; emitted verbatim with its dependencies; deletable as a unit | Equations (OMML), footnote/endnote references, content controls (SDT) other than Google wrappers, bookmarks, unknown fields, embedded OLE objects, paragraph-level section breaks |
 | **4. Unsupported** | Explicit import warning; best-effort text kept | Macros (`.docm` rejected outright), ActiveX, text boxes with complex layout, SmartArt (preserved as cat. 3 where its XML is self-contained, else warned) |
+
+**Google Docs exports are a first-class input.** Real collaborator files arrive via Google
+Docs (verified on the user's R01: 83 `w:sdt` wrappers tagged `goog_rdk_*`, embedded fonts in
+`word/fonts/`, `customXML`, no field-based citations). `goog_rdk_*` SDTs are transparent
+wrappers around runs and are **unwrapped** on import (category 1); embedded fonts are kept
+in the package and, when no metric-compatible stand-in exists, loaded as `FontFace` from the
+package for display.
 
 **Success criteria are split:**
 - *Formatting fidelity* — category 1 features look the same in Word after export.
@@ -403,8 +410,16 @@ line number → compare with `planPages`.
 
 - **Page count: exact match** on every calibration document.
 - **Section end position: within ±3 lines** of Word.
-- Calibration set: ≥ 5 representative NIH-format documents, 5–15 pages (user-supplied real
-  documents + generated stress docs: dense text, many headings, tables, figures).
+- Calibration set (local only, `fixtures/private/`, gitignored, never committed):
+  1. User's real R01 (Google Docs export; Word baseline: **17 pages, 12,434 words,
+     32 revisions, 52 comments, 10 floating figures**).
+  2. Word-derived variants of (1) produced by the harness via COM: re-saved as native Word
+     OOXML; revisions accepted; body font switched to Georgia and to Palatino Linotype.
+  3. 2–3 NIAID sample applications (public PDFs, educational use) converted to `.docx` by
+     Word's PDF reflow, kept unmodified apart from format conversion.
+  4. Word-generated stress documents (dense text, many headings, tables, figures), built
+     by the harness through COM so their OOXML is genuinely Word-authored.
+  5. One copy of (1) with Paperpile citations inserted by the user (for §5.4).
 - Per-font "single" line-height factors are fitted from Word measurements, not guessed.
 
 ### 6.4 Formatting UI
@@ -496,8 +511,7 @@ written as JSON + a markdown summary. Skips with a clear message when Word is un
 | Malformed, huge, zip-bomb, macro docs | Safe rejection, existing data intact | Unit |
 | NIH PDF | Level-3 validation passes on a compliant doc, fails on seeded violations | Unit + Playwright |
 
-Real Word-created documents are required alongside synthetic fixtures (user to supply ≥ 5
-NIH-format documents, including ones with Paperpile citations, tracked changes, comments).
+Real documents are required alongside synthetic fixtures; the set is defined in §6.3.
 
 ### 8.4 UI
 
