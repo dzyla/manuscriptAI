@@ -53,7 +53,7 @@ export interface ImportReport {
   commentsNotInText?: number;
   /**
    * Set by the importer when the document has pictures: how many there are and how many were paired with a caption paragraph
-   * (`ImportResult.figures` has the pairs). Not `counts.caption`, which counts paragraphs in Word's Caption style: most grants
+   * (`ImportResult.figures` has the pairs). `images` counts TOP-LEVEL pictures only: one inside a table cell is not paired at import. Not `counts.caption`, which counts paragraphs in Word's Caption style: most grants
    * never use that style and label their captions "Fig. N." by hand, so the two numbers differ and neither implies the other.
    */
   figures?: { images: number; captioned: number };
@@ -91,7 +91,9 @@ export const plural = (n: number, one: string, many = one + 's') => `${n} ${n ==
  * If it ever does, the figure goes negative and shows, which is better than a `Math.max(0, ...)` that hides the surplus. The clamp was
  * once here and concealed exactly such a case: a citation nested in a citation was counted twice (8 pieces reported as 12 against an
  * atom total of 11), the clamp turned the PAGEREF field's 3 pieces into "0 other preserved read-only", and the author was never told
- * they existed. Pinned by fidelity.test.ts and the PAGEREF case in readDocx.test.ts.
+ * they existed. A negative figure now shows in the dialog (`reportRows` pushes on `!== 0`) and in the summary. The invariants that
+ * keep it from happening are asserted where the atoms are counted: `byCategory[3] === atoms.length` (private-fixtures.test.ts) and
+ * `=== atoms.length + counts.sectionBreak` (readDocx.test.ts, opaque.docx); the PAGEREF case is in readDocx.test.ts.
  */
 export function preservedReadOnly(r: ImportReport): { count: number; hasDescribed: boolean } {
   const described = r.described ? r.described.trackedChange + r.described.commentAnchor + r.described.citationField : 0;

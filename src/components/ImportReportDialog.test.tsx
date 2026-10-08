@@ -92,25 +92,32 @@ describe('the caption row', () => {
     const r = createReport();
     recordFeature(r, 'inlineImage', 6);
     r.figures = { images: 6, captioned: 4 };
-    const row = readRows({ report: r }).find(x => x.key === 'caption');
+    const row = readRows({ report: r }).find(x => x.key === 'figureCaption');
     expect(row).toMatchObject({ value: 4, label: 'Pictures paired with a caption (of 6)' });
   });
 
   it('shows 0 for a document whose pictures have no captions (a missing pairing is information, not noise)', () => {
     const r = createReport();
     r.figures = { images: 3, captioned: 0 };
-    expect(readRows({ report: r }).find(x => x.key === 'caption')).toMatchObject({ value: 0, label: 'Pictures paired with a caption (of 3)' });
+    expect(readRows({ report: r }).find(x => x.key === 'figureCaption')).toMatchObject({ value: 0, label: 'Pictures paired with a caption (of 3)' });
+  });
+
+  it('a negative read-only figure is a row, not a vanished one', () => {
+    const r = createReport();
+    recordFeature(r, 'unknownField', 3);
+    r.described = { trackedChange: 0, commentAnchor: 0, citationField: 4 }; // 4 pieces described, 3 atoms: a double count somewhere
+    expect(reportRows({ report: r }).find(x => x.key === 'preserved')).toMatchObject({ value: -1 });
   });
 
   it('has no caption row for a document without pictures', () => {
-    expect(readRows({ report: createReport() }).some(x => x.key === 'caption')).toBe(false);
+    expect(readRows({ report: createReport() }).some(x => x.key === 'figureCaption')).toBe(false);
   });
 
   it('is rendered in the dialog, from a real read', async () => {
     const result = await readDocx(loadDocx('images.docx'));
     const el = mount(<ImportReportDialog result={result} onConfirm={() => {}} onCancel={() => {}} />);
-    expect(q(el, '[data-testid="row-caption"]').textContent).toContain('Pictures paired with a caption (of 6)');
-    expect(q(el, '[data-testid="row-caption"]').textContent).toMatch(/1$/);
+    expect(q(el, '[data-testid="row-figureCaption"]').textContent).toContain('Pictures paired with a caption (of 6)');
+    expect(q(el, '[data-testid="row-figureCaption"]').textContent).toMatch(/1$/);
   });
 });
 

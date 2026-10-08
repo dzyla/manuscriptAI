@@ -116,18 +116,33 @@ Code: `src/docx/read/paragraphs.ts`, `src/docx/preserve/hash.ts`, `src/extension
 
 ### 3.2 Edited paragraph: rebuild from the model, but start from the original `<w:pPr>`
 
-An edited paragraph keeps its `blockId`, so `blocks[blockId].xml` is still there. The model holds only some paragraph properties
-(`styleId`, `textAlign`, `lineSpacing`, `spaceBefore`, `spaceAfter`, `indentLeft`, `indentFirstLine`, heading `level`). The writer
-**must** build the new `<w:pPr>` from the original one and override only what the model owns, not write a fresh `<w:pPr>` from the
-node. What lives only in the original `<w:pPr>` and is lost otherwise: `w:numPr` (list membership and level), `w:keepNext`,
-`w:keepLines`, `w:pageBreakBefore`, `w:widowControl`, `w:tabs`, `w:shd`, `w:pBdr`, `w:framePr`, `w:ind` right/start/end, the
-paragraph-mark `w:rPr`, **`w:sectPr` (a paragraph-level section break, section 11)**, and any `w:pPrChange`. Suggested: read the original
-`<w:pPr>` back with the reader's own function, compare with the node's attributes, and overwrite only attributes that differ.
+An edited paragraph keeps its `blockId`, so `blocks[blockId].xml` is still there. The model owns only some paragraph properties:
+`styleId`, `textAlign`, `lineSpacing`, `spaceBefore`, `spaceAfter`, `indentLeft`, `indentFirstLine` and, on a heading, `level`. The
+writer **must** build the new `<w:pPr>` from the original one, not write a fresh `<w:pPr>` from the node. What lives only in the
+original `<w:pPr>` and is lost otherwise: `w:numPr` (list membership and level, subject to 3.5), `w:keepNext`, `w:keepLines`,
+`w:pageBreakBefore`, `w:widowControl`, `w:tabs`, `w:shd`, `w:pBdr`, `w:framePr`, `w:ind` right/start/end, the paragraph-mark `w:rPr`,
+**`w:sectPr` (a paragraph-level section break, section 11)**, and any `w:pPrChange`.
+
+**The rule for the owned properties is a diff, and it is binding.** Read the original `<w:pPr>` back with the reader's own property reader
+(`readProps` in `src/docx/read/paragraphs.ts`; it is not exported yet, export it or run `readParagraph` on the stored XML), which yields
+the model values the paragraph had at import. For each owned property:
+- node value equals the re-read value: leave the original XML for that property EXACTLY as it is (this keeps spellings and extra
+  attributes the model cannot express);
+- node value differs: the node wins, and **a node `null` means "inherit from the style": REMOVE the explicit property**. If the author
+  cleared `indentLeft` and the original has `<w:ind w:left="720"/>`, remove `w:left` (keep the other `w:ind` attributes whose model value
+  is unchanged; drop the element if none remain). Leaving it would silently discard the author's edit.
+When `styleId` changes (including by the heading rule in 3.4), write the new `w:pStyle` by REPLACING the original one, never adding
+a second, and **drop any direct `w:outlineLvl`** (a stale one survives next to the new style otherwise and makes Word outline the
+paragraph at the old level).
 
 Run properties are different: there is no per-run provenance. Marks are written from the model. What a rebuilt paragraph loses
 (accepted, section 13): unmodelled `w:rPr` children (`caps`, `lang`, `kern`, ...), `w:b w:val="0"` overrides, hyperlink targets that
 are not `http`/`https`/`mailto`, `smartTag` / `customXml` wrappers, Google `sdtPr`, `w:noBreakHyphen` (read as `-`), and the layout
 cache `lastRenderedPageBreak`.
+
+Heading precedence, recorded because 3.2 and 3.4 depend on it: the reader decides a paragraph's heading level from its style first
+and a direct `w:outlineLvl` second, the INVERSE of Word (where the direct value wins). For an untouched paragraph that is irrelevant
+(it is verbatim). For a rebuilt heading the node's `level` is authoritative (3.4).
 
 Rebuilt paragraphs reference styles by Word id, never by the app's id: section 10.
 
@@ -144,13 +159,25 @@ Rebuilt paragraphs reference styles by Word id, never by the app's id: section 1
 A document that styles no headings (neither real grant does) gets `headingCandidates` (`src/docx/read/headings.ts`), which are NOT
 applied until accepted. An accepted candidate is converted in place by `applyHeadings`: the node becomes `heading` with `level` and
 `styleId: null`, `ooxml` unchanged. Its hash no longer equals `sourceHash` (the type and level are hashed), so it reads as **edited**:
-rebuild it, starting from the original `<w:pPr>` (3.2). Because `styleId` is null, the heading is not tied to any Word style: the
-writer **must** emit `w:pStyle` for level N from the style the app calls `headingN`, using the mapping in section 10 (the document's
-own Word id if the document defines one, else a new definition for the backfilled `headingN`). A heading that does have a `styleId`
-(one read from a Word heading style) uses that style the same way. A heading must not be emitted with only inline bold and size. An unaccepted candidate leaves the paragraph a paragraph, untouched and verbatim.
+rebuild it, starting from the original `<w:pPr>` (3.2). An unaccepted candidate leaves the paragraph a paragraph, untouched and verbatim.
+
+**For a `heading` node, `level` is authoritative and `styleId` is not.** The author makes headings with the toolbar too
+(`Editor.tsx` calls `toggleHeading`), and that keeps whatever `styleId` the node had: `toggleHeading({level: 2})` on an imported Word
+Heading 1 gives `heading{level: 2, styleId: 'heading1'}`, and `toggleHeading({level: 1})` on an imported body paragraph gives
+`heading{level: 1, styleId: 'bodyText'}`. So, for every `heading` node written by the generator (rebuilt, converted, or new):
+1. If `styleId` is `heading1`, `heading2` or `heading3` AND equals `heading<level>`, use it.
+2. Otherwise ignore `styleId` and use the style for `heading<level>`.
+3. Resolve that app style id to a Word id through section 10: `wordIdByAppId['heading<level>']` if the document defines it; if it is
+   `backfilled`, ADD a definition to `styles.xml` first. REPLACE any `w:pStyle` already in the original `<w:pPr>` (never add a second)
+   and drop its `w:outlineLvl` (3.2).
+The result must never be a heading with the body style, or with no heading style at all.
+
+The direct formatting an inferred heading was detected by (bold, a larger `fontSize` mark) stays in the model as marks and **is
+written as it is**: it is the author's own formatting, it reproduces exactly what they saw in Word, and a direct run property wins over
+the style, so it does not stack. Do not strip it. The heading style adds the outline level and navigation, not a new look.
 
 A numbered Word heading loses its visible number in the editor (recorded as `complexNumbering`): never regenerate a heading that
-carries `w:numPr` from the node alone; reuse its `<w:pPr>`.
+carries `w:numPr` from the node alone; start from its `<w:pPr>`.
 
 ### 3.5 What `isBlockUntouched` cannot see
 
@@ -185,7 +212,15 @@ superscript).
   citation field can break the field (section 13).
 - **The writer must tolerate a missing fragment.** A node can reference a `fragmentId` that is in no `preservation.fragments`:
   undo past the 10-entry backup ring can restore an atom whose fragment was already pruned. Do not throw: skip the atom with an export
-  warning (a picture falls back to being emitted from the model, 6.5). Code: `src/docx/preserve/refs.ts` (`pruneFragments`).
+  warning (a picture falls back to being emitted from the model, 6.5). Code: `src/docx/preserve/refs.ts` (`pruneFragments`). A missing
+  fragment leaves the NODE in the document, which interacts with three other rules, so after every fragment-miss skip:
+  - **re-run the pairing and field checks.** Skipping one `commentRangeStart` and still emitting its `commentRangeEnd`, or dropping a
+    field start and emitting its code and end, produces a broken pair; the checks above must run on the set of atoms actually emitted,
+    not on the nodes in the model;
+  - **a skipped `opaqueBlock` that was a table cell's only block** leaves a `<w:tc>` with no `<w:p>`, which Word rejects: apply 5.5 to
+    the emitted cell, not to the model's;
+  - **a `strip` (6.2) never needs the fragment**: it works from the host's `blocks` entry and the `lifted` record, so a pruned image
+    fragment does not prevent stripping the deleted picture from its host.
 - `preservation.rels` holds ONLY the relationship ids the stored XML uses, plus the ids the body's `sectPr` uses for headers and
   footers. It is not the package's relationship list. Everything else (styles, numbering, footnotes, theme, settings, comments,
   fonts) must be read from the original `word/_rels/document.xml.rels` in `original`.
@@ -211,9 +246,11 @@ picture changes the table's JSON and so its hash).
 where content is. **Rebuild each cell's block sequence from the model by `blockId`**, re-emitting an untouched block's original XML,
 generating the rest. Never patch "only the edited paragraphs" into the old cells.
 
-Five rearrangements leave `structureHash` equal and every paragraph untouched, and a writer that patches in place silently loses
-them: (1) an untouched paragraph moved between cells; (2) the blocks of a cell reversed; (3) a nested table swapped with a
-paragraph; (4) two rows of identical shape swapped; (5) a cell's content replaced by a list and a heading.
+Five rearrangements leave `structureHash` equal, and a writer that patches in place silently loses them: (1) an untouched paragraph
+moved between cells; (2) the blocks of a cell reversed; (3) a nested table swapped with a paragraph; (4) two rows of identical shape
+swapped; (5) a cell's content replaced by a list and a heading. In (1) to (4) every paragraph is still untouched, which is what makes
+them invisible; in (5) the new blocks are new or converted (not untouched), but the table's shell is equally unchanged, and the cell
+still has to be rebuilt from the model.
 
 `structureHash` is blind to `tblPr` / `trPr` / `tcPr`: it hashes only the model-visible skeleton (rows, cells, `colspan`, `rowspan`,
 `colwidth`, header or not, and nested tables' skeletons). Equality is meaningful ONLY because the app has no way to edit those
@@ -236,18 +273,35 @@ every ancestor's `structureHash` (it includes nested skeletons), so ancestors ta
    a `vMerge` restart cell plus continuation cells; `colwidth` (CSS px) x 15 to `tcW` / `tblGrid` in twips (a column whose width is
    null is the writer's choice); a header row to `tblHeader`. Each cell's blocks by `blockId` exactly as in 5.2. The original XML is
    not walked row by row.
-2. Keep from the original what does not depend on rows or columns and the app cannot edit: `tblPr` (style, borders, width, layout,
-   look, cell margins). For a surviving cell keep the formatting-only part of its `tcPr` (shading, borders, margins, vertical
-   alignment, no-wrap) and of its row's `trPr` (height, cantSplit), found by CONTENT identity: a model cell that holds a block whose
-   `blockId` is inside an original `<w:tc>` inherits that cell's formatting properties. Never by position.
-3. A cell or row with no such match (every one the author added) copies the formatting of the nearest preceding row in the same grid
-   column that has a match, else the nearest following (Word's own "insert row below"). This is an approximation, not exact for
-   shading banded by position; the export should say the table's cell formatting was approximated.
+2. Keep from the original what does not depend on rows or columns and the app cannot edit. `tblPr` whole (style, borders, width,
+   layout, look, cell margins, and a `tblPrChange` revision). For a surviving cell keep its `tcPr` EXCEPT the structure properties the
+   model regenerates (`gridSpan`, `vMerge`, `hMerge`, `tcW`); for a surviving row keep its `trPr` except `tblHeader`. So shading,
+   borders, margins, vertical alignment, no-wrap, row height, cantSplit AND the revision marks inside them (`cellIns`, `cellDel`,
+   `cellMerge`, `tcPrChange`, `trPrChange`, a tracked row insertion or deletion in `trPr`) travel with the cell or row. "Surviving" is
+   decided by CONTENT identity: a model cell holding a block whose `blockId` is inside an original `<w:tc>` inherits that cell's
+   properties, never by position. If a model cell's blocks come from several original cells, the one holding its FIRST matched block
+   claims it; if two model cells claim one original cell, the first in document order keeps it and the other is treated as new (a
+   paragraph moved between cells takes its old cell's formatting with it only if it is that cell's first matched block; this
+   misattributes shading when a paragraph moved AND a row was added, and is accepted).
+3. A cell or row with no such match (every one the author added, and every regenerated continuation cell) copies ONLY the formatting
+   properties of a neighbour (`shd`, `tcBorders`, `tcMar`, `vAlign`, `noWrap`; `trHeight`, `cantSplit`), NEVER revision marks: an
+   author-added cell must not carry another author's tracked insertion. Choice of neighbour: for an added ROW, the nearest preceding
+   row in the same grid column that has a match, else the nearest following (Word's own "insert row below"). For an added COLUMN
+   (no row in that grid column has a match in either direction), the matched cell next to it in the same row, left first, else right.
+   For both at once, the column neighbour wins. With no neighbour at all the cell gets nothing but what the table style provides. This
+   is an approximation, not exact for shading banded by position; the export should say the table's cell formatting was approximated.
 4. The folded vMerge continuation cells are REGENERATED from the model's `rowspan`s (a blank `<w:tc>` with `tcW`, `vMerge` and the
-   restart cell's formatting properties), NOT re-inserted from the original. After a row is added inside a merged region the model's
-   `rowspan` is larger than the original's and a continuation exists with no original to copy. A row that had no model cells
-   (5.4) survives only if its neighbours do.
+   restart cell's formatting properties, per step 3), NOT re-inserted from the original. After a row is added inside a merged region
+   the model's `rowspan` is larger than the original's and a continuation exists with no original to copy. A row that had no model
+   cells (5.4) survives only if its neighbours do.
 5. Every `<w:tc>` ends in a `<w:p/>` (5.5).
+6. `tblGrid` is rebuilt from the model, so it can disagree with the kept `tblPr`: if `tblPr` has a `tblW` of type `dxa`, or
+   `tblLayout` is `fixed`, set `tblW` to the sum of the rebuilt grid; leave a `pct` or `auto` `tblW` alone. A `tblGridChange` inside the
+   old `tblGrid` describes a grid that no longer exists and is dropped.
+7. **Nothing the report counted may be dropped without saying so.** The import headline counts table-level revision marks
+   (`cellIns`, `cellDel`, `cellMerge` as tracked changes; `trPrChange`, `tcPrChange`, `tblPrChange`, `tblGridChange` as formatting
+   changes). Steps 2 and 6 carry all but `tblGridChange`. A mark is also lost when its row or cell was removed (deleting a row
+   deletes its marks) or sits on a regenerated cell. The export must warn with the number of table revision marks it could not carry.
 
 What may not happen under any rule: a model block (paragraph, list, image, nested table) disappears; a cell's content lands in
 another cell; the `<w:tbl>` is invalid (each row's `gridSpan` sum equals the grid width; a `vMerge` continuation sits under a restart
@@ -270,7 +324,8 @@ If the report carries `tableBorders` or `tableLayout`, the original XML is the a
 
 Word requires every `<w:tc>` to end in a `<w:p>`. A cell whose last block is a nested table has no trailing paragraph in the model
 (a cell with no paragraph at all was given an empty paragraph with no provenance). When emitting such a cell from the model,
-**append an empty `<w:p/>`** after the table. Code: the comment in `readCell`, `src/docx/read/tables.ts`.
+**append an empty `<w:p/>`** after the table; more generally, after everything else (including skipped atoms, section 4) a `<w:tc>` that
+ends without a `<w:p>` gets one. Code: the comment in `readCell`, `src/docx/read/tables.ts`.
 
 ## 6. Images and drawings
 
@@ -300,15 +355,20 @@ The host paragraph's original XML still contains the `w:drawing` while the parag
 the image node does not change the host. Do not decide from the nodes alone: call `planLiftedDrawings(doc, store)` (`lifted.ts`).
 It reads the record `preservation.blocks[hostBlockId].lifted = [{ fragmentId, drawingIndex, sourceHash }]` (`drawingIndex` = ordinal
 among ALL `w:drawing` elements of that `<w:p>`, in document order; `docPr@id` is not unique and is not used; block entries are never
-pruned) and returns:
+pruned) and returns two lists. The cases below need different actions; do not fold them together:
 
-- `strip`: remove the `drawingIndex`-th `w:drawing` from the host's original XML before re-emitting it verbatim (the picture was
-  deleted, or moved away). **Apply strips in DESCENDING `drawingIndex` order** within a host (the plan is already so ordered), or
+- `strip` entries: remove the `drawingIndex`-th `w:drawing` from the host's original XML before re-emitting it verbatim (the picture
+  was deleted, or moved away). **Apply strips in DESCENDING `drawingIndex` order** within a host (the plan is already so ordered), or
   snapshot the host's drawing list before removing anything: splicing one at a time shifts every later ordinal, and an ascending
   sweep strips the wrong pictures. A host that is rebuilt needs no strip: nothing is carried over.
-- `emit`: write the image from `fragments[fragmentId]` (the `<w:r>` with the whole drawing) at its place in the model, inside a `<w:p>` of its own (an image is a block in the model): `copy` (pasted;
-  its `fragmentId` is in no record), `moved` (away from its host; the matching `strip` removes it from the old host), `host-edited`
-  (still in place but its host is edited and rebuilt: put the run back INTO that host), `edited` (see 6.3).
+- `emit` entries that are NEW placements of the picture, written from `fragments[fragmentId]` (the `<w:r>` with the whole drawing)
+  inside a `<w:p>` of their own (an image is a block in the model): `why: 'copy'` (pasted; its `fragmentId` is in no record) and
+  `why: 'moved'` (dragged away from its host, **or its host paragraph was deleted**; the matching `strip`, if the host still exists,
+  removes the original).
+- `emit` with `why: 'host-edited'`: the picture is still in place but its host is edited and rebuilt. Put the run back INTO that
+  rebuilt host (6.7 for where).
+- `emit` with `why: 'edited'`: **NOT a new placement.** The host is untouched and still contains the drawing. Writing the picture
+  from its fragment would emit it twice. Re-emit the host verbatim with THIS drawing patched in place (6.3).
 - An image node whose host is untouched and in place, with an unchanged `sourceHash`, produces nothing: it is already in the host.
 
 Strips apply to a host wherever it is emitted, including inside a table cell or list item that is being rebuilt.
@@ -364,15 +424,17 @@ picture lifted from the middle of a sentence: it moves to the front. Accepted (s
 own provenance); they are for figure renumbering and checks. Recompute with `matchCaptions(doc.content)` after any edit. A
 Caption-styled paragraph pairs by style; otherwise by its label ("Fig. 3.", "Figure 3:", "Supplementary Fig. S2 |"). A pairing needs
 the next number in its series or a restart at 1; a gap is allowed only if something explains it (an unpaired opaque drawing between
-the figures). Accepted: section 13.
+the figures). `figures.images` counts TOP-LEVEL pictures only; a picture inside a table cell is not paired at import, so the dialog's
+"Images" row can be larger than the "(of N)" in the caption row. The dialog row key is `figureCaption` (not `caption`, which is Word's
+Caption style). Accepted: section 13.
 
 ## 8. Report and review state (what must survive)
 
 A collaborator-reviewed file holds review state the editor does not show. It lives in the package parts (keep verbatim until the revision engine, A3, owns comment editing: `comments.xml`,
 `commentsExtended.xml`, `commentsIds.xml`, `people.xml`, footnotes, endnotes, headers, footers) and in atoms: tracked changes (`w:ins`,
 `w:del`, `w:moveFrom`, `w:moveTo` as one atom each, their text only in the fragment), comment anchors (start / end / reference), and
-the formatting-change records (`rPrChange` and the like, inside paragraph XML while untouched). The report counts them honestly
-(`counts.trackedChange`, `counts.formatChange`, `counts.comment`, `commentsNotInText`); the writer must not lose any while a block is
+the formatting-change records (`rPrChange` and the like, inside paragraph XML while untouched). The report counts them as exactly as an independent census of the XML allows
+(`counts.trackedChange`, `counts.formatChange`, `counts.comment`, `commentsNotInText`; known gaps are in section 13); the writer must not lose any while a block is
 untouched or its atom is not deleted. Deleting a tracked-change chip also deletes comment anchors nested in it (5 in r01); the comment
 record stays in `comments.xml` with no anchor. `settings.xml` is kept with `trackRevisions` toggled from app state.
 
@@ -388,9 +450,10 @@ Code: `src/docx/read/numbering.ts` (header).
 
 ### 9.1 Before trusting `attrs.wordNumId`, check the definition's `w:numFmt` against the node type
 
-`wordNumId` is the numId the list was READ with and goes **stale**. If the author toggles a list between bullets and numbers (the node
-type changes, `wordNumId` does not) it names a definition of the other kind, and emitting it makes Word show numbers for a bullet list
-or the reverse. Look up `w:num` to `w:abstractNum` to the `w:lvl` for the item's level; `bullet` is valid only for a `bulletList`,
+`wordNumId` is the numId the list was READ with and can be wrong for the node. Two routes: an edit that keeps the list node but changes
+its type (the node type changes, `wordNumId` does not) leaves an id naming a definition of the other kind, and emitting it makes Word
+show numbers for a bullet list or the reverse; and the toolbar's `toggleOrderedList` builds a fresh list node, so `wordNumId` is `null`.
+The null case is handled by the same rule below (no id to trust, so choose or create one). Look up `w:num` to `w:abstractNum` to the `w:lvl` for the item's level; `bullet` is valid only for a `bulletList`,
 anything else only for an `orderedList`. On a mismatch, or a null id, choose or create a definition of the right kind. The same check
 applies to each item's own `w:numPr` in verbatim XML (3.5): toggling a list changes no paragraph, so every item still reads untouched
 while its stored `numPr` names the old kind. (The comment
@@ -434,8 +497,9 @@ style is in exactly one of the two: the document's own (it has a Word id) or bac
    that declares only `indent.left` loses a docDefault `firstLine` in the resolver.
 7. If `wordIdByAppId` is empty and `backfilled` covers every style in a package that has a `word/styles.xml`, the original part could not
    be read (a corrupt `styles.xml` falls back to the NIH preset with a warning). Keep the original part verbatim and do not rewrite it.
-8. A paragraph whose Word `w:pStyle` named a style the document does not define reads with `styleId: null`; keep its original
-   `w:pStyle` when starting from the original `<w:pPr>` (3.2).
+8. A PARAGRAPH node (not a heading; headings follow 3.4) whose Word `w:pStyle` named a style the document does not define reads with
+   `styleId: null`; keep its original `w:pStyle` when starting from the original `<w:pPr>` (3.2: node and re-read value are both null, so
+   the original is left alone).
 
 Code: `src/docx/read/styles.ts` (`StylesResult`, the writer-rules comment), `src/types.ts` (`StyleDef`).
 
@@ -484,6 +548,16 @@ None is a bug to fix in A2b unless it says so. Each was weighed and accepted.
 - **Editor view** does not float `wrap` or apply `crop`: figures render as blocks, uncropped. Attributes are stored and exported
   (6.3); this is a view-layer gap for A4 or the UI work, not a writer problem.
 - **Numbering labels** in the editor may differ from Word's for shapes neither real document has (section 14).
+- **Review state the report cannot count exactly.** A footnotes, endnotes or comments part too large to inflate is warned about
+  ("could not be read") but its tracked changes and comments are not counted. An `mc:AlternateContent` with a `Fallback` and no `Choice`
+  is never counted. `disclose`'s `unmet()` (`src/docx/read/index.ts`) is clamped at 0 on purpose and can under-count in one shape: a
+  footnote comment is absorbed when a body anchor carries no `w:id` (malformed XML, since `w:id` is required). The clamps were kept, not
+  turned into negative figures, because `unmet` is ADDED to a headline and a negative addition would be wrong; the surplus case is
+  rare enough to record. (The read-only-pieces figure is different: it is a bare subtraction and a negative shows in the dialog and the
+  summary: `preservedReadOnly`, `src/docx/fidelity.ts`.)
+- **Table revision marks** lost by an export of a structure-changed table: `tblGridChange`, and any mark on a row or cell that was
+  removed (5.3 step 7). The export warns with a count.
+- **Heading precedence** is style-over-`outlineLvl`, the inverse of Word (3.2). For a rebuilt heading the node's `level` decides.
 
 ## 14. Measurements the writer phase must TAKE (do not guess)
 

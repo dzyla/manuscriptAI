@@ -217,6 +217,24 @@ describe('FROZEN FORMATS (docs/superpowers/specs/2026-10-07-a2b-writer-contract.
     expect(structureHash(table)).toBe('020370c213ff29');
   });
 
+  // MARKS ARE IN THE HASH TOO. Adding an attribute to a mark (for example the `highlight` mark, which the style audit will extend) changes
+  // the JSON of every stored text node that carries it: r01 alone has 34 highlight marks in 22 paragraphs. This test is the one that
+  // catches it, and its failure means exactly what the comment above says, not "update the expected attrs".
+  it('a paragraph whose text carries highlight, link and fontSize marks', () => {
+    const marks = [
+      { type: 'highlight', attrs: { color: '#ffff00' } },
+      { type: 'link', attrs: { href: 'https://example.org/' } },
+      { type: 'fontSize', attrs: { sizePt: 14 } },
+    ];
+    expect(blockHash(norm({ type: 'paragraph', content: [text('Marked.', marks)] }))).toBe('12f73fdb675a26');
+  });
+
+  it('a bulletList / listItem / paragraph holding an opaqueInline (lists, items and atoms)', () => {
+    const atom: JSONContent = { type: 'opaqueInline', attrs: { kind: 'equation', label: 'equation', fragmentId: 'f1' } };
+    const list = norm({ type: 'bulletList', content: [{ type: 'listItem', content: [{ type: 'paragraph', content: [text('Item '), atom] }] }] });
+    expect(blockHash(list)).toBe('0847fb83c2adcd');
+  });
+
   it('the hash function itself, on a node that needs no schema', () => {
     expect(blockHash({ type: 'paragraph', content: [{ type: 'text', text: 'x' }] })).toBe('044d6fa92acbe6');
   });

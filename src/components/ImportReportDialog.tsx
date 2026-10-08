@@ -30,7 +30,9 @@ export function reportRows(result: Pick<ImportResult, 'report'>): ReportRow[] {
   const c = r.counts;
   const rows: ReportRow[] = [];
   const add = (key: string, label: string, value: number | undefined, note?: string): void => {
-    if (value && value > 0) rows.push({ key, label, value, ...(note ? { note } : {}) });
+    // `!== 0`, not `> 0`: a NEGATIVE figure (read-only pieces fewer than the pieces already described, which means a double count
+    // somewhere) must show as a row, not vanish the way a clamped 0 would.
+    if (value !== undefined && value !== 0) rows.push({ key, label, value, ...(note ? { note } : {}) });
   };
   add('trackedChange', 'Tracked changes', c.trackedChange);
   add('formatChange', 'Formatting changes (tracked)', c.formatChange);
@@ -61,8 +63,10 @@ export function readRows(result: Pick<ImportResult, 'report'>): ReportRow[] {
   add('image', 'Images', (c.inlineImage ?? 0) + (c.floatingImageSquare ?? 0) + (c.floatingImageOther ?? 0));
   add('citation', 'Citations', (c.nativeCitation ?? 0) + (c.externalCitation ?? 0));
   add('bibliography', 'Bibliographies', c.externalBibliography);
-  // Shown even at 0 when there are pictures: "0 of 3 paired" tells the author the pairing was tried and found nothing.
-  if (r.figures) rows.push({ key: 'caption', label: `Pictures paired with a caption (of ${r.figures.images})`, value: r.figures.captioned });
+  // Shown even at 0 when there are pictures: "0 of 3 paired" tells the author the pairing was tried and found nothing. `images` counts
+  // TOP-LEVEL pictures only (pictures inside table cells are not paired at import), so it can be smaller than the "Images" row above.
+  // The key is `figureCaption`, not `caption`: `counts.caption` is Word's Caption STYLE, which may get its own row.
+  if (r.figures) rows.push({ key: 'figureCaption', label: `Pictures paired with a caption (of ${r.figures.images})`, value: r.figures.captioned });
   return rows;
 }
 

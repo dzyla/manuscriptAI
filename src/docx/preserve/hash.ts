@@ -101,19 +101,29 @@ function skeleton(node: JSONContent): JSONContent {
  *   1. Build the `<w:tbl>` from the MODEL: rows from `tableRow`, cells from `tableCell` / `tableHeader` (`colspan` -> `gridSpan`,
  *      `rowspan` -> `vMerge` restart plus continuation cells, `colwidth` px x 15 -> `tcW` and `tblGrid`, header row -> `tblHeader`),
  *      each cell's blocks by `blockId` exactly as in the shell-reused case. The original XML is not walked row by row.
- *   2. Keep from the original, because the app cannot edit them and they do not depend on rows or columns: `tblPr` (style, borders,
- *      width, layout, look, cell margins) and, for a surviving cell, the formatting-only part of its `tcPr` (shading, borders,
- *      margins, vertical alignment, no-wrap) and of its row's `trPr` (height, cantSplit), found by CONTENT identity: a model cell
- *      holding a block whose `blockId` is inside an original `<w:tc>` inherits that cell's formatting properties. Never by position.
- *   3. A cell or row with no such match (every one the author added) copies the formatting of the nearest preceding row of the
- *      same grid column that has a match, else the nearest following (Word's own "insert row below"). This is an approximation and
- *      is not exact for shading banded by position; the export should say the table's cell formatting was approximated.
- *   4. The folded vMerge continuation cells are REGENERATED from the model's `rowspan`s (a blank `<w:tc>` with `tcW`, `vMerge` and the
- *      restart cell's formatting properties), NOT re-inserted from the original: after a row is added inside a merged region the
- *      model's `rowspan` is larger than the original's, and a continuation cell exists with no original to copy. Rows with no model
+ *   2. Keep from the original what does not depend on rows or columns and the app cannot edit: `tblPr` whole (including a
+ *      `tblPrChange`), and for a surviving cell its `tcPr` EXCEPT the structure properties the model regenerates (`gridSpan`,
+ *      `vMerge`, `hMerge`, `tcW`), for a surviving row its `trPr` except `tblHeader`. Shading, borders, margins, alignment, row
+ *      height AND the revision marks inside them (`cellIns`, `cellDel`, `cellMerge`, `tcPrChange`, `trPrChange`) travel with the cell
+ *      or row. "Surviving" is by CONTENT identity: a model cell holding a block whose `blockId` is inside an original `<w:tc>`
+ *      inherits that cell's properties (the first matched block claims it; the first model cell to claim an original cell keeps it).
+ *      Never by position.
+ *   3. A cell or row with no match (every one the author added, and every regenerated continuation cell) copies only the FORMATTING
+ *      properties of a neighbour (shd, tcBorders, tcMar, vAlign, noWrap; trHeight, cantSplit), never revision marks. Neighbour: for an
+ *      added row the nearest preceding matched row in the same grid column, else the nearest following; for an added column the
+ *      matched cell beside it in the same row (left, else right); for both, the column neighbour. An approximation; the export should
+ *      say the table's cell formatting was approximated.
+ *   4. The folded vMerge continuation cells are REGENERATED from the model's `rowspan`s (a blank `<w:tc>` with `tcW`, `vMerge` and
+ *      the restart cell's formatting properties), NOT re-inserted from the original: after a row is added inside a merged region the
+ *      model's `rowspan` is larger than the original's, and a continuation exists with no original to copy. Rows with no model
  *      cells that the original carried (`trPr` only) survive only if their neighbours do; otherwise they are dropped with the
  *      structure, and nothing in the model is lost by that.
  *   5. Every `<w:tc>` ends in a `<w:p/>` (a cell that ends in a nested table gets one appended).
+ *   6. `tblGrid` is rebuilt, so it can disagree with the kept `tblPr`: a `dxa` `tblW`, or a `fixed` `tblLayout`, is set to the rebuilt
+ *      grid's sum; a `tblGridChange` is dropped with the old grid.
+ *   7. The import headline counted the table-level revision marks (cellIns/cellDel/cellMerge as tracked changes, trPrChange /
+ *      tcPrChange / tblPrChange / tblGridChange as formatting changes). Steps 2 and 6 carry all but `tblGridChange`; marks on removed
+ *      rows or cells are lost with them. The export must warn with the number it could not carry.
  * What may NOT happen under any rule: a model block (a paragraph, list, image, nested table) disappears, a cell's content lands in
  * another cell, or the `<w:tbl>` is invalid (every row's `gridSpan` sum equals the grid width; a `vMerge` continuation sits under a
  * restart cell). Nothing of this is exercised until the writer exists; the rule is the contract for it.

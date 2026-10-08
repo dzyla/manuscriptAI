@@ -312,6 +312,9 @@ const rev = (n: number) => plural(n, 'tracked change');
  */
 function disclose(ctx: ReadContext, mainPart: string, body: Element): void {
   const { report } = ctx;
+  // This clamp is deliberate and can under-count in one shape: when the reader counted MORE than the census finds (for example a
+  // footnote comment absorbed because a body anchor carries no `w:id`), the surplus is not subtracted again and nothing is added.
+  // Recorded in the writer contract section 13; the headline is then the reader's own count, never lower than what it met.
   const unmet = (total: number, counted: number | undefined): number => Math.max(0, total - (counted ?? 0));
 
   const main = censusOf(body);
