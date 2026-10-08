@@ -1,12 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { db } from '../db/manuscriptDb';
+import { inlineAssetImages } from '../db/assetStore';
 import type { VersionSnapshot } from '../types';
 import { Clock, Plus, Trash2, RotateCcw, Eye, X, History } from 'lucide-react';
 
 interface VersionHistoryPopupProps {
   currentTitle: string;
   currentContent: string;
-  onRestore: (snapshot: VersionSnapshot) => void;
+  onRestore: (snapshot: VersionSnapshot) => void | Promise<void>;
 }
 
 function stripHtml(html: string) {
@@ -77,7 +78,8 @@ export default function VersionHistoryPopup({ currentTitle, currentContent, onRe
       name,
       timestamp: Date.now(),
       title: currentTitle,
-      content: currentContent,
+      // Self-contained copy: session blob: image URLs would be dead after a reload.
+      content: await inlineAssetImages(currentContent),
       wordCount: wc(currentContent),
     };
     await db.versionSnapshots.put(snapshot);

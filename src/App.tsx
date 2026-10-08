@@ -22,6 +22,8 @@ import { useDocumentStore } from './stores/useDocumentStore';
 import { useAIStore } from './stores/useAIStore';
 import { useSourceStore } from './stores/useSourceStore';
 import { db } from './db/manuscriptDb';
+import { inlineAssetImages, bytesToDataUrl, defaultFetchBytes } from './db/assetStore';
+import { buildWorkspaceJson } from './services/workspaceExport';
 import { migrateLegacyCitations } from './utils/migrateCitations';
 import { prefetchImages, walkNode } from './services/astExport';
 import { DocxRenderer, Packer } from './services/docxExport';
@@ -41,7 +43,7 @@ export default function App() {
   // ─── Zustand stores ────────────────────────────────────────────────────────
   const {
     title, content, saveState, citationRegistry,
-    setTitle, setContent, setSaveState,
+    setTitle, setContent, setDocJson, setSaveState,
     insertCitation: storeInsertCitation,
     removeCitation: storeRemoveCitation,
     renumberCitations: storeRenumberCitations,
@@ -50,6 +52,7 @@ export default function App() {
     resetDocument, persist: persistDocument, initialize: initDocument,
     mode, grantInstructions, grantTemplateId,
     setMode, setGrantInstructions, setGrantTemplateId,
+    loadStatus, blockedByUnreadable, lastLoad, allowOverwrite,
   } = useDocumentStore();
 
   const {
@@ -177,14 +180,21 @@ export default function App() {
     },
   ];
 
-  const handleApplyGrantTemplate = (template: GrantTemplate, html: string) => {
+  const handleApplyGrantTemplate = async (template: GrantTemplate, html: string) => {
     editorRef.current?.setContent(html);
     setContent(html);
     setMode('grant');
     setGrantTemplateId(template.id);
     setShowTemplatePicker(false);
-    persistDocument();
-    showToast(`${template.mechanism} template applied — fill in each section`, 'success');
+    allowOverwrite(); // explicit user replacement of the document
+    let saved = false;
+    try {
+      saved = await persistDocument();
+    } catch (err) {
+      console.error('Persisting the applied template failed', err);
+    }
+    if (saved) showToast(`${template.mechanism} template applied — fill in each section`, 'success');
+    else showToast('Template applied, but it could not be saved. Use "Save Workspace" to keep a copy.', 'error');
   };
 
   // Resize handler for Sidebar
@@ -244,6 +254,13 @@ export default function App() {
   // Initialize all stores on mount (loads from Dexie, migrating from localforage if needed)
   useEffect(() => {
     Promise.all([initDocument(), initAI(), initSources()]).then(() => {
+      const { lastLoad } = useDocumentStore.getState();
+      // Failed loads and unreadable rows get a persistent banner (rendered from store state below).
+      if (lastLoad.recoveredFromBackup) {
+        showToast(lastLoad.quarantined
+          ? 'Your last save could not be read. Restored the most recent backup; a protected copy of the unreadable save was kept.'
+          : 'Your last save could not be read. Restored the most recent backup. The unreadable save could not be protected and may be replaced by later saves.', 'error');
+      }
       // After loading, apply citation migration to content if needed
       const { content: loadedContent, citationRegistry: reg } = useDocumentStore.getState();
       if (Object.keys(reg).length > 0 && !loadedContent.includes('data-citation-node')) {
@@ -267,13 +284,16 @@ export default function App() {
   // Auto-save every 30s to Dexie (granular — only changed tables are written)
   useEffect(() => {
     const interval = setInterval(async () => {
+      // Never autosave before the stored document has loaded (or after loading it failed):
+      // the in-memory defaults would overwrite the user's real data.
+      if (useDocumentStore.getState().loadStatus !== 'ready') return;
       try {
-        await persistDocument();
+        const docSaved = await persistDocument();
         await persistSuggestions();
         await persistMessages();
         await persistHistory();
         await persistSources();
-        if (saveState === 'Draft') setSaveState('Auto-saved');
+        if (docSaved && saveState === 'Draft') setSaveState('Auto-saved');
       } catch (e) {
         showToast('Auto-save failed. Use "Save Workspace" to download a backup file.', 'error');
       }
@@ -287,9 +307,9 @@ export default function App() {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 's') {
         e.preventDefault();
-        handleDownload('json');
-        setSaveState('Saved');
-        showToast('Workspace saved', 'success');
+        handleDownload('json')
+          .then(ok => { if (ok) showToast('Workspace saved', 'success'); })
+          .catch(err => { console.error(err); showToast('Save Workspace failed', 'error'); });
       }
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'A') {
         e.preventDefault();
@@ -322,8 +342,8 @@ export default function App() {
     clearSources();
     setClearSourcesTrigger(n => n + 1);
 
-    // Clear Dexie tables
-    await db.documents.delete('current');
+    // Clear Dexie tables. The document row is not deleted directly: it is replaced through the
+    // repository below, so the previous document lands in the backup ring instead of vanishing.
     await db.sources.clear();
     await db.suggestions.clear();
     await db.chatHistory.clear();
@@ -332,6 +352,7 @@ export default function App() {
     // Set new content after reset
     setContent(newContent);
     editorRef.current?.setContent(newContent);
+    await persistDocument().catch(err => console.error('Saving the new manuscript failed', err));
 
     showToast('New manuscript created', 'success');
   };
@@ -550,10 +571,26 @@ export default function App() {
     }
   };
 
-  const handleAnalyzeImage = (dataUrl: string, prompt: string, contextText?: string) => {
-    const match = dataUrl.match(/^data:(image\/[a-z]+);base64,(.+)$/);
+  const handleAnalyzeImage = async (src: string, prompt: string, contextText?: string) => {
+    // Images loaded from storage are session blob: URLs; the LLM needs inline base64.
+    let dataUrl = src;
+    if (src.startsWith('blob:')) {
+      try {
+        const { mime, data } = await defaultFetchBytes(src);
+        dataUrl = bytesToDataUrl(mime, data);
+      } catch (err) {
+        console.error('Could not read image for analysis', err);
+        showToast('Could not read this image for analysis', 'error');
+        return;
+      }
+    }
+    const match = dataUrl.match(/^data:(image\/[a-z+.-]+);base64,(.+)$/);
     if (!match) return;
     const rawMime = match[1];
+    if (rawMime === 'image/svg+xml') {
+      showToast('Convert the figure to PNG or JPEG to analyse it', 'error');
+      return;
+    }
     const allowed: AttachedImage['mimeType'][] = ['image/jpeg', 'image/png', 'image/webp'];
     const mimeType: AttachedImage['mimeType'] = allowed.includes(rawMime as AttachedImage['mimeType'])
       ? (rawMime as AttachedImage['mimeType'])
@@ -782,8 +819,14 @@ export default function App() {
     if (item) {
       const handledByEditor = editorRef.current?.revertSuggestion(item.originalText, item.suggestedText);
       if (!handledByEditor) {
-        setContent(item.oldContent);
-        editorRef.current?.setContent(item.oldContent);
+        // Inline asset images first: an item from an earlier session may reference dead blob: URLs.
+        inlineAssetImages(item.oldContent).then(html => {
+          setContent(html);
+          editorRef.current?.setContent(html);
+        }).catch(err => {
+          console.error('Could not restore history content', err);
+          showToast('Could not restore the earlier content', 'error');
+        });
       }
       removeHistoryItem(historyId);
       showToast('Change reverted', 'info');
@@ -958,11 +1001,12 @@ export default function App() {
     }
   };
 
-  const doDownload = async (format: 'md' | 'docx' | 'json' | 'tex') => {
+  const doDownload = async (format: 'md' | 'docx' | 'json' | 'tex'): Promise<boolean> => {
     const currentContent = editorRef.current?.getHTML() || content;
     if (format === 'md') {
       const turndownService = new TurndownService();
-      const markdown = turndownService.turndown(currentContent);
+      // Session blob: image URLs would be dead links in the exported file: inline the bytes.
+      const markdown = turndownService.turndown(await inlineAssetImages(currentContent));
       saveAs(new Blob([markdown], { type: 'text/markdown;charset=utf-8' }), `${title.replace(/\s+/g, '_')}.md`);
     } else if (format === 'docx') {
       showToast('Exporting Word document...', 'info');
@@ -997,18 +1041,33 @@ export default function App() {
       const exportedSources = useSourceStore.getState().sources;
       // Strip API keys before export — never serialize credentials into a shareable file
       const { geminiApiKey: _g, openaiApiKey: _o, anthropicApiKey: _a, localApiKey: _l, ...safeSettings } = aiSettings;
-      const workspace = { title, content: currentContent, suggestions, history, messages, aiSettings: safeSettings, sources: exportedSources };
-      saveAs(new Blob([JSON.stringify(workspace, null, 2)], { type: 'application/json' }), 'workspace.json');
-      setSaveState('Saved');
+      // The file must be self-contained: inline asset-backed images (session blob: URLs die with the tab).
+      try {
+        const exportedContent = await inlineAssetImages(currentContent);
+        // Sequential and size-capped: history items each hold two full document copies.
+        const json = await buildWorkspaceJson(
+          { title, content: exportedContent, suggestions, messages, aiSettings: safeSettings, sources: exportedSources },
+          history,
+          inlineAssetImages,
+        );
+        saveAs(new Blob([json], { type: 'application/json' }), 'workspace.json');
+        setSaveState('Saved');
+        return true;
+      } catch (err) {
+        console.error('Workspace export failed', err);
+        showToast(`Save Workspace failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+        return false;
+      }
     }
+    return true;
   };
 
-  const handleDownload = async (format: 'md' | 'docx' | 'json' | 'tex') => {
+  const handleDownload = async (format: 'md' | 'docx' | 'json' | 'tex'): Promise<boolean> => {
     if (format !== 'json') {
       setPendingDownloadFormat(format);
-      return;
+      return true;
     }
-    await doDownload(format);
+    return doDownload(format);
   };
 
   const handleLoadWorkspace = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -1037,9 +1096,10 @@ export default function App() {
           }
           setSaveState('Saved');
           editorRef.current?.setContent(loadedContent);
-          // Persist to Dexie
-          await persistDocument();
-          showToast('Workspace loaded', 'success');
+          // Persist to Dexie (loading a workspace is an explicit replacement of the document)
+          allowOverwrite();
+          if (await persistDocument()) showToast('Workspace loaded', 'success');
+          else showToast('Workspace loaded, but it could not be saved to local storage. Use "Save Workspace" to keep a copy.', 'error');
         }
       } catch (err) {
         console.error("Invalid workspace file", err);
@@ -1055,12 +1115,19 @@ export default function App() {
     setTimeout(() => setHighlightedSuggestionId(null), 1500);
   };
 
-  const handleRestoreSnapshot = (snapshot: VersionSnapshot) => {
-    setTitle(snapshot.title);
-    setContent(snapshot.content);
-    editorRef.current?.setContent(snapshot.content);
-    showToast(`Restored snapshot: "${snapshot.name}"`, 'success');
-    setSidebarTab('chat');
+  const handleRestoreSnapshot = async (snapshot: VersionSnapshot) => {
+    // Snapshots are stored self-contained; older ones may still reference asset ids / blob: URLs.
+    try {
+      const html = await inlineAssetImages(snapshot.content);
+      setTitle(snapshot.title);
+      setContent(html);
+      editorRef.current?.setContent(html);
+      showToast(`Restored snapshot: "${snapshot.name}"`, 'success');
+      setSidebarTab('chat');
+    } catch (err) {
+      console.error('Snapshot restore failed', err);
+      showToast('Could not restore this snapshot', 'error');
+    }
   };
 
   const wordCount = stripHtml(content).split(/\s+/).filter(w => w.length > 0).length;
@@ -1105,7 +1172,7 @@ export default function App() {
                 <button onClick={() => handleDownload('md')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>Export Markdown</button>
                 <button onClick={() => handleDownload('docx')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>Export Word</button>
                 <button onClick={() => handleDownload('tex')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>Export to LaTeX (.zip)</button>
-                <button onClick={() => handleDownload('json')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg font-medium" style={{ color: 'var(--text-primary)' }}>Save Workspace</button>
+                <button onClick={() => { handleDownload('json').catch(err => { console.error(err); showToast('Save Workspace failed', 'error'); }); }} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg font-medium" style={{ color: 'var(--text-primary)' }}>Save Workspace</button>
               </div>
               <input type="file" ref={fileInputRef} onChange={handleLoadWorkspace} accept=".json,.docx,.md,.txt" className="hidden" />
             </div>
@@ -1331,6 +1398,7 @@ export default function App() {
             content={content}
             showPageGuides={mode === 'grant'}
             onChange={(html) => setContent(html)}
+            onDocChange={setDocJson}
             suggestions={suggestions}
             onSuggestionClick={handleSuggestionClick}
             onSelectionQuery={handleSelectionQuery}
@@ -1450,6 +1518,15 @@ export default function App() {
         manuscriptText={stripHtml(content)}
         aiSettings={aiSettings}
       />
+
+      {/* Persistent storage warnings (never auto-dismissed) */}
+      {(loadStatus === 'failed' || blockedByUnreadable) && (
+        <div role="alert" className="fixed top-3 left-1/2 -translate-x-1/2 z-[210] px-4 py-2.5 rounded-xl text-xs font-medium shadow-lg border bg-rose-50 text-rose-700 border-rose-200 max-w-lg">
+          ✕ {loadStatus === 'failed'
+            ? 'Your document could not be loaded. Changes will not be saved until you reload.'
+            : `Your saved document could not be opened (it may come from a newer version of the app). ${lastLoad.quarantined ? 'A protected copy was kept.' : 'A protected copy could NOT be made; the original is left untouched.'} You are seeing a blank document; changes will not be saved until you start a New Manuscript, apply a template or load a workspace file.`}
+        </div>
+      )}
 
       {/* Toast */}
       {toast && (

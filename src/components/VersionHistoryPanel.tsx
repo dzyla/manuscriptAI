@@ -1,12 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
 import { db } from '../db/manuscriptDb';
+import { inlineAssetImages } from '../db/assetStore';
 import type { VersionSnapshot } from '../types';
 import { Clock, Plus, Trash2, RotateCcw, Eye, X } from 'lucide-react';
 
 interface VersionHistoryPanelProps {
   currentTitle: string;
   currentContent: string;
-  onRestore: (snapshot: VersionSnapshot) => void;
+  onRestore: (snapshot: VersionSnapshot) => void | Promise<void>;
 }
 
 function stripHtml(html: string) {
@@ -46,7 +47,8 @@ export default function VersionHistoryPanel({ currentTitle, currentContent, onRe
       name,
       timestamp: Date.now(),
       title: currentTitle,
-      content: currentContent,
+      // Self-contained copy: session blob: image URLs would be dead after a reload.
+      content: await inlineAssetImages(currentContent),
       wordCount: wordCount(currentContent),
     };
     await db.versionSnapshots.put(snapshot);

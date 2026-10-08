@@ -7,3 +7,6 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# private calibration documents (never commit)
+fixtures/private/

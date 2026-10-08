@@ -1,8 +1,13 @@
 import { create } from 'zustand';
 import { db } from '../db/manuscriptDb';
+import { inlineAssetImages, stripAssetImageData } from '../db/assetStore';
 import type { AISettings, Suggestion, Message, HistoryItem } from '../types';
 import * as secureStorage from '../services/secureStorage';
 import { DEFAULT_MODELS } from '../services/models';
+
+/** Only this many most-recent history items are persisted with inlined image bytes. */
+export const HISTORY_INLINE_LIMIT = 50;
+let historyPersistFailureLogged = false;
 
 const DEFAULT_AI_SETTINGS: AISettings = {
   provider: 'local',
@@ -180,7 +185,45 @@ export const useAIStore = create<AIState>((set, get) => ({
 
   persistHistory: async () => {
     const { history } = get();
-    await db.historyItems.clear();
-    if (history.length > 0) await db.historyItems.bulkPut(history);
+    // History snapshots are editor HTML: after a reload their images are session blob: URLs that die
+    // with the tab. The most recent HISTORY_INLINE_LIMIT items are persisted self-contained (data: URLs)
+    // so "revert" works in a later session; older items are persisted without image bytes (asset ids
+    // only) so storage does not grow without bound.
+    const cutoff = Math.max(0, history.length - HISTORY_INLINE_LIMIT);
+    const replaced = new Map<HistoryItem, HistoryItem>();
+    const stored: HistoryItem[] = [];
+    for (let i = 0; i < history.length; i++) {
+      const h = history[i];
+      if (i < cutoff) {
+        const oldContent = stripAssetImageData(h.oldContent);
+        const newContent = stripAssetImageData(h.newContent);
+        stored.push(oldContent === h.oldContent && newContent === h.newContent ? h : { ...h, oldContent, newContent });
+        continue;
+      }
+      const [oldContent, newContent] = await Promise.all([inlineAssetImages(h.oldContent), inlineAssetImages(h.newContent)]);
+      if (oldContent === h.oldContent && newContent === h.newContent) {
+        stored.push(h);
+        continue;
+      }
+      const next = { ...h, oldContent, newContent };
+      replaced.set(h, next);
+      stored.push(next);
+    }
+    // Keep the inlined copies in memory too, so each item is converted once (identity check skips
+    // items that were replaced or removed meanwhile).
+    if (replaced.size) set(s => ({ history: s.history.map(h => replaced.get(h) ?? h) }));
+    try {
+      // One transaction: if the write fails (e.g. QuotaExceededError) it rolls back and the previously
+      // stored history stays intact instead of the table being left empty.
+      await db.transaction('rw', db.historyItems, async () => {
+        await db.historyItems.clear();
+        if (stored.length > 0) await db.historyItems.bulkPut(stored);
+      });
+    } catch (err) {
+      if (!historyPersistFailureLogged) {
+        historyPersistFailureLogged = true;
+        console.error('Could not persist suggestion history; keeping the previously stored copy:', err);
+      }
+    }
   },
 }));

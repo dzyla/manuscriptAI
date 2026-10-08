@@ -1,3 +1,6 @@
+import type { JSONContent } from '@tiptap/core';
+import type { PreservationStore } from './docx/preserve/types';
+
 export type AgentType = 'manager' | 'editor' | 'reviewer-2' | 'researcher' | 'literature-reviewer' | 'manuscript-ai' | 'citation-checker' | 'statistician' | 'consistency' | 'reporting';
 
 export interface SemanticSearchResult {
@@ -130,12 +133,75 @@ export interface ZoteroSettings {
   lastSynced?: number;
 }
 
+// ─── Document format model (spec §2.2) ────────────────────────────────────────
+
+export interface PageSetup {
+  size: 'letter' | 'a4';
+  orientation: 'portrait';
+  marginsIn: { top: number; right: number; bottom: number; left: number };
+}
+
+export interface LineSpacing {
+  /** 'auto' = multiple of single spacing; 'exact'/'atLeast' = points */
+  rule: 'auto' | 'exact' | 'atLeast';
+  value: number;
+}
+
+export interface StyleDef {
+  id: string;
+  name: string;
+  type: 'paragraph' | 'character' | 'table' | 'numbering';
+  basedOn?: string;
+  next?: string;
+  fontFamily?: string;
+  fontSizePt?: number;
+  bold?: boolean;
+  italic?: boolean;
+  color?: string;
+  lineSpacing?: LineSpacing;
+  spaceBeforePt?: number;
+  spaceAfterPt?: number;
+  indent?: { leftIn?: number; firstLineIn?: number; hangingIn?: number };
+  align?: 'left' | 'center' | 'right' | 'justify';
+  /** Category-2 properties kept verbatim from styles.xml (keepNext, tabs, borders, …) */
+  preserved?: { pPrXml?: string; rPrXml?: string };
+}
+
+export type FormatPreset = 'nih' | 'manuscript' | 'a4' | 'custom';
+
+export interface DocFormat {
+  page: PageSetup;
+  styles: Record<string, StyleDef>;
+  defaults: { fontFamily: string; fontSizePt: number };
+  preset: FormatPreset;
+}
+
+/** A style with its basedOn chain and document defaults fully applied. */
+export interface ResolvedStyle {
+  fontFamily: string;
+  fontSizePt: number;
+  bold: boolean;
+  italic: boolean;
+  color: string;
+  lineSpacing: LineSpacing;
+  spaceBeforePt: number;
+  spaceAfterPt: number;
+  indent: { leftIn: number; firstLineIn: number; hangingIn: number };
+  align: 'left' | 'center' | 'right' | 'justify';
+}
+
 // ─── Dexie row types ──────────────────────────────────────────────────────────
 
 export interface DocumentRow {
   id: 'current';
   title: string;
-  content: string;
+  /** Legacy (≤ v2) HTML body. Present only on rows not yet migrated; never written by v3 code. */
+  content?: string;
+  /** Canonical document (v3). */
+  docJson?: JSONContent;
+  format?: DocFormat;
+  comments?: CommentThread[];
+  schemaVersion?: 3;
   saveState: 'Draft' | 'Saved' | 'Auto-saved';
   citationRegistry: Record<string, number>;
   citationCounter: number;
@@ -147,6 +213,52 @@ export interface DocumentRow {
   grantInstructions?: string;
   /** id of the grant template the document was created from (enables page-budget tracking) */
   grantTemplateId?: string;
+}
+
+export interface CommentReply {
+  id: string;
+  author: string;
+  initials?: string;
+  date: string; // ISO 8601
+  text: string;
+}
+
+export interface CommentThread extends CommentReply {
+  replies: CommentReply[];
+  resolved: boolean;
+  source: 'user' | 'docx' | 'ai';
+  /** anchor text was deleted; shown in the rail's "Detached" section */
+  orphaned?: boolean;
+  /** original Word identifiers, kept for round-trip (spec §4.4) */
+  wordIds?: { id?: string; paraId?: string; durableId?: string };
+}
+
+export interface AssetRow {
+  id: string;
+  sha256: string;
+  mime: string;
+  size: number;
+  data: ArrayBuffer;
+  createdAt: number;
+}
+
+export interface DocxPackageRow {
+  documentId: 'current';
+  original: ArrayBuffer;
+  fileName: string;
+  preservation: PreservationStore;
+  importedAt: number;
+}
+
+export interface BackupRow {
+  seq?: number;
+  documentId: 'current';
+  savedAt: number;
+  row: DocumentRow;
+  /** An unreadable current row preserved for forensics; never trimmed, never a recovery candidate. */
+  quarantined?: true;
+  /** The pre-migration legacy row; never trimmed, but (unlike quarantined) a valid recovery candidate. */
+  pinned?: true;
 }
 
 export interface SourceRow extends ManuscriptSource {

@@ -1,10 +1,33 @@
 import { create } from 'zustand';
+import type { JSONContent } from '@tiptap/core';
 import { db } from '../db/manuscriptDb';
-import type { DocumentRow, DocumentMode } from '../types';
+import { createDexieRepository, type LoadedDocument } from '../db/documentRepository';
+import { htmlToDoc, docToHtml, isValidDoc } from '../extensions/schema';
+import { createFormat } from '../services/formatPresets';
+import type { CommentThread, DocFormat, DocumentMode } from '../types';
+
+export const documentRepository = createDexieRepository(db, { htmlToDoc, isValidDoc });
 
 interface DocumentState {
   title: string;
+  /** Derived HTML (never persisted). Writing it commands the editor; the editor then reports docJson. */
   content: string;
+  /** Canonical document, always produced by the editor (onDocChange) or the repository. */
+  docJson: JSONContent | null;
+  format: DocFormat;
+  comments: CommentThread[];
+  lastLoad: { migrated: boolean; recoveredFromBackup: boolean; unreadableRowPresent: boolean; quarantined: boolean };
+  /**
+   * 'loading' until initialize() finishes; 'failed' if the repository could not be read.
+   * persist() writes nothing unless 'ready', so defaults can never overwrite a document we did not load.
+   */
+  loadStatus: 'loading' | 'ready' | 'failed';
+  /**
+   * The stored document was unreadable and nothing could be recovered: the editor shows defaults.
+   * persist() refuses until an explicit user action replaces the document (New Manuscript /
+   * resetDocument, loading a workspace or applying a template → allowOverwrite()).
+   */
+  blockedByUnreadable: boolean;
   saveState: 'Draft' | 'Saved' | 'Auto-saved';
   citationRegistry: Record<string, number>;
   citationCounter: number;
@@ -15,6 +38,9 @@ interface DocumentState {
   grantTemplateId: string | null;
 
   setTitle: (title: string) => void;
+  setDocJson: (doc: JSONContent) => void;
+  setFormat: (format: DocFormat) => void;
+  setComments: (comments: CommentThread[]) => void;
   setContent: (content: string) => void;
   setSaveState: (s: DocumentState['saveState']) => void;
   setCitationRegistry: (reg: Record<string, number>) => void;
@@ -57,21 +83,36 @@ interface DocumentState {
    */
   removeFigure: (figureId: string, orderedFigureIds: string[]) => Record<string, number>;
 
-  /** Reset to blank document state. */
+  /** Reset to blank document state. An explicit user action: lifts blockedByUnreadable. */
   resetDocument: () => void;
+
+  /** The user explicitly replaced the document (workspace load, template): lift blockedByUnreadable. */
+  allowOverwrite: () => void;
 
   /** Load from Dexie, migrating from localforage if needed. */
   initialize: () => Promise<void>;
 
-  /** Persist current state to Dexie. */
-  persist: () => Promise<void>;
+  /**
+   * Persist current state to Dexie. Resolves true when the state is safely stored (written, or identical
+   * to the stored row); false when persistence was refused (not loaded, load failed, or blocked).
+   */
+  persist: () => Promise<boolean>;
 }
+
+/** Save warnings already logged this session (autosave runs every 30 s; log each problem once). */
+const reportedWarnings = new Set<string>();
 
 const DEFAULT_CONTENT = '<p>Start writing your manuscript here, or click "New Manuscript" to begin with an IMRAD template.</p>';
 
 export const useDocumentStore = create<DocumentState>((set, get) => ({
   title: 'Untitled Manuscript',
   content: DEFAULT_CONTENT,
+  docJson: null,
+  format: createFormat('nih'),
+  comments: [],
+  lastLoad: { migrated: false, recoveredFromBackup: false, unreadableRowPresent: false, quarantined: false },
+  loadStatus: 'loading',
+  blockedByUnreadable: false,
   saveState: 'Draft',
   citationRegistry: {},
   citationCounter: 0,
@@ -81,6 +122,9 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   grantInstructions: '',
   grantTemplateId: null,
 
+  setDocJson: (docJson) => set({ docJson }),
+  setFormat: (format) => set({ format, saveState: 'Draft' }),
+  setComments: (comments) => set({ comments, saveState: 'Draft' }),
   setTitle: (title) => set({ title, saveState: 'Draft' }),
   setContent: (content) => set({ content, saveState: 'Draft' }),
   setSaveState: (saveState) => set({ saveState }),
@@ -145,6 +189,9 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   resetDocument: () => set({
     title: 'Untitled Manuscript',
     content: DEFAULT_CONTENT,
+    docJson: null,
+    format: createFormat('nih'),
+    comments: [],
     saveState: 'Draft',
     citationRegistry: {},
     citationCounter: 0,
@@ -153,29 +200,63 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     mode: 'manuscript',
     grantInstructions: '',
     grantTemplateId: null,
+    blockedByUnreadable: false,
   }),
 
+  /**
+   * The user is explicitly supplying the whole document (workspace load, template apply): lifts the
+   * unreadable-document block and also clears a 'failed' load status to 'ready', since there is nothing
+   * left to protect from the defaults. A still-'loading' status is left alone (initialize() owns it).
+   */
+  allowOverwrite: () => set(s => ({ blockedByUnreadable: false, loadStatus: s.loadStatus === 'failed' ? 'ready' : s.loadStatus })),
+
   initialize: async () => {
+    let result: Awaited<ReturnType<typeof documentRepository.load>>;
     try {
-      // Try Dexie first
-      const row = await db.documents.get('current');
-      if (row) {
+      result = await documentRepository.load();
+    } catch (err) {
+      // Nothing was loaded: never let autosave write defaults over the stored document.
+      console.error('DocumentStore.initialize failed:', err);
+      set({ loadStatus: 'failed' });
+      return;
+    }
+    const lastLoad = {
+      migrated: result.migrated,
+      recoveredFromBackup: result.recoveredFromBackup,
+      unreadableRowPresent: result.unreadableRowPresent,
+      quarantined: result.quarantined,
+    };
+    try {
+      if (result.doc) {
+        const d = result.doc;
         set({
-          title: row.title,
-          content: row.content,
-          saveState: row.saveState,
-          citationRegistry: row.citationRegistry,
-          citationCounter: row.citationCounter,
-          figureRegistry: row.figureRegistry ?? {},
-          figureCounter: row.figureCounter ?? 0,
-          mode: row.mode ?? 'manuscript',
-          grantInstructions: row.grantInstructions ?? '',
-          grantTemplateId: row.grantTemplateId ?? null,
+          title: d.title,
+          content: docToHtml(d.docJson),
+          docJson: d.docJson,
+          format: d.format,
+          comments: d.comments,
+          saveState: d.saveState,
+          citationRegistry: d.citationRegistry,
+          citationCounter: d.citationCounter,
+          figureRegistry: d.figureRegistry,
+          figureCounter: d.figureCounter,
+          mode: d.mode,
+          grantInstructions: d.grantInstructions,
+          grantTemplateId: d.grantTemplateId,
+          lastLoad,
+          loadStatus: 'ready',
         });
         return;
       }
+      if (result.unreadableRowPresent) {
+        // Unreadable row, nothing recovered: the editor shows defaults, which must not be autosaved
+        // over the stored row until the user explicitly replaces the document.
+        set({ lastLoad, loadStatus: 'ready', blockedByUnreadable: true });
+        return;
+      }
+      set({ lastLoad, loadStatus: 'ready' });
 
-      // Fall back to legacy localforage
+      // Fall back to legacy localforage (pre-Dexie installs)
       const localforage = await import('localforage');
       const data: any = await localforage.default.getItem('manuscript-ai-editor-autosave');
       if (data?.content) {
@@ -183,36 +264,44 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
         set({
           title: data.title || 'Untitled Manuscript',
           content: data.content,
+          docJson: htmlToDoc(data.content),
           saveState: 'Auto-saved',
           citationRegistry: registry,
           citationCounter: Object.keys(registry).length,
         });
-        // Migrate to Dexie immediately
-        await get().persist();
-        // Clean up old key
-        await localforage.default.removeItem('manuscript-ai-editor-autosave');
+        // Migrate to Dexie immediately; drop the old key only once the copy is written.
+        if (await get().persist()) await localforage.default.removeItem('manuscript-ai-editor-autosave');
       }
     } catch (err) {
       console.error('DocumentStore.initialize failed:', err);
+      // Failed before the loaded document reached the store: treat as a failed load.
+      if (get().loadStatus === 'loading') set({ loadStatus: 'failed' });
     }
   },
 
   persist: async () => {
-    const { title, content, saveState, citationRegistry, citationCounter, figureRegistry, figureCounter, mode, grantInstructions, grantTemplateId } = get();
-    const row: DocumentRow = {
-      id: 'current',
-      title,
-      content,
-      saveState,
-      citationRegistry,
-      citationCounter,
-      figureRegistry,
-      figureCounter,
-      updatedAt: Date.now(),
-      mode,
-      grantInstructions,
-      grantTemplateId: grantTemplateId ?? undefined,
+    const s = get();
+    if (s.loadStatus !== 'ready' || s.blockedByUnreadable) return false;
+    const doc: LoadedDocument = {
+      title: s.title,
+      saveState: s.saveState,
+      docJson: s.docJson ?? htmlToDoc(s.content),
+      format: s.format,
+      comments: s.comments,
+      citationRegistry: s.citationRegistry,
+      citationCounter: s.citationCounter,
+      figureRegistry: s.figureRegistry,
+      figureCounter: s.figureCounter,
+      mode: s.mode,
+      grantInstructions: s.grantInstructions,
+      grantTemplateId: s.grantTemplateId,
     };
-    await db.documents.put(row);
+    const { warnings } = await documentRepository.save(doc);
+    for (const w of warnings) {
+      if (reportedWarnings.has(w)) continue;
+      reportedWarnings.add(w);
+      console.warn(w);
+    }
+    return true;
   },
 }));

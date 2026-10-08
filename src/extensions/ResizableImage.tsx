@@ -64,15 +64,25 @@ function ResizableImageView({ node, updateAttributes, selected, editor }: Resiza
         className="relative inline-block"
         style={{ maxWidth: '100%' }}
       >
-        <img
-          ref={imgRef}
-          src={src}
-          alt={alt || ''}
-          title={title || ''}
-          style={imgStyle}
-          className={`rounded select-none ${selected ? 'ring-2 ring-blue-500 ring-offset-1' : ''}`}
-          draggable={false}
-        />
+        {src ? (
+          <img
+            ref={imgRef}
+            src={src}
+            alt={alt || ''}
+            title={title || ''}
+            style={imgStyle}
+            className={`rounded select-none ${selected ? 'ring-2 ring-blue-500 ring-offset-1' : ''}`}
+            draggable={false}
+          />
+        ) : (
+          // Stored bytes are missing: show a placeholder without touching the node's alt/assetId.
+          <div
+            className={`rounded select-none px-4 py-6 text-xs ${selected ? 'ring-2 ring-blue-500 ring-offset-1' : ''}`}
+            style={{ border: '1px dashed var(--border)', color: 'var(--text-muted)' }}
+          >
+            [missing image]{alt ? ` ${alt}` : ''}
+          </div>
+        )}
 
         {/* Resize handle — bottom-right corner */}
         {selected && (
@@ -101,13 +111,27 @@ export const ResizableImage = Node.create({
       src:   { default: null },
       alt:   { default: '' },
       title: { default: '' },
-      width: { default: '100%' },
-      align: { default: 'center' },
+      width: {
+        default: '100%',
+        parseHTML: (el: HTMLElement) => el.style.width || el.getAttribute('width') || '100%',
+      },
+      align: {
+        default: 'center',
+        parseHTML: (el: HTMLElement) => {
+          const a = el.getAttribute('data-align');
+          return a === 'left' || a === 'center' || a === 'right' ? a : 'center';
+        },
+      },
+      assetId: {
+        default: null,
+        parseHTML: (el: HTMLElement) => el.getAttribute('data-asset-id'),
+        renderHTML: (attrs: Record<string, unknown>) => (attrs.assetId ? { 'data-asset-id': attrs.assetId } : {}),
+      },
     };
   },
 
   parseHTML() {
-    return [{ tag: 'img[src]' }];
+    return [{ tag: 'img[src]' }, { tag: 'img[data-asset-id]' }];
   },
 
   renderHTML({ HTMLAttributes }) {

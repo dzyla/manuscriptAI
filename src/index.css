@@ -426,3 +426,19 @@ mark {
   line-height: 1.5;
   letter-spacing: 0.03em;
 }
+
+/* Preserved (read-only) OOXML content: equations, footnote refs, content controls */
+.opaque-chip {
+  display: inline-block;
+  padding: 0 0.4em;
+  margin: 0 0.1em;
+  border: 1px dashed #94a3b8;
+  border-radius: 4px;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 0.85em;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  user-select: all;
+  cursor: default;
+}
+.opaque-chip.opaque-block { display: block; margin: 0.25em 0; text-align: center; }
