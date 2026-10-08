@@ -14,6 +14,7 @@ import {
 } from './specs/runMarks';
 import { OpaqueInline, OpaqueBlock } from './preserve/OpaqueNodes';
 import { OoxmlProvenance } from './preserve/OoxmlProvenance';
+import { WordNumbering } from './preserve/WordNumbering';
 
 /**
  * The document schema with no node views: safe to import from a Web Worker or
@@ -39,6 +40,7 @@ export function getSpecExtensions(): Extensions {
     OpaqueInline,
     OpaqueBlock,
     OoxmlProvenance,
+    WordNumbering,
   ];
 }
 

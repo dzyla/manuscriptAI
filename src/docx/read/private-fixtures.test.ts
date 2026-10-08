@@ -20,6 +20,7 @@ import { W_NS, isW } from './ooxml';
 import { blockChildren, readParagraph, paragraphDrafts } from './paragraphs';
 import { bodyFontSize, detectHeadings, hasHeadings, inferHeadings } from './headings';
 import { isGoogleSdt } from './sdt';
+import { groupListParagraphs, readNumbering } from './numbering';
 import type { ReadContext } from './context';
 
 const dir = new URL('../../../fixtures/private/', import.meta.url);
@@ -191,7 +192,9 @@ describe.skipIf(docs.length === 0)('private real-world documents', () => {
       nextId: () => `b${++n}`,
     };
     const body = pkg.xml(mainDocumentPart(pkg))!.getElementsByTagNameNS(W_NS, 'body')[0];
-    const blocks = blockChildren(body, ctx).filter(el => isW(el, 'p')).flatMap(p => [readParagraph(p, ctx)].flat());
+    // Lists are grouped BEFORE headings are inferred, so a bold list item is never a title candidate.
+    const flat = blockChildren(body, ctx).filter(el => isW(el, 'p')).flatMap(p => [readParagraph(p, ctx)].flat());
+    const blocks = groupListParagraphs(flat.map(node => ({ node })), readNumbering(pkg, report), ctx);
     const doc: JSONContent = { type: 'doc', content: blocks };
 
     // Both real grants style no heading at all, although their styles.xml defines Heading 1-3.
@@ -240,6 +243,74 @@ describe.skipIf(docs.length === 0)('private real-world documents', () => {
       `titles ${name}:\n` +
         found.map(c => `  [${String(c.index).padStart(3)}] L${c.level} ${c.confidence.padEnd(7)} ${JSON.stringify(c.text)}\n        evidence: ${c.evidence.join(' | ')}`).join('\n') +
         (refused.length ? '\n  refused (atom): ' + refused.map(c => `[${c.index}] ${JSON.stringify(c.text)} (${c.confidence})`).join('; ') : ''),
+    );
+  });
+
+  it.each(docs)('%s: numbering is read into lists, nothing dropped, provenance holds (counts only)', async name => {
+    const b = readFileSync(new URL(name, dir));
+    const pkg = await openPackage(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer);
+    const report = createReport();
+    let n = 0;
+    const ctx: ReadContext = {
+      pkg,
+      styles: readStyles(pkg, report),
+      report,
+      preservation: emptyPreservationStore(),
+      assets: [],
+      nextId: () => `b${++n}`,
+    };
+    const body = pkg.xml(mainDocumentPart(pkg))!.getElementsByTagNameNS(W_NS, 'body')[0];
+    const sources = blockChildren(body, ctx).filter(el => isW(el, 'p'));
+    const flat = sources.flatMap(p => [readParagraph(p, ctx)].flat());
+    const numbering = readNumbering(pkg, report);
+    const blocks = groupListParagraphs(flat.map(node => ({ node })), numbering, ctx);
+
+    const isList = (x: JSONContent) => x.type === 'bulletList' || x.type === 'orderedList';
+    const lists: Array<{ node: JSONContent; depth: number }> = [];
+    // depth counts list ancestors: a list directly in the document is depth 0, one inside a listItem of a depth-0 list is depth 1
+    const walkLists = (x: JSONContent, depth: number): void => {
+      if (isList(x)) lists.push({ node: x, depth });
+      for (const c of x.content ?? []) walkLists(c, isList(x) ? depth + 1 : depth);
+    };
+    blocks.forEach(x => walkLists(x, 0));
+    const items = lists.reduce((a, l) => a + (l.node.content ?? []).length, 0);
+    const kinds = { bullet: lists.filter(l => l.node.type === 'bulletList').length, ordered: lists.filter(l => l.node.type === 'orderedList').length };
+    const maxDepth = lists.reduce((a, l) => Math.max(a, l.depth), -1);
+    const byDepth = Object.fromEntries([...new Set(lists.map(l => l.depth))].sort().map(d => [d, lists.filter(l => l.depth === d).length]));
+    const paragraphsOut: JSONContent[] = [];
+    const collect = (x: JSONContent): void => {
+      if (x.type === 'paragraph' || x.type === 'heading') paragraphsOut.push(x);
+      else (x.content ?? []).forEach(collect);
+    };
+    blocks.forEach(collect);
+
+    // Independent count from the DOM: paragraphs with their own numPr that names a real numId (0 means "not numbered")
+    const directlyNumbered = sources.filter(p => {
+      const np = p.getElementsByTagNameNS(W_NS, 'numPr')[0];
+      const id = np?.getElementsByTagNameNS(W_NS, 'numId')[0]?.getAttributeNS(W_NS, 'val');
+      return !!np && !!id && id !== '0' && Array.from(p.childNodes).some(c => c.nodeType === 1 && isW(c as Element, 'pPr') && Array.from(c.childNodes).some(g => g.nodeType === 1 && isW(g as Element, 'numPr')));
+    }).length;
+    const numberedHeadings = flat.filter(x => x.type === 'heading' && ctx.preservation.blocks[(x.attrs!.ooxml as { blockId: string }).blockId].xml.includes('<w:numPr')).length;
+
+    // 1. no paragraph lost, duplicated or reordered, and every one still carries provenance that holds
+    expect(paragraphsOut.map(x => (x.attrs!.ooxml as { blockId: string }).blockId)).toEqual(flat.map(x => (x.attrs!.ooxml as { blockId: string }).blockId));
+    const lostProvenance = paragraphsOut.filter(x => !x.attrs?.ooxml || !isBlockUntouched(x)).length;
+    expect(lostProvenance).toBe(0);
+    // 2. every directly numbered paragraph is an item (a numbered heading stays a heading, a missing definition stays a paragraph)
+    expect(items).toBeGreaterThanOrEqual(directlyNumbered - numberedHeadings - (report.warnings.some(w => /does not contain/.test(w.message)) ? directlyNumbered : 0));
+    expect(report.counts.list ?? 0).toBe(blocks.filter(isList).length);
+    // 3. the grouped document is valid
+    expect(() => getSpecSchema().nodeFromJSON({ type: 'doc', content: blocks }).check()).not.toThrow();
+    // 4. a list item is never a heading candidate
+    const drafts = paragraphDrafts(blocks, { format: ctx.styles.format, styleIdByWordId: ctx.styles.styleIdByWordId, blocks: ctx.preservation.blocks });
+    expect(drafts.every(d => blocks[d.index].type === 'paragraph')).toBe(true);
+
+    console.log(
+      `numbering ${name}: part ${numbering.part ?? 'none'}, ${numbering.size} numIds defined, ${numbering.styleNumPr.size} styles carry numbering, ` +
+        `${directlyNumbered} paragraphs with their own numPr (${numberedHeadings} of them headings); ` +
+        `${lists.length} lists (${kinds.bullet} bullet, ${kinds.ordered} ordered), ${blocks.filter(isList).length} top-level, by depth ${JSON.stringify(byDepth)} (max depth ${maxDepth}), ${items} list items, ` +
+        `${paragraphsOut.length - flat.length === 0 ? 'all' : 'NOT all'} ${flat.length} paragraphs kept, ${lostProvenance} lost provenance, ` +
+        `complexNumbering ${report.counts.complexNumbering ?? 0} (${report.warnings.filter(w => w.feature === 'complexNumbering').length} distinct warnings), summary "${summarizeReport(report)}"`,
     );
   });
 });

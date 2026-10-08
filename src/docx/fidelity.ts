@@ -71,6 +71,7 @@ export function summarizeReport(r: ImportReport): string {
   const revisions = (c.trackedChange ?? 0) + (c.formatChange ?? 0);
   if (revisions) parts.push(plural(revisions, 'tracked change'));
   if (c.comment) parts.push(plural(c.comment, 'comment'));
+  if (c.list) parts.push(plural(c.list, 'list'));
   const cites = (c.nativeCitation ?? 0) + (c.externalCitation ?? 0);
   if (cites) parts.push(plural(cites, 'citation'));
   if (c.externalBibliography) parts.push(plural(c.externalBibliography, 'bibliography', 'bibliographies'));

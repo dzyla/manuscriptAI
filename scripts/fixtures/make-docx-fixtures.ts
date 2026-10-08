@@ -46,6 +46,11 @@
  *                   names, an enumerated one, a formatted sub-heading, a larger-font line, one led by a page break, one with a comment
  *                   anchor), plus the shapes that must NOT be detected (bold lead-in sharing a paragraph with body text, a bold
  *                   sentence mid-paragraph, a 14-word bold line, a figure label, a bookmarked title, a title with a tracked insertion)
+ *   lists.docx      word/numbering.xml with bullet, decimal, start=3, startOverride, upperRoman "(%1)" and ordinalText levels; two-level bullet
+ *                   and numbered lists, a start-3 list, a list item with a second (continuation) paragraph, a numbered list interrupted by a
+ *                   plain paragraph and resumed on the same numId, list-style (no direct numPr) items, a numbered Heading1, a missing numId,
+ *                   numId 0, a bold list item that would read as a section title, items holding a page break / an equation, a skipped
+ *                   level and a list that starts below its first level
  *   google-export.docx  Google Docs shape: goog_rdk_* w:sdt wrappers (one nested two deep) around runs, plus word/fonts/ font
  */
 process.env.TZ = 'UTC'; // must precede any Date use so zip timestamps are reproducible
@@ -198,6 +203,98 @@ const UNSTYLED_SECTIONS = `<?xml version="1.0" encoding="UTF-8" standalone="yes"
 <w:p>${run('Conclusion', bold)}<w:ins w:id="9" w:author="Reviewer" w:date="2026-01-01T00:00:00Z"><w:r><w:t xml:space="preserve"> and outlook</w:t></w:r></w:ins></w:p>
 <w:p>${run('We conclude that the pathway is required for maintenance of muscle.')}</w:p>
 <w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:body></w:document>`;
+
+// ─── lists.docx ──────────────────────────────────────────────────────────────
+
+const CT_NUMBERING = 'application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml';
+
+const lvl = (ilvl: number, fmt: string, text: string, left: number, extra = '') =>
+  `<w:lvl w:ilvl="${ilvl}"><w:start w:val="1"/><w:numFmt w:val="${fmt}"/>${extra}<w:lvlText w:val="${text}"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="${left}" w:hanging="360"/></w:pPr></w:lvl>`;
+
+const NUMBERING_LISTS = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="${W}">
+<w:abstractNum w:abstractNumId="0"><w:multiLevelType w:val="hybridMultilevel"/>${lvl(0, 'bullet', '•', 720, '<w:pStyle w:val="ListBullet"/>')}${lvl(1, 'bullet', 'o', 1440)}</w:abstractNum>
+<w:abstractNum w:abstractNumId="1"><w:multiLevelType w:val="hybridMultilevel"/>${lvl(0, 'decimal', '%1.', 720, '<w:pStyle w:val="ListNumber"/>')}${lvl(1, 'lowerLetter', '%2.', 1440)}${lvl(2, 'lowerRoman', '%3.', 2160)}</w:abstractNum>
+<w:abstractNum w:abstractNumId="2"><w:multiLevelType w:val="hybridMultilevel"/><w:lvl w:ilvl="0"><w:start w:val="3"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum>
+<w:abstractNum w:abstractNumId="3"><w:multiLevelType w:val="multilevel"/>${lvl(0, 'upperRoman', '(%1)', 720)}${lvl(1, 'ordinalText', '%1.%2', 1440)}</w:abstractNum>
+<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
+<w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>
+<w:num w:numId="3"><w:abstractNumId w:val="2"/></w:num>
+<w:num w:numId="4"><w:abstractNumId w:val="1"/></w:num>
+<w:num w:numId="5"><w:abstractNumId w:val="1"/></w:num>
+<w:num w:numId="6"><w:abstractNumId w:val="3"/></w:num>
+<w:num w:numId="7"><w:abstractNumId w:val="1"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="5"/></w:lvlOverride></w:num>
+</w:numbering>`;
+
+const STYLES_LISTS = STYLES_BODY.replace(
+  '</w:styles>',
+  `<w:style w:type="paragraph" w:styleId="ListBullet"><w:name w:val="List Bullet"/><w:basedOn w:val="Normal"/><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr></w:style>
+<w:style w:type="paragraph" w:styleId="ListNumber"><w:name w:val="List Number"/><w:basedOn w:val="Normal"/><w:pPr><w:numPr><w:numId w:val="2"/></w:numPr></w:pPr></w:style>
+<w:style w:type="paragraph" w:styleId="ListNumber2"><w:name w:val="List Number 2"/><w:basedOn w:val="ListNumber"/></w:style>
+<w:style w:type="paragraph" w:styleId="ListContinue"><w:name w:val="List Continue"/><w:basedOn w:val="Normal"/></w:style>
+</w:styles>`,
+);
+
+const num = (numId: number, ilvl: number) => `<w:numPr><w:ilvl w:val="${ilvl}"/><w:numId w:val="${numId}"/></w:numPr>`;
+/** A list paragraph. */
+const li = (text: string, numId: number, ilvl: number, extraRuns = '', pPrExtra = '') =>
+  `<w:p><w:pPr>${num(numId, ilvl)}${pPrExtra}</w:pPr>${run(text)}${extraRuns}</w:p>`;
+const plain = (text: string, pPr = '') => `<w:p>${pPr ? `<w:pPr>${pPr}</w:pPr>` : ''}${run(text)}</w:p>`;
+
+const LISTS = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="${W}" xmlns:r="${R}" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><w:body>
+${plain('Intro paragraph.')}
+${li('Bullet A', 1, 0)}
+${li('Bullet A1', 1, 1)}
+${li('Bullet A2', 1, 1)}
+${li('Bullet B', 1, 0)}
+${plain('Between lists one.')}
+${li('Step one', 2, 0)}
+${li('Step one a', 2, 1)}
+${li('Step one b', 2, 1)}
+${li('Step two', 2, 0)}
+${li('Step two a', 2, 1)}
+${plain('Between lists two.')}
+${li('Third', 3, 0)}
+${li('Fourth', 3, 0)}
+${plain('Between lists three.')}
+${li('Item with two paragraphs', 4, 0)}
+${plain('Continuation of that item.', '<w:ind w:left="720"/>')}
+${li('Next item', 4, 0)}
+${plain('Between lists four.')}
+${li('Resume one', 5, 0)}
+${li('Resume two', 5, 0)}
+${plain('Interrupting paragraph.')}
+${li('Resume three', 5, 0)}
+${li('Resume four', 5, 0)}
+${plain('Between lists five.')}
+${li('Roman one', 6, 0)}
+${li('Ordinal sub', 6, 1)}
+${plain('Between lists six.')}
+<w:p><w:pPr><w:pStyle w:val="ListBullet"/></w:pPr>${run('Style bullet')}</w:p>
+<w:p><w:pPr><w:pStyle w:val="ListNumber2"/></w:pPr>${run('Style numbered')}</w:p>
+${plain('Between lists seven.')}
+<w:p><w:pPr><w:pStyle w:val="Heading1"/>${num(2, 0)}</w:pPr>${run('Numbered heading text')}</w:p>
+${li('Missing definition', 99, 0)}
+${li('Zero numbering', 0, 0)}
+${plain('Between lists eight.')}
+<w:p><w:pPr>${num(1, 0)}</w:pPr>${run('Specific Aims', bold)}</w:p>
+${plain('We will define how muscle stress responses are coordinated across tissues and over time, and test each prediction in cultured cells and in mice.')}
+${plain('Between lists nine.')}
+${li('Item with a break', 7, 0, '<w:r><w:br w:type="page"/></w:r>')}
+${li('Item with equation', 7, 0, '<m:oMath><m:r><m:t>x</m:t></m:r></m:oMath>')}
+${plain('Between lists ten.')}
+${li('Skips down', 2, 0)}
+${li('Deep item', 2, 2)}
+${plain('Between lists eleven.')}
+${li('Starts indented', 2, 1)}
+${plain('Closing paragraph.')}
+<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:body></w:document>`;
+
+const LISTS_RELS = BODY_RELS.replace(
+  '</Relationships>',
+  `<Relationship Id="rId20" Type="${R}/numbering" Target="numbering.xml"/></Relationships>`,
+);
 
 function basePackage(
   opts: { main?: string; documentXml?: string; stylesXml?: string | null; relsXml?: string; extra?: Record<string, string | Uint8Array>; contentTypesXml?: string } = {},
@@ -389,6 +486,20 @@ const fixtures: Record<string, () => Promise<Uint8Array>> = {
 
   'unstyled-sections.docx': () =>
     build(basePackage({ documentXml: UNSTYLED_SECTIONS, stylesXml: STYLES_BODY, relsXml: BODY_RELS })),
+
+  'lists.docx': () =>
+    build(
+      basePackage({
+        documentXml: LISTS,
+        stylesXml: STYLES_LISTS,
+        relsXml: LISTS_RELS,
+        contentTypesXml: contentTypes(CT_MAIN).replace(
+          '</Types>',
+          `<Override PartName="/word/numbering.xml" ContentType="${CT_NUMBERING}"/></Types>`,
+        ),
+        extra: { 'word/numbering.xml': NUMBERING_LISTS },
+      }),
+    ),
 
   'truncated.docx': () =>
     build(basePackage({ documentXml: DOCUMENT.slice(0, DOCUMENT.indexOf('<w:t>Second') + '<w:t>Sec'.length) })),
