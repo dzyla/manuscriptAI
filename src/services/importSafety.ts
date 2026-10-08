@@ -6,14 +6,12 @@
 import type { ManuscriptDb } from '../db/manuscriptDb';
 import { inlineAssetImages } from '../db/assetStore';
 import type { VersionSnapshot } from '../types';
-
-const PLACEHOLDER = /^Start writing your manuscript here/;
+import { isBlankText } from '../db/placeholder';
 
 /** True for a document with nothing in it worth keeping: empty, or the untouched placeholder text. */
 export function isBlankHtml(html: string): boolean {
   if (/<img\b/i.test(html)) return false;
-  const text = html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-  return text === '' || (text.length < 200 && PLACEHOLDER.test(text));
+  return isBlankText(html.replace(/<[^>]*>/g, ' '));
 }
 
 /**

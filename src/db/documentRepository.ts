@@ -7,6 +7,7 @@ import { stableStringify } from '../docx/preserve/hash';
 import { collectFragmentIds, pruneFragments } from '../docx/preserve/refs';
 import type { PreservationStore } from '../docx/preserve/types';
 import { createFormat } from '../services/formatPresets';
+import { isBlankText } from './placeholder';
 
 export interface LoadedDocument {
   title: string;
@@ -165,8 +166,7 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
       n.content?.forEach(walk);
     };
     walk(converted.doc.docJson);
-    const text = parts.join('').trim();
-    return text === '' || (text.length < 200 && /^Start writing your manuscript here/.test(text));
+    return isBlankText(parts.join(''));
   }
 
   async function hydrate(doc: LoadedDocument): Promise<LoadedDocument> {

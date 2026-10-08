@@ -14,6 +14,9 @@ describe('isBlankHtml', () => {
     expect(isBlankHtml('<p></p><p> </p>')).toBe(true);
     expect(isBlankHtml('<p>Start writing your manuscript here, or click "New Manuscript" to begin with an IMRAD template.</p>')).toBe(true);
     expect(isBlankHtml('<p>Start writing your manuscript here and then a great deal of real text follows it: '.padEnd(400, 'x') + '</p>')).toBe(false);
+    // work typed INTO or after the placeholder (what happens when someone clicks the page and types) is work
+    expect(isBlankHtml('<p>Start writing your manuscript here, or click "New Manuscript" to begin with an IMRAD template.the aims are</p>')).toBe(false);
+    expect(isBlankHtml('<p>Start writing your manuscript here, or click &quot;New Manuscript&quot; to begin with an IMRAD template.</p>')).toBe(true);
     expect(isBlankHtml('<p>Aims</p>')).toBe(false);
     expect(isBlankHtml('<p></p><img src="data:image/png;base64,AAAA">')).toBe(false);
   });

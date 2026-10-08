@@ -3,6 +3,7 @@ import type { JSONContent } from '@tiptap/core';
 import { db } from '../db/manuscriptDb';
 import { createDexieRepository, type LoadedDocument } from '../db/documentRepository';
 import { hydrateAssets } from '../db/assetStore';
+import { PLACEHOLDER_TEXT } from '../db/placeholder';
 import { htmlToDoc, docToHtml, isValidDoc } from '../extensions/schema';
 import { migrateLegacyCitations } from '../utils/migrateCitations';
 import { createFormat } from '../services/formatPresets';
@@ -149,7 +150,7 @@ const reportedWarnings = new Set<string>();
 /** True from the start of an import's first save to the end of its commit and reload; `persist` writes nothing meanwhile. */
 let importInFlight = false;
 
-const DEFAULT_CONTENT = '<p>Start writing your manuscript here, or click "New Manuscript" to begin with an IMRAD template.</p>';
+const DEFAULT_CONTENT = `<p>${PLACEHOLDER_TEXT}</p>`;
 
 export const useDocumentStore = create<DocumentState>((set, get) => ({
   title: 'Untitled Manuscript',

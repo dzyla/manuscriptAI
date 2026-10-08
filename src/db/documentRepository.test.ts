@@ -758,6 +758,15 @@ describe('DocumentRepository.importDocx', () => {
     expect(JSON.stringify(slots[0].row.docJson)).toContain('real work');
   });
 
+  it('text typed into the placeholder paragraph is work, not a blank document', async () => {
+    const typed = 'Start writing your manuscript here, or click "New Manuscript" to begin with an IMRAD template.the aims of this grant are';
+    await repo.save(baseDoc(typed));
+    await repo.importDocx(plain, { title: 'x' });
+    const kept = (await repo.listBackups()).filter(b => b.replacedByImport);
+    expect(kept).toHaveLength(1);
+    expect(JSON.stringify(kept[0].row.docJson)).toContain('the aims of this grant are');
+  });
+
   it('a document with only an image, or comments, is not blank', async () => {
     const withImage: LoadedDocument = { ...baseDoc(''), docJson: htmlToDoc(`<p></p><img src="${PNG}">`) };
     await repo.save(withImage);
