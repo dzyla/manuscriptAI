@@ -26,6 +26,7 @@ import { createReport, recordFeature, type ImportReport } from '../fidelity';
 import { emptyPreservationStore, type PackageRel, type PreservationStore } from '../preserve/types';
 import { captureFragment } from '../preserve/xml';
 import { warnOnce, type AssetDraft, type ReadContext } from './context';
+import { COMMENT_WARNING, TRACKED_CHANGE_WARNING } from './opaque';
 import { readBody } from './body';
 import { inferHeadings, type HeadingCandidate } from './headings';
 import { W_NS, childElements, isW } from './ooxml';
@@ -168,70 +169,226 @@ function recordRels(ctx: ReadContext, mainPart: string, body: Element): void {
 // ─── what the report must not hide ───────────────────────────────────────────────────────────────────────────────
 
 const REVISIONS = ['ins', 'del', 'moveFrom', 'moveTo', 'cellIns', 'cellDel', 'cellMerge'];
-const FORMAT_CHANGES = ['rPrChange', 'pPrChange', 'sectPrChange', 'tblPrChange', 'trPrChange', 'tcPrChange', 'tblGridChange', 'numberingChange'];
+const FORMAT_CHANGES = [
+  'rPrChange', 'pPrChange', 'sectPrChange', 'tblPrChange', 'tblPrExChange', 'trPrChange', 'tcPrChange', 'tblGridChange', 'numberingChange',
+  'customXmlInsRangeStart', 'customXmlDelRangeStart', 'customXmlMoveFromRangeStart', 'customXmlMoveToRangeStart',
+];
 const COMMENT_ANCHORS = ['commentRangeStart', 'commentRangeEnd', 'commentReference'];
+const MC_NS = 'http://schemas.openxmlformats.org/markup-compatibility/2006';
 
 const plural = (n: number, one: string, many = one + 's') => `${n} ${n === 1 ? one : many}`;
 
-function countElements(body: Element, names: string[]): number {
-  let n = 0;
-  for (const name of names) n += body.getElementsByTagNameNS(W_NS, name).length;
-  return n;
-}
-
-function distinctCommentIds(body: Element): number {
-  const ids = new Set<string>();
-  for (const name of COMMENT_ANCHORS) {
-    const els = body.getElementsByTagNameNS(W_NS, name);
-    for (let i = 0; i < els.length; i++) ids.add(els[i].getAttributeNS(W_NS, 'id') ?? '');
-  }
-  ids.delete('');
-  return ids.size;
+interface Census {
+  revisions: number;
+  formatting: number;
+  /** Distinct comment ids anchored in the part. */
+  commentIds: Set<string>;
 }
 
 /**
+ * Revisions, formatting changes and comment anchors under `root`, counted directly from the XML. An `mc:AlternateContent` holds
+ * the same content twice (a DrawingML `mc:Choice` and its VML `mc:Fallback`, as for a text box); only the Choice is counted, so one
+ * tracked insertion in a text box is one.
+ */
+function censusOf(root: Element): Census {
+  const rev = new Set(REVISIONS);
+  const fmt = new Set(FORMAT_CHANGES);
+  const cmt = new Set(COMMENT_ANCHORS);
+  const out: Census = { revisions: 0, formatting: 0, commentIds: new Set() };
+  const walk = (el: Element): void => {
+    for (let c = el.firstChild; c; c = c.nextSibling) {
+      if (c.nodeType !== 1) continue;
+      const e = c as Element;
+      if (e.namespaceURI === MC_NS && e.localName === 'Fallback') continue;
+      if (e.namespaceURI === W_NS) {
+        if (rev.has(e.localName)) out.revisions++;
+        else if (fmt.has(e.localName)) out.formatting++;
+        else if (cmt.has(e.localName)) {
+          const id = e.getAttributeNS(W_NS, 'id');
+          if (id) out.commentIds.add(id); // an anchor with no id names no comment
+        }
+      }
+      walk(e);
+    }
+  };
+  walk(root);
+  return out;
+}
+
+type SidecarKind = 'footnotes' | 'endnotes' | 'headers and footers' | 'comments';
+
+/** The parts other than the body that can hold review state, with what kind each is. A footnotes/endnotes/comments part found only by its conventional name still counts. */
+function sidecarParts(pkg: DocxPackage, mainPart: string): Array<{ part: string; kind: SidecarKind }> {
+  const out: Array<{ part: string; kind: SidecarKind }> = [];
+  const seen = new Set<string>();
+  const add = (part: string, kind: SidecarKind): void => {
+    if (!seen.has(part)) {
+      seen.add(part);
+      out.push({ part, kind });
+    }
+  };
+  const find = (suffix: string, conventional: string | null, kind: SidecarKind): void => {
+    const related = relatedParts(pkg, mainPart, suffix);
+    for (const part of related) add(part, kind);
+    if (!related.length && conventional && pkg.names().includes(conventional)) add(conventional, kind);
+  };
+  find('footnotes', 'word/footnotes.xml', 'footnotes');
+  find('endnotes', 'word/endnotes.xml', 'endnotes');
+  find('header', null, 'headers and footers');
+  find('footer', null, 'headers and footers');
+  find('comments', 'word/comments.xml', 'comments');
+  return out;
+}
+
+/** Notes that are not Word's own separators: a footnote or endnote with text in it. */
+function realNotes(root: Element): number {
+  let n = 0;
+  for (const name of ['footnote', 'endnote']) {
+    const els = root.getElementsByTagNameNS(W_NS, name);
+    for (let i = 0; i < els.length; i++) {
+      const type = els[i].getAttributeNS(W_NS, 'type');
+      if (!type || type === 'normal') n++;
+    }
+  }
+  return n;
+}
+
+const rev = (n: number) => plural(n, 'tracked change');
+
+/**
  * The reader counts a revision or a comment when it meets it as a piece of a paragraph. Ones that sit anywhere else (on a
- * paragraph mark or a table row, nested in another revision, inside a content control) are kept with the piece that holds them,
- * but nothing would count them. The body is counted directly, independently of the reading, and what the reading missed is ADDED
- * to the totals, so a headline number is the number in the document, and a warning says how many of them are not separate pieces.
- * (Counting only what was met would make "32 tracked changes" mean "at least 32".)
+ * paragraph mark or a table row, nested in another revision, inside a content control, or in a footnote, header or the comments
+ * part) are kept with the piece or part that holds them, but nothing would count them. The document is counted directly,
+ * independently of the reading, and what the reading missed is ADDED to the totals, so a headline number is the number in the
+ * document, and a warning says how many of them are not separate pieces. (Counting only what was met would make "32 tracked
+ * changes" mean "at least 32".) Calling it again changes nothing: the arithmetic finds nothing unmet and the warnings dedupe.
  */
 function disclose(ctx: ReadContext, mainPart: string, body: Element): void {
   const { report } = ctx;
   const unmet = (total: number, counted: number | undefined): number => Math.max(0, total - (counted ?? 0));
 
-  const revisions = unmet(countElements(body, REVISIONS), report.counts.trackedChange);
-  if (revisions) {
-    recordFeature(report, 'trackedChange', revisions);
+  const main = censusOf(body);
+  const sidecars: Array<{ kind: SidecarKind; census: Census; notes: number; records: Set<string> }> = [];
+  const unreadable: string[] = [];
+  for (const { part, kind } of sidecarParts(ctx.pkg, mainPart)) {
+    let doc: Document | undefined;
+    try {
+      doc = ctx.pkg.xml(part);
+    } catch {
+      unreadable.push(part);
+      continue;
+    }
+    if (!doc) continue;
+    const records = new Set<string>();
+    if (kind === 'comments') {
+      const els = doc.getElementsByTagNameNS(W_NS, 'comment');
+      for (let i = 0; i < els.length; i++) {
+        const id = els[i].getAttributeNS(W_NS, 'id');
+        if (id) records.add(id);
+      }
+    }
+    sidecars.push({ kind, census: censusOf(doc.documentElement), notes: kind === 'footnotes' || kind === 'endnotes' ? realNotes(doc.documentElement) : 0, records });
+  }
+  if (unreadable.length) {
+    warnOnce(
+      report,
+      'part',
+      `${plural(unreadable.length, 'part')} of the document (${unreadable.join(', ')}) could not be read, so any tracked changes or comments in ${unreadable.length === 1 ? 'it' : 'them'} could not be counted. ${unreadable.length === 1 ? 'It is' : 'They are'} kept in the file.`,
+      3,
+    );
+  }
+  const where = (pick: (c: Census) => number): string =>
+    (['footnotes', 'endnotes', 'headers and footers', 'comments'] as SidecarKind[])
+      .map(kind => [kind, sidecars.filter(x => x.kind === kind).reduce((n, x) => n + pick(x.census), 0)] as const)
+      .filter(([, n]) => n > 0)
+      .map(([kind, n]) => `${n} in ${kind}`)
+      .join(', ');
+
+  // tracked changes
+  const outsideRevisions = sidecars.reduce((n, x) => n + x.census.revisions, 0);
+  const revisions = unmet(main.revisions + outsideRevisions, report.counts.trackedChange);
+  const inBody = unmet(main.revisions, report.counts.trackedChange);
+  if (revisions) recordFeature(report, 'trackedChange', revisions);
+  if (inBody) {
     warnOnce(
       report,
       'trackedChange',
-      `${plural(revisions, 'tracked change')} ${revisions === 1 ? 'sits' : 'sit'} on a paragraph mark or table row, or inside other preserved content. ${revisions === 1 ? 'It is' : 'They are'} counted above and kept in the file, but ${revisions === 1 ? 'is' : 'are'} not shown as separate pieces.`,
+      `${rev(inBody)} ${inBody === 1 ? 'sits' : 'sit'} on a paragraph mark or table row, or inside other preserved content. ${inBody === 1 ? 'It is' : 'They are'} counted above and kept in the file, but ${inBody === 1 ? 'is' : 'are'} not shown as separate pieces.`,
       3,
     );
   }
-  const formatting = unmet(countElements(body, FORMAT_CHANGES), report.counts.formatChange);
-  if (formatting) {
-    recordFeature(report, 'formatChange', formatting);
+  if (outsideRevisions) {
+    warnOnce(
+      report,
+      'trackedChange',
+      `${rev(outsideRevisions)} (${where(c => c.revisions)}) sit outside the main text. ${outsideRevisions === 1 ? 'It is' : 'They are'} counted above and kept in the file, but ${outsideRevisions === 1 ? 'is' : 'are'} not shown here.`,
+      3,
+    );
+  }
+  if (report.counts.trackedChange) warnOnce(report, 'trackedChange', TRACKED_CHANGE_WARNING, 3);
+
+  // formatting changes
+  const outsideFormatting = sidecars.reduce((n, x) => n + x.census.formatting, 0);
+  const formatting = unmet(main.formatting + outsideFormatting, report.counts.formatChange);
+  const formattingInBody = unmet(main.formatting, report.counts.formatChange);
+  if (formatting) recordFeature(report, 'formatChange', formatting);
+  if (formattingInBody) {
     warnOnce(
       report,
       'formatChange',
-      `${plural(formatting, 'formatting change')} ${formatting === 1 ? 'sits' : 'sit'} on a paragraph mark, in a table, or inside other preserved content (such as a tracked insertion). ${formatting === 1 ? 'It is' : 'They are'} counted above and kept in the file, but ${formatting === 1 ? 'is' : 'are'} not shown as separate pieces.`,
+      `${plural(formattingInBody, 'formatting change')} ${formattingInBody === 1 ? 'sits' : 'sit'} on a paragraph mark, in a table, or inside other preserved content (such as a tracked insertion). ${formattingInBody === 1 ? 'It is' : 'They are'} counted above and kept in the file, but ${formattingInBody === 1 ? 'is' : 'are'} not shown as separate pieces.`,
       3,
     );
   }
-  const comments = unmet(distinctCommentIds(body), report.counts.comment);
-  if (comments) {
-    recordFeature(report, 'comment', comments);
+  if (outsideFormatting) {
     warnOnce(
       report,
-      'comment',
-      `${plural(comments, 'comment')} ${comments === 1 ? 'is' : 'are'} anchored inside other preserved content (a content control or a tracked change). ${comments === 1 ? 'It is' : 'They are'} counted above and kept in the file, but ${comments === 1 ? 'is' : 'are'} not shown as separate anchors.`,
+      'formatChange',
+      `${plural(outsideFormatting, 'formatting change')} (${where(c => c.formatting)}) sit outside the main text. ${outsideFormatting === 1 ? 'It is' : 'They are'} counted above and kept in the file, but ${outsideFormatting === 1 ? 'is' : 'are'} not shown here.`,
       3,
     );
   }
 
-  if (report.counts.footnoteRef || report.counts.endnoteRef) {
+  // comments: anchored in the body, anchored elsewhere (a footnote, a header), or recorded in the comments part with no anchor at all
+  const anchored = new Set(main.commentIds);
+  for (const x of sidecars) if (x.kind !== 'comments') x.census.commentIds.forEach(id => anchored.add(id));
+  const anchoredElsewhere = [...anchored].filter(id => !main.commentIds.has(id)).length;
+  const records = new Set<string>();
+  for (const x of sidecars) x.records.forEach(id => records.add(id));
+  const unanchored = [...records].filter(id => !anchored.has(id)).length;
+  const comments = unmet(anchored.size + unanchored, report.counts.comment);
+  const commentsInBody = unmet(main.commentIds.size, report.counts.comment);
+  if (comments) recordFeature(report, 'comment', comments);
+  if (commentsInBody) {
+    warnOnce(
+      report,
+      'comment',
+      `${plural(commentsInBody, 'comment')} ${commentsInBody === 1 ? 'is' : 'are'} anchored inside other preserved content (a content control or a tracked change). ${commentsInBody === 1 ? 'It is' : 'They are'} counted above and kept in the file, but ${commentsInBody === 1 ? 'is' : 'are'} not shown as separate anchors.`,
+      3,
+    );
+  }
+  if (anchoredElsewhere) {
+    warnOnce(
+      report,
+      'comment',
+      `${plural(anchoredElsewhere, 'comment')} ${anchoredElsewhere === 1 ? 'is' : 'are'} anchored only in a footnote, endnote, header or footer. ${anchoredElsewhere === 1 ? 'It is' : 'They are'} counted above and kept in the file, but ${anchoredElsewhere === 1 ? 'is' : 'are'} not shown here.`,
+      3,
+    );
+  }
+  if (unanchored) {
+    warnOnce(
+      report,
+      'comment',
+      `${plural(unanchored, 'comment')} in the comments part ${unanchored === 1 ? 'has' : 'have'} no anchor in the text. ${unanchored === 1 ? 'It is' : 'They are'} counted above and kept in the file, but ${unanchored === 1 ? 'is' : 'are'} not shown here.`,
+      3,
+    );
+  }
+  if (report.counts.comment) warnOnce(report, 'comment', COMMENT_WARNING, 3);
+
+  // footnotes and endnotes: a note with text in it is not shown, whether or not its marker survived as an atom of its own (a marker
+  // added with Track Changes on sits inside the tracked insertion)
+  const notes = sidecars.reduce((n, x) => n + x.notes, 0);
+  if (notes || report.counts.footnoteRef || report.counts.endnoteRef) {
     warnOnce(
       report,
       'footnoteRef',
@@ -266,7 +423,8 @@ function describedAtoms(doc: JSONContent): NonNullable<ImportReport['described']
   const close = (): void => {
     const field = open.pop()!;
     if (field.citation) out.citationField += field.pieces;
-    if (open.length) open[open.length - 1].pieces += field.pieces;
+    // A citation nested in a citation was counted when it closed; only a field of another kind is part of its parent's pieces.
+    if (open.length && !field.citation) open[open.length - 1].pieces += field.pieces;
   };
   const walk = (n: JSONContent): void => {
     if (n.type === 'opaqueInline' || n.type === 'opaqueBlock') {

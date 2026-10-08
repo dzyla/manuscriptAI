@@ -522,6 +522,7 @@ describe('review state is reported honestly', () => {
     expect(com).toHaveLength(1);
     expect(com[0].message).toMatch(/^1 comment is anchored inside/);
     expect(rev[0].category).toBe(3);
+    expect(com[0].category).toBe(3);
     const s = summarizeReport(r.report);
     expect(s).toContain('2 tracked changes');
     expect(s).toContain('1 comment');
@@ -617,5 +618,257 @@ describe('adversarial documents', () => {
     expect(copy.report).toEqual(r.report);
     expect(copy.doc).toEqual(r.doc);
     expect(copy.preservation).toEqual(r.preservation);
+  });
+});
+
+// ─── review state outside the main text ──────────────────────────────────────────────────────────────────────
+
+describe('review state in the parts other than the body', () => {
+  const REVIEWED = (id: number, inner: string) => `<w:ins w:id="${id}" w:author="A" w:date="2026-01-01T00:00:00Z">${inner}</w:ins>`;
+  const note = (id: number, inner: string) => `<w:footnote w:id="${id}"><w:p>${inner}</w:p></w:footnote>`;
+  const SEPARATORS =
+    '<w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote><w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>';
+  const footnotes = (inner: string) => `<w:footnotes ${W}>${SEPARATORS}${inner}</w:footnotes>`;
+  const FN_REL = `<Relationship Id="rId31" Type="${R_TYPE}/footnotes" Target="footnotes.xml"/>`;
+  const plain = `<w:p>${wRun('Body text only.')}</w:p>${SECT}`;
+
+  it('a footnote added with Track Changes on: the marker is inside the insertion, and the note text and its revision are still reported', async () => {
+    const r = await readDocx(
+      await pack(
+        `<w:p>${wRun('Claim')}${REVIEWED(1, '<w:r><w:footnoteReference w:id="2"/></w:r>')}${wRun(' end.')}</w:p>${SECT}`,
+        { 'word/footnotes.xml': footnotes(note(2, REVIEWED(3, '<w:r><w:t>Added source.</w:t></w:r>'))) },
+        FN_REL,
+      ),
+    );
+    expect(r.report.counts.footnoteRef).toBeUndefined(); // the marker is inside the tracked insertion's atom
+    expect(r.report.counts.trackedChange).toBe(2); // the insertion of the marker, and the insertion of the note's text
+    expect(r.report.warnings.some(w => w.feature === 'footnoteRef' && w.category === 3)).toBe(true);
+    const w = r.report.warnings.filter(x => x.feature === 'trackedChange' && /outside the main text/.test(x.message));
+    expect(w).toHaveLength(1);
+    expect(w[0].message).toMatch(/^1 tracked change \(1 in footnotes\) sit outside/);
+    expect(summarizeReport(r.report)).toContain('2 tracked changes');
+  });
+
+  it('a tracked insertion and deletion in a footnote of an otherwise untouched body are counted and located', async () => {
+    const r = await readDocx(
+      await pack(plain, { 'word/footnotes.xml': footnotes(note(2, REVIEWED(3, '<w:r><w:t>a</w:t></w:r>') + '<w:del w:id="4"><w:r><w:delText>b</w:delText></w:r></w:del>')) }, FN_REL),
+    );
+    expect(r.report.counts.trackedChange).toBe(2);
+    expect(r.report.warnings.some(w => /^2 tracked changes \(2 in footnotes\)/.test(w.message))).toBe(true);
+    expect(r.report.warnings.some(w => w.message === 'Tracked changes are kept as read-only pieces for now; their text is not shown or editable here.')).toBe(true);
+    expect(summarizeReport(r.report)).toContain('2 tracked changes');
+    expect(summarizeReport(r.report)).not.toBe('Imported 1 warning');
+  });
+
+  it('revisions and formatting changes in a header and in an endnote are located, each by where it is', async () => {
+    const r = await readDocx(
+      await pack(
+        plain,
+        {
+          'word/header1.xml': `<w:hdr ${W}><w:p>${REVIEWED(1, '<w:r><w:t>h</w:t></w:r>')}</w:p></w:hdr>`,
+          'word/endnotes.xml': `<w:endnotes ${W}>${SEPARATORS.replace(/footnote/g, 'endnote')}<w:endnote w:id="2"><w:p><w:r><w:rPr><w:b/><w:rPrChange w:id="5"><w:rPr/></w:rPrChange></w:rPr><w:t>e</w:t></w:r></w:p></w:endnote></w:endnotes>`,
+        },
+        `<Relationship Id="rId7" Type="${R_TYPE}/header" Target="header1.xml"/><Relationship Id="rId8" Type="${R_TYPE}/endnotes" Target="endnotes.xml"/>`,
+      ),
+    );
+    expect(r.report.counts.trackedChange).toBe(1);
+    expect(r.report.counts.formatChange).toBe(1);
+    expect(r.report.warnings.some(w => /^1 tracked change \(1 in headers and footers\)/.test(w.message))).toBe(true);
+    expect(r.report.warnings.some(w => /^1 formatting change \(1 in endnotes\)/.test(w.message))).toBe(true);
+    expect(r.report.warnings.some(w => w.feature === 'footnoteRef')).toBe(true); // the endnote has text
+  });
+
+  it('a footnotes part holding only Word\'s separators is nothing to report', async () => {
+    const r = await readDocx(await pack(plain, { 'word/footnotes.xml': footnotes('') }, FN_REL));
+    expect(r.report.warnings.filter(w => w.feature === 'footnoteRef')).toEqual([]);
+    expect(r.report.counts.trackedChange).toBeUndefined();
+  });
+
+  it('a footnotes part is found by its conventional name when the relationship is missing', async () => {
+    const r = await readDocx(await pack(plain, { 'word/footnotes.xml': footnotes(note(2, REVIEWED(3, '<w:r><w:t>x</w:t></w:r>'))) }));
+    expect(r.report.counts.trackedChange).toBe(1);
+  });
+
+  it('a footnote part that cannot be read is said so, and the import goes on', async () => {
+    const r = await readDocx(await pack(plain, { 'word/footnotes.xml': '<w:footnotes' }, FN_REL));
+    expect(r.report.warnings.filter(w => /could not be read/.test(w.message) && /word\/footnotes\.xml/.test(w.message))).toHaveLength(1);
+    expect(r.report.warnings.find(w => /could not be read/.test(w.message))!.category).toBe(3);
+  });
+
+  it('a comment anchored only in a footnote is counted, and the report says where it is', async () => {
+    const r = await readDocx(
+      await pack(
+        plain,
+        { 'word/footnotes.xml': footnotes(note(2, '<w:commentRangeStart w:id="9"/><w:r><w:t>n</w:t></w:r><w:commentRangeEnd w:id="9"/>')) },
+        FN_REL,
+      ),
+    );
+    expect(r.report.counts.comment).toBe(1);
+    const w = r.report.warnings.filter(x => x.feature === 'comment' && /anchored only in a footnote/.test(x.message));
+    expect(w).toHaveLength(1);
+    expect(w[0].category).toBe(3);
+    expect(r.report.warnings.some(x => x.message.startsWith('Comments are kept as read-only anchors'))).toBe(true);
+    expect(summarizeReport(r.report)).toContain('1 comment');
+  });
+
+  it('comment records with no anchor in the text are counted, and only those: records that are anchored are not counted twice', async () => {
+    const comments = (ids: number[]) => `<w:comments ${W}>${ids.map(i => `<w:comment w:id="${i}" w:author="A"><w:p><w:r><w:t>c</w:t></w:r></w:p></w:comment>`).join('')}</w:comments>`;
+    const CM_REL = `<Relationship Id="rId9" Type="${R_TYPE}/comments" Target="comments.xml"/>`;
+    const none = await readDocx(await pack(plain, { 'word/comments.xml': comments([0, 1, 2, 3]) }, CM_REL));
+    expect(none.report.counts.comment).toBe(4);
+    expect(none.report.warnings.filter(w => /^4 comments in the comments part have no anchor/.test(w.message))).toHaveLength(1);
+    expect(summarizeReport(none.report)).toContain('4 comments');
+    expect(summarizeReport(none.report)).not.toBe('Imported document');
+
+    const some = await readDocx(
+      await pack(
+        `<w:p><w:commentRangeStart w:id="0"/>${wRun('a')}<w:commentRangeEnd w:id="0"/><w:r><w:commentReference w:id="0"/></w:r></w:p>${SECT}`,
+        { 'word/comments.xml': comments([0, 1, 2]) },
+        CM_REL,
+      ),
+    );
+    expect(some.report.counts.comment).toBe(3);
+    expect(some.report.warnings.filter(w => /^2 comments in the comments part have no anchor/.test(w.message))).toHaveLength(1);
+
+    const all = await readDocx(
+      await pack(
+        `<w:p><w:commentRangeStart w:id="0"/>${wRun('a')}<w:commentRangeEnd w:id="0"/><w:r><w:commentReference w:id="0"/></w:r></w:p>${SECT}`,
+        { 'word/comments.xml': comments([0]) },
+        CM_REL,
+      ),
+    );
+    expect(all.report.counts.comment).toBe(1);
+    expect(all.report.warnings.filter(w => /no anchor in the text/.test(w.message))).toEqual([]);
+  });
+
+  it('a comment anchor with no id names no comment', async () => {
+    const r = await readDocx(await pack(`<w:p><w:sdt><w:sdtContent><w:commentRangeStart/>${wRun('x')}</w:sdtContent></w:sdt></w:p>${SECT}`));
+    expect(r.report.counts.comment).toBeUndefined();
+    expect(r.report.warnings.filter(w => w.feature === 'comment')).toEqual([]);
+  });
+});
+
+describe('counting that must not over-report', () => {
+  const MC = 'http://schemas.openxmlformats.org/markup-compatibility/2006';
+  const ins = (id: number) => `<w:ins w:id="${id}" w:author="A" w:date="2026-01-01T00:00:00Z"><w:r><w:t>boxed</w:t></w:r></w:ins>`;
+
+  it('a text box is stored twice (DrawingML choice and VML fallback); a tracked insertion in it is one tracked change', async () => {
+    const r = await readDocx(
+      await pack(
+        `<w:p><w:r><mc:AlternateContent xmlns:mc="${MC}"><mc:Choice Requires="wps"><w:drawing><w:txbxContent><w:p>${ins(1)}</w:p></w:txbxContent></w:drawing></mc:Choice>` +
+          `<mc:Fallback><w:pict><w:txbxContent><w:p>${ins(2)}</w:p></w:txbxContent></w:pict></mc:Fallback></mc:AlternateContent></w:r></w:p>${SECT}`,
+      ),
+    );
+    expect(r.report.counts.trackedChange).toBe(1);
+    expect(summarizeReport(r.report)).toContain('1 tracked change');
+    expect(summarizeReport(r.report)).not.toContain('2 tracked');
+  });
+
+  it('a formatting change inside a tracked insertion, a table row property change and a custom-XML revision are each one formatting change', async () => {
+    const insRpr = await readDocx(
+      await pack(
+        `<w:p><w:ins w:id="1" w:author="A"><w:r><w:rPr><w:b/><w:rPrChange w:id="2" w:author="A"><w:rPr/></w:rPrChange></w:rPr><w:t>x</w:t></w:r></w:ins></w:p>${SECT}`,
+      ),
+    );
+    expect(insRpr.report.counts.trackedChange).toBe(1);
+    expect(insRpr.report.counts.formatChange).toBe(1);
+    const w = insRpr.report.warnings.filter(x => x.feature === 'formatChange' && /^1 formatting change sits /.test(x.message));
+    expect(w).toHaveLength(1);
+    expect(w[0].category).toBe(3);
+    expect(w[0].message).toMatch(/counted above and kept in the file/);
+    expect(summarizeReport(insRpr.report)).toContain('2 tracked changes');
+
+    const row = await readDocx(
+      await pack(
+        `<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="2000"/></w:tblGrid><w:tr><w:tblPrEx><w:tblPrExChange w:id="3" w:author="A"><w:tblPrEx/></w:tblPrExChange></w:tblPrEx><w:tc><w:p>${wRun('c')}</w:p></w:tc></w:tr></w:tbl>${SECT}`,
+      ),
+    );
+    expect(row.report.counts.formatChange).toBe(1);
+    expect(summarizeReport(row.report)).not.toBe('Imported 1 warning');
+
+    const custom = await readDocx(await pack(`<w:p>${wRun('t')}</w:p><w:customXmlInsRangeStart w:id="4" w:author="A"/>${SECT}`));
+    expect(custom.report.counts.formatChange).toBe(1);
+  });
+});
+
+describe('fields: nesting, unfinished fields and the preserved total', () => {
+  const f = (type: string) => `<w:r><w:fldChar w:fldCharType="${type}"/></w:r>`;
+  const code = (t: string) => `<w:r><w:instrText xml:space="preserve">${t}</w:instrText></w:r>`;
+  const cite = ' ADDIN ZOTERO_ITEM CSL_CITATION {} ';
+
+  it('a citation nested in a citation is counted once, and a separate cross-reference field is still "other preserved"', async () => {
+    const inner = f('begin') + code(cite) + f('separate') + wRun('[2]') + f('end');
+    const outer = f('begin') + code(cite) + f('separate') + inner + f('end');
+    const pageref = f('begin') + code(' PAGEREF x ') + f('separate') + wRun('3') + f('end');
+    const r = await readDocx(await pack(`<w:p>${outer}${wRun(' ')}${pageref}</w:p>${SECT}`));
+    expect(atomsOf(r.doc)).toHaveLength(12);
+    expect(r.report.described!.citationField).toBe(8);
+    expect(r.report.described!.citationField).toBeLessThanOrEqual(r.report.byCategory[3]);
+    expect(summarizeReport(r.report)).toContain('4 other preserved read-only');
+  });
+
+  it('a cross-reference nested inside a citation belongs to the citation', async () => {
+    const pageref = f('begin') + code(' PAGEREF x ') + f('separate') + wRun('3') + f('end');
+    const r = await readDocx(await pack(`<w:p>${f('begin')}${code(cite)}${f('separate')}${pageref}${f('end')}</w:p>${SECT}`));
+    expect(atomsOf(r.doc)).toHaveLength(8);
+    expect(r.report.described!.citationField).toBe(8);
+    expect(summarizeReport(r.report)).not.toContain('preserved read-only');
+  });
+
+  it('a citation field that never reaches its end is still described by the citation count', async () => {
+    const r = await readDocx(await pack(`<w:p>${f('begin')}${code(cite)}${f('separate')}${wRun('[1]')}</w:p>${SECT}`));
+    expect(atomsOf(r.doc)).toHaveLength(3);
+    expect(r.report.described!.citationField).toBe(3);
+  });
+
+  it('a citation and a bibliography in one document give one field warning, and the warning count is the number of distinct messages', async () => {
+    const bib = f('begin') + code(' ADDIN ZOTERO_BIBL {} CSL_BIBLIOGRAPHY ') + f('separate') + wRun('refs') + f('end');
+    const one = f('begin') + code(cite) + f('separate') + wRun('[1]') + f('end');
+    const r = await readDocx(await pack(`<w:p>${one}</w:p><w:p>${bib}</w:p>${SECT}`));
+    expect(r.report.counts.externalCitation).toBe(1);
+    expect(r.report.counts.externalBibliography).toBe(1);
+    expect(r.report.warnings.filter(w => /Reference-manager fields/.test(w.message))).toHaveLength(1);
+    expect(new Set(r.report.warnings.map(w => w.message)).size).toBe(r.report.warnings.length);
+  });
+});
+
+describe('relationships and package parts in unusual shapes', () => {
+  it('a relationship used only inside a block-level atom (no paragraph holds it) is still recorded', async () => {
+    const r = await readDocx(
+      await pack(
+        `<w:sdt><w:sdtContent><w:p><w:hyperlink r:id="rId5">${wRun('link')}</w:hyperlink></w:p></w:sdtContent></w:sdt>${SECT}`,
+        {},
+        `<Relationship Id="rId5" Type="${R_TYPE}/hyperlink" Target="https://example.org/x" TargetMode="External"/>`,
+      ),
+    );
+    expect(Object.keys(r.preservation.blocks)).toHaveLength(0);
+    expect(r.preservation.rels).toEqual({ rId5: { id: 'rId5', type: `${R_TYPE}/hyperlink`, target: 'https://example.org/x', targetMode: 'External' } });
+  });
+
+  it('unreadable relationships do not stop the import; the author is told the links and pictures could not be listed', async () => {
+    const bytes = await pack(`<w:p><w:hyperlink r:id="rId5">${wRun('link')}</w:hyperlink></w:p>${SECT}`);
+    const zip = await JSZip.loadAsync(bytes);
+    zip.file('word/_rels/document.xml.rels', '<Relationships');
+    const r = await readDocx((await zip.generateAsync({ type: 'uint8array' })).buffer as ArrayBuffer);
+    expect(r.preservation.rels).toEqual({});
+    const w = r.report.warnings.filter(x => /could not be listed/.test(x.message));
+    expect(w).toHaveLength(1);
+    expect(w[0].category).toBe(3);
+    expect(textOf(r.doc)).toContain('link');
+  });
+
+  it('an external extended-properties relationship is never followed for the page count', async () => {
+    const zip = await JSZip.loadAsync(await pack(`<w:p>${wRun('x')}</w:p>${SECT}`, { 'docProps/app.xml': '<Properties xmlns="urn:x"><Pages>9</Pages></Properties>' }));
+    const rels = await zip.file('_rels/.rels')!.async('string');
+    zip.file('_rels/.rels', rels.replace('</Relationships>', `<Relationship Id="rId2" Type="${R_TYPE}/extended-properties" Target="docProps/app.xml" TargetMode="External"/></Relationships>`));
+    const r = await readDocx((await zip.generateAsync({ type: 'uint8array' })).buffer as ArrayBuffer);
+    expect(r.report.pageCount).toBeUndefined();
+  });
+
+  it('a header that cannot be read counts as having content rather than as empty', async () => {
+    const r = await readDocx(
+      await pack(`<w:p>${wRun('x')}</w:p>${SECT}`, { 'word/header1.xml': '<w:hdr' }, `<Relationship Id="rId7" Type="${R_TYPE}/header" Target="header1.xml"/>`),
+    );
+    expect(r.report.warnings.filter(w => /^1 header or footer part has content/.test(w.message))).toHaveLength(1);
   });
 });

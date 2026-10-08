@@ -62,6 +62,15 @@ describe('import report', () => {
     expect(summarizeReport(r)).toContain('186 preserved read-only');
   });
 
+  it('summary counts lists, pluralised', () => {
+    const r = createReport();
+    recordFeature(r, 'list', 5);
+    expect(summarizeReport(r)).toBe('Imported 5 lists');
+    const one = createReport();
+    recordFeature(one, 'list');
+    expect(summarizeReport(one)).toBe('Imported 1 list');
+  });
+
   it('summary names bibliographies, pluralised, next to citations', () => {
     const one = createReport();
     recordFeature(one, 'externalCitation', 22);

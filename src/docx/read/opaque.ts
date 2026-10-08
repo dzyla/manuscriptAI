@@ -4,7 +4,7 @@
  * exists now so that nothing the body readers do not model is ever dropped.
  */
 import type { JSONContent } from '@tiptap/core';
-import { recordFeature, type FeatureKey, type ImportReport } from '../fidelity';
+import { addWarning, recordFeature, type FeatureKey, type ImportReport } from '../fidelity';
 import { captureFragment, captureShell } from '../preserve/xml';
 import { warnOnce, type ReadContext } from './context';
 import { M_NS, W_NS, firstW, wAttr } from './ooxml';
@@ -31,13 +31,18 @@ export function classifyField(instruction: string): 'externalCitation' | 'extern
   return null;
 }
 
+/** Also raised by `readDocx` for review state it finds outside the paragraphs, so the author is told the same thing wherever it sits. */
+export const COMMENT_WARNING = 'Comments are kept as read-only anchors for now; their text and replies are not shown or editable here. They stay in the file.';
+export const TRACKED_CHANGE_WARNING = 'Tracked changes are kept as read-only pieces for now; their text is not shown or editable here.';
+
 const FIELD_WARNING =
   'Reference-manager fields (Zotero, Mendeley, EndNote, Paperpile, ...) are kept as read-only pieces. Where a field is split, the text it displays is ordinary editable text between those pieces, so editing a paragraph that holds one can break the field. Change citations and bibliographies in the reference manager instead.';
 
 /** Record a classified field and make it visible: report count, one warning, and a chip label that names it. */
 export function recordField(key: 'externalCitation' | 'externalBibliography', ctx: ReadContext, codeAtoms: JSONContent[]): void {
   recordFeature(ctx.report, key);
-  warnOnce(ctx.report, key, FIELD_WARNING, 2);
+  // One message for both kinds: a document with citations AND a bibliography is told once, not twice.
+  if (!ctx.report.warnings.some(w => w.message === FIELD_WARNING)) addWarning(ctx.report, key, FIELD_WARNING, 2);
   const label = key === 'externalCitation' ? 'citation field code' : 'bibliography field code';
   for (const a of codeAtoms) if (a.attrs) a.attrs.label = label;
 }
@@ -106,20 +111,10 @@ function recordSemantic(el: Element, c: OpaqueClass, ctx: ReadContext): void {
   }
   recordFeature(ctx.report, c.semantic);
   if (c.semantic === 'comment') {
-    warnOnce(
-      ctx.report,
-      'comment',
-      'Comments are kept as read-only anchors for now; their text and replies are not shown or editable here. They stay in the file.',
-      3,
-    );
+    warnOnce(ctx.report, 'comment', COMMENT_WARNING, 3);
   }
   if (c.semantic === 'trackedChange') {
-    warnOnce(
-      ctx.report,
-      'trackedChange',
-      'Tracked changes are kept as read-only pieces for now; their text is not shown or editable here.',
-      3,
-    );
+    warnOnce(ctx.report, 'trackedChange', TRACKED_CHANGE_WARNING, 3);
   }
 }
 

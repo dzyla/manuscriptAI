@@ -637,7 +637,6 @@ describe.skipIf(docs.length === 0)('private real-world documents', () => {
             warnings: [
               { feature: 'externalCitation', category: 2, message: CITATION_FIELDS },
               { feature: 'tableBorders', category: 2, message: 'Table borders and shading are shown approximately. The original table formatting is kept for export.' },
-              { feature: 'externalBibliography', category: 2, message: CITATION_FIELDS },
               { feature: 'inferredHeading', category: 2, message: INFERRED },
               { feature: 'part', category: 3, message: '3 header or footer parts have content (text, a page number or a picture). They are kept in the file but not shown or editable here.' },
             ],
@@ -663,7 +662,7 @@ describe.skipIf(docs.length === 0)('private real-world documents', () => {
       expect(r.report).toEqual(expected);
       expect(summarizeReport(r.report)).toBe(
         isSnsf
-          ? 'Imported 20 pages · 5 lists · 22 citations · 1 bibliography · 5 warnings'
+          ? 'Imported 20 pages · 5 lists · 22 citations · 1 bibliography · 4 warnings'
           : 'Imported 45 tracked changes · 52 comments · 8 warnings',
       );
 
