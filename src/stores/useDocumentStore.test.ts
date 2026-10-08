@@ -3,10 +3,14 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { db } from '../db/manuscriptDb';
 import { useDocumentStore, documentRepository } from './useDocumentStore';
 import { htmlToDoc } from '../extensions/schema';
+import { createFormat } from '../services/formatPresets';
 import { readDocx } from '../docx/read';
 import { loadDocx } from '../test/docxFixtures';
 
+vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: () => `blob:test/${Math.random().toString(36).slice(2)}`, revokeObjectURL: () => {} }));
+
 beforeEach(async () => {
+  vi.restoreAllMocks();
   await db.delete();
   await db.open();
   useDocumentStore.getState().resetDocument();
@@ -280,5 +284,189 @@ describe('useDocumentStore.importDocx', () => {
     expect(JSON.stringify(useDocumentStore.getState().docJson)).toContain('mine');
     expect(await db.docxPackages.count()).toBe(0);
     expect(await db.assets.count()).toBe(0);
+  });
+});
+
+describe('useDocumentStore after an import: the whole store follows the committed row', () => {
+  const NIH = createFormat('nih');
+
+  it('every field equals what was loaded, none keeps the replaced document\'s value, and the next autosave does not undo the import', async () => {
+    await useDocumentStore.getState().initialize();
+    // a document that HAS comments, registries, a mode and a template: a reset that did nothing could not pass
+    useDocumentStore.setState({
+      title: 'Old title', docJson: htmlToDoc('<p>old work</p>'), format: { ...NIH, defaults: { ...NIH.defaults, fontFamily: 'Papyrus', fontSizePt: 17 } },
+      comments: [{ id: 'c1', quote: 'old', messages: [] } as never], citationRegistry: { s1: 1, s2: 2 }, citationCounter: 2,
+      figureRegistry: { f1: 1 }, figureCounter: 1, mode: 'grant', grantInstructions: 'funder says 12 pages', grantTemplateId: 'r01',
+    });
+    const r = await readDocx(loadDocx('images.docx'), undefined, 'images.docx');
+    const returned = await useDocumentStore.getState().importDocx(r, { title: 'Imported', acceptedHeadings: [] });
+    const s = useDocumentStore.getState();
+    const row = (await db.documents.get('current'))!;
+    const loaded = (await documentRepository.load()).doc!;
+
+    expect(s.title).toBe('Imported');
+    expect(s.format).toEqual(r.format);
+    expect(s.format.defaults.fontFamily).not.toBe('Papyrus');
+    expect(s.format).toEqual(row.format);
+    expect(s.comments).toEqual([]);
+    expect(s.citationRegistry).toEqual({});
+    expect(s.citationCounter).toBe(0);
+    expect(s.figureRegistry).toEqual({});
+    expect(s.figureCounter).toBe(0);
+    expect(s.mode).toBe('grant'); // carried over: how the author works
+    expect(s.grantInstructions).toBe('funder says 12 pages');
+    expect(s.grantTemplateId).toBeNull(); // belonged to the replaced document
+    expect(s.saveState).toBe('Saved');
+    expect(s.loadStatus).toBe('ready');
+    expect(s.blockedByUnreadable).toBe(false);
+    expect(s.pendingDocument).toBeNull();
+    expect(s.importId).toBe(row.importId);
+    expect(s.importId).toBeTruthy();
+    expect(s.lastLoad).toEqual({ migrated: false, recoveredFromBackup: false, unreadableRowPresent: false, quarantined: false });
+    expect(s.docJson).toBe(returned);
+    expect(s.docJson).toEqual(loaded.docJson);
+
+    // the regression this guards: the next autosave must write the imported format, not the replaced one
+    expect(await useDocumentStore.getState().persist()).toBe(true);
+    const after = (await db.documents.get('current'))!;
+    expect(after.format).toEqual(r.format);
+    expect(after.title).toBe('Imported');
+    expect(after.importId).toBe(row.importId);
+    expect((await db.docxPackages.get('current'))?.importId).toBe(row.importId);
+  });
+
+  it('an import is a deliberate replacement: it also recovers a store whose load had failed', async () => {
+    const r = await readDocx(loadDocx('body-basics.docx'), undefined, 'body-basics.docx');
+    useDocumentStore.setState({ loadStatus: 'failed' });
+    await useDocumentStore.getState().importDocx(r, { title: 'Imported', acceptedHeadings: [] });
+    expect(useDocumentStore.getState().loadStatus).toBe('ready');
+    expect(await useDocumentStore.getState().persist()).toBe(true);
+  });
+
+  it('if the committed document cannot be read back, the store still follows the disk (the next autosave must not write the old document over the import)', async () => {
+    await useDocumentStore.getState().initialize();
+    useDocumentStore.getState().setDocJson(htmlToDoc('<p>old work</p>'));
+    useDocumentStore.setState({ title: 'Old title' });
+    const r = await readDocx(loadDocx('images.docx'), undefined, 'images.docx');
+    vi.spyOn(documentRepository, 'load').mockRejectedValueOnce(new Error('read failed'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const doc = await useDocumentStore.getState().importDocx(r, { title: 'Imported', acceptedHeadings: [] });
+    const s = useDocumentStore.getState();
+    expect(s.title).toBe('Imported');
+    expect(s.format).toEqual(r.format);
+    expect(s.importId).toBe((await db.documents.get('current'))?.importId);
+    expect(JSON.stringify(s.docJson)).not.toContain('old work');
+    expect(s.loadStatus).toBe('ready');
+    // images are usable in the editor straight away
+    const imgs: any[] = [];
+    const walk = (n: any) => { if (n.type === 'resizableImage') imgs.push(n); (n.content ?? []).forEach(walk); };
+    walk(doc);
+    for (const i of imgs.filter(i => i.attrs.assetId)) expect(i.attrs.src).toMatch(/^blob:/);
+    // and an autosave keeps the import
+    expect(await s.persist()).toBe(true);
+    const row = (await db.documents.get('current'))!;
+    expect(row.title).toBe('Imported');
+    expect(row.importId).toBe((await db.docxPackages.get('current'))?.importId);
+    expect(row.format).toEqual(r.format);
+  });
+
+  it('every flow that replaces the document with something that is not the import detaches the package: New Manuscript, a workspace file, a template, a text import', async () => {
+    const r = await readDocx(loadDocx('body-basics.docx'), undefined, 'body-basics.docx');
+    const flows: Array<[string, () => void]> = [
+      ['New Manuscript (resetDocument)', () => useDocumentStore.getState().resetDocument()],
+      ['workspace file / template / text import (allowOverwrite after setting the content)', () => {
+        useDocumentStore.getState().setDocJson(htmlToDoc('<p>the replacement</p>'));
+        useDocumentStore.getState().allowOverwrite();
+      }],
+    ];
+    for (const [name, replace] of flows) {
+      await db.delete();
+      await db.open();
+      useDocumentStore.getState().resetDocument();
+      useDocumentStore.setState({ loadStatus: 'loading' });
+      await useDocumentStore.getState().initialize();
+      await useDocumentStore.getState().importDocx(r, { title: 'Imported', acceptedHeadings: [] });
+      const { importId } = (await db.documents.get('current'))!;
+      expect(await db.docxPackages.get('current'), name).toBeDefined();
+      replace();
+      expect(useDocumentStore.getState().importId, name).toBeNull();
+      useDocumentStore.setState({ docJson: htmlToDoc('<p>the replacement</p>') });
+      expect(await useDocumentStore.getState().persist(), name).toBe(true);
+      expect((await db.documents.get('current'))?.importId, name).toBeUndefined();
+      expect(await db.docxPackages.get('current'), name).toBeUndefined();
+      expect(await db.preservationStores.get('current'), name).toBeUndefined();
+      const old = (await db.autosaveBackups.toArray()).find(b => b.row.importId === importId)!;
+      expect((await db.importBackupParts.get(old.seq!))?.package?.fileName, name).toBe('body-basics.docx');
+    }
+  });
+
+  it('a document loaded from disk keeps its import: reload, edit, autosave', async () => {
+    const r = await readDocx(loadDocx('body-basics.docx'), undefined, 'body-basics.docx');
+    await useDocumentStore.getState().initialize();
+    await useDocumentStore.getState().importDocx(r, { title: 'Imported', acceptedHeadings: [] });
+    const { importId } = (await db.documents.get('current'))!;
+    useDocumentStore.getState().resetDocument();
+    useDocumentStore.setState({ loadStatus: 'loading' });
+    await useDocumentStore.getState().initialize(); // "reload the page"
+    expect(useDocumentStore.getState().importId).toBe(importId);
+    useDocumentStore.getState().setTitle('edited after reload');
+    await useDocumentStore.getState().persist();
+    expect((await db.documents.get('current'))?.importId).toBe(importId);
+    expect(await db.docxPackages.get('current')).toBeDefined();
+  });
+
+  describe('revertImport', () => {
+    it('saves first, swaps the documents, updates every field, and a second call brings the import back', async () => {
+      await useDocumentStore.getState().initialize();
+      useDocumentStore.setState({ title: 'My work', docJson: htmlToDoc('<p>my own words</p>'), mode: 'grant', grantInstructions: 'g' });
+      const r = await readDocx(loadDocx('images.docx'), undefined, 'images.docx');
+      await useDocumentStore.getState().importDocx(r, { title: 'Imported', acceptedHeadings: [] });
+      useDocumentStore.getState().setTitle('Imported, then edited'); // unsaved edit to the import
+      useDocumentStore.getState().setMode('manuscript'); // the import's row now differs from the replaced one in how the author works...
+      useDocumentStore.getState().setGrantInstructions('other');
+
+      const doc = await useDocumentStore.getState().revertImport();
+      let s = useDocumentStore.getState();
+      expect(s.title).toBe('My work');
+      expect(JSON.stringify(doc)).toContain('my own words');
+      expect(s.docJson).toBe(doc);
+      expect(s.importId).toBeNull();
+      expect(s.loadStatus).toBe('ready');
+      expect(s.mode).toBe('grant'); // ...and the restored document brings back its own
+      expect(s.grantInstructions).toBe('g');
+      expect(await db.docxPackages.get('current')).toBeUndefined();
+      // the unsaved edit to the import was saved first and is what comes back with the second call
+      await useDocumentStore.getState().revertImport();
+      s = useDocumentStore.getState();
+      expect(s.title).toBe('Imported, then edited');
+      expect(s.importId).toBe((await db.docxPackages.get('current'))?.importId);
+      expect(s.format).toEqual(r.format);
+    });
+
+    it('autosave is suspended while it runs, and with nothing to restore it rejects and changes nothing', async () => {
+      await useDocumentStore.getState().initialize();
+      await expect(useDocumentStore.getState().revertImport()).rejects.toThrow();
+      expect(useDocumentStore.getState().loadStatus).toBe('ready');
+      useDocumentStore.setState({ title: 'My work', docJson: htmlToDoc('<p>my own words</p>') });
+      const r = await readDocx(loadDocx('body-basics.docx'), undefined, 'body-basics.docx');
+      await useDocumentStore.getState().importDocx(r, { title: 'Imported', acceptedHeadings: [] });
+      const pending = useDocumentStore.getState().revertImport();
+      expect(await useDocumentStore.getState().persist()).toBe(false);
+      await pending;
+      expect((await db.documents.get('current'))?.title).toBe('My work');
+    });
+
+    it('if the restored document cannot be read back it says so and stops autosaving rather than guessing', async () => {
+      await useDocumentStore.getState().initialize();
+      useDocumentStore.setState({ title: 'My work', docJson: htmlToDoc('<p>my own words</p>') });
+      const r = await readDocx(loadDocx('body-basics.docx'), undefined, 'body-basics.docx');
+      await useDocumentStore.getState().importDocx(r, { title: 'Imported', acceptedHeadings: [] });
+      vi.spyOn(documentRepository, 'load').mockRejectedValueOnce(new Error('read failed'));
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      await expect(useDocumentStore.getState().revertImport()).rejects.toThrow(/could not be read back/);
+      expect(useDocumentStore.getState().loadStatus).toBe('failed');
+      expect(await useDocumentStore.getState().persist()).toBe(false); // the old import in memory is not written over the restored row
+      expect((await db.documents.get('current'))?.title).toBe('My work');
+    });
   });
 });

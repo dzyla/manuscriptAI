@@ -15,7 +15,9 @@ export interface DocxImportDeps {
   showInEditor(doc: JSONContent): void;
   /** Called once the import is committed and shown. */
   onImported?(result: ImportResult): void;
-  notify(message: string, type: 'success' | 'info' | 'error'): void;
+  notify(message: string, type: 'success' | 'info' | 'error', action?: { label: string; onClick: () => void }): void;
+  /** A button for the success message (e.g. "Restore previous document"), or undefined when there is nothing to offer. */
+  afterImportAction?(): { label: string; onClick: () => void } | undefined;
   createWorker?: ImportWorkerFactory;
 }
 
@@ -89,7 +91,7 @@ export function useDocxImport(deps: DocxImportDeps) {
       busy.current = false;
       setState(null);
       depsRef.current.onImported?.(result);
-      depsRef.current.notify(`Imported ${result.fileName ?? 'document'}`, 'success');
+      depsRef.current.notify(`Imported ${result.fileName ?? 'document'}`, 'success', depsRef.current.afterImportAction?.());
     } catch (err) {
       // The transaction rolled back: the previous document is intact. Keep the report open so the author can retry or cancel.
       console.error('Importing the Word document failed', err);

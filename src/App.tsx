@@ -22,7 +22,8 @@ import { Sparkles, FileText, Settings, Download, Keyboard, Eye, Moon, Sun, Chevr
 import { saveAs } from 'file-saver';
 import * as mammoth from 'mammoth';
 import TurndownService from 'turndown';
-import { useDocumentStore } from './stores/useDocumentStore';
+import { useDocumentStore, documentRepository } from './stores/useDocumentStore';
+import { snapshotBeforeImport } from './services/importSafety';
 import { useAIStore } from './stores/useAIStore';
 import { useSourceStore } from './stores/useSourceStore';
 import { db } from './db/manuscriptDb';
@@ -56,7 +57,7 @@ export default function App() {
     resetDocument, persist: persistDocument, initialize: initDocument,
     mode, grantInstructions, grantTemplateId,
     setMode, setGrantInstructions, setGrantTemplateId,
-    loadStatus, blockedByUnreadable, lastLoad, allowOverwrite, importDocx,
+    loadStatus, blockedByUnreadable, lastLoad, allowOverwrite, importDocx, revertImport,
   } = useDocumentStore();
 
   const {
@@ -87,7 +88,7 @@ export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isPostDraftingOpen, setIsPostDraftingOpen] = useState(false);
   const [isDistractionFree, setIsDistractionFree] = useState(false);
-  const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error'; action?: { label: string; onClick: () => void } } | null>(null);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
   const [showAnalyzeMenu, setShowAnalyzeMenu] = useState(false);
@@ -250,9 +251,12 @@ export default function App() {
     return estimateTokens(plainText);
   }, [content]);
 
-  const showToast = useCallback((message: string, type: 'success' | 'info' | 'error' = 'info') => {
-    setToast({ message, type });
-    setTimeout(() => setToast(null), 5000);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showToast = useCallback((message: string, type: 'success' | 'info' | 'error' = 'info', action?: { label: string; onClick: () => void }) => {
+    setToast({ message, type, ...(action ? { action } : {}) });
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    // A message with a button stays long enough to be used.
+    toastTimer.current = setTimeout(() => setToast(null), action ? 20000 : 5000);
   }, []);
 
   const [loadSettled, setLoadSettled] = useState(false);
@@ -1077,12 +1081,48 @@ export default function App() {
 
   // ─── .docx import ──────────────────────────────────────────────────────────
   // The file is read in a Worker (the page stays responsive); NOTHING is written until the author confirms the report.
+  // Whether an import left a replaced document that "Restore previous document" can bring back.
+  const [revertAvailable, setRevertAvailable] = useState(false);
+  const revertAvailableRef = useRef(false);
+  revertAvailableRef.current = revertAvailable;
+  const refreshRevertAvailable = useCallback(async () => {
+    try {
+      const available = (await documentRepository.listBackups()).some(b => b.replacedByImport && b.pinned);
+      revertAvailableRef.current = available; // read straight away by the message that follows an import, before the next render
+      setRevertAvailable(available);
+    } catch {
+      revertAvailableRef.current = false;
+      setRevertAvailable(false);
+    }
+  }, []);
+  useEffect(() => { if (loadSettled) void refreshRevertAvailable(); }, [loadSettled, refreshRevertAvailable]);
+
+  const handleRevertImport = async () => {
+    try {
+      const doc = await revertImport();
+      editorRef.current?.setDocument(doc);
+      useAIStore.getState().setSuggestions([]);
+      await refreshRevertAvailable();
+      showToast('Restored the document the import replaced. "Restore previous document" again brings the import back.', 'success');
+    } catch (err) {
+      console.error('Restoring the replaced document failed', err);
+      showToast(`Could not restore the previous document: ${err instanceof Error ? err.message : String(err)}`, 'error');
+    }
+  };
+
   const docxImport = useDocxImport({
-    commit: importDocx,
+    commit: async (result, decisions) => {
+      // A Version History snapshot of what is open now (the repository's own backup is the other way back).
+      await snapshotBeforeImport(db, { title, content: useDocumentStore.getState().content, importing: result.fileName ?? 'a Word document' });
+      const doc = await importDocx(result, decisions);
+      await refreshRevertAvailable();
+      return doc;
+    },
     // setDocument records no undo history: Ctrl+Z cannot bring the replaced document back (the dialog says so).
     showInEditor: doc => editorRef.current?.setDocument(doc),
     onImported: () => useAIStore.getState().setSuggestions([]), // their text offsets belong to the replaced document
-    notify: (message, type) => showToast(message, type),
+    notify: (message, type, action) => showToast(message, type, action),
+    afterImportAction: () => (revertAvailableRef.current ? { label: 'Restore previous document', onClick: () => { void handleRevertImport(); } } : undefined),
   });
 
   const handleImportText = async (file: File) => {
@@ -1208,6 +1248,11 @@ export default function App() {
                 <button onClick={() => fileInputRef.current?.click()} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg font-bold" style={{ color: 'var(--text-primary)', borderBottom: '1px solid var(--border-subtle)', marginBottom: '4px', paddingBottom: '8px' }}>
                   Load Document (.json, .docx, .md, .txt)
                 </button>
+                {revertAvailable && (
+                  <button onClick={() => { void handleRevertImport(); }} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>
+                    Restore previous document
+                  </button>
+                )}
                 <button onClick={() => handleDownload('md')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>Export Markdown</button>
                 <button onClick={() => handleDownload('docx')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>Export Word</button>
                 <button onClick={() => handleDownload('tex')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>Export to LaTeX (.zip)</button>
@@ -1595,6 +1640,16 @@ export default function App() {
           style={toast.type === 'info' ? { background: 'var(--surface-1)', color: 'var(--text-secondary)' } : {}}
           >
             {toast.type === 'success' ? '✓' : toast.type === 'error' ? '✕' : 'ℹ'} {toast.message}
+            {toast.action && (
+              <button
+                type="button"
+                className="ml-2 px-2 py-0.5 rounded-md border font-semibold shrink-0"
+                style={{ borderColor: 'currentColor' }}
+                onClick={() => { const run = toast.action!.onClick; setToast(null); run(); }}
+              >
+                {toast.action.label}
+              </button>
+            )}
           </div>
         </div>
       )}

@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { JSONContent } from '@tiptap/core';
 import { db } from '../db/manuscriptDb';
 import { createDexieRepository, type LoadedDocument } from '../db/documentRepository';
+import { hydrateAssets } from '../db/assetStore';
 import { htmlToDoc, docToHtml, isValidDoc } from '../extensions/schema';
 import { migrateLegacyCitations } from '../utils/migrateCitations';
 import { createFormat } from '../services/formatPresets';
@@ -44,6 +45,12 @@ interface DocumentState {
   mode: DocumentMode;
   grantInstructions: string;
   grantTemplateId: string | null;
+  /**
+   * The .docx import this document is the editable form of (see `DocumentRow.importId`), or null. Set by importDocx / revertImport
+   * and by loading a stored document; cleared by every flow that replaces the document with something that is not that import
+   * (resetDocument, allowOverwrite). The next persist then detaches the old package instead of leaving it behind.
+   */
+  importId: string | null;
 
   setTitle: (title: string) => void;
   setDocJson: (doc: JSONContent) => void;
@@ -122,6 +129,14 @@ interface DocumentState {
   importDocx: (result: ImportResult, decisions: { title: string; acceptedHeadings: HeadingCandidate[] }) => Promise<JSONContent>;
 
   /**
+   * Make the document the newest import replaced the open document again (its package and preservation map with it), the same way
+   * importDocx makes a document open: save what is on screen, commit in one transaction, reload, set the store, autosave suspended
+   * meanwhile. The import it undoes is kept as a backup of the same kind, so calling it again restores that. Returns the document for
+   * `EditorRef.setDocument`. Rejects, changing nothing, when there is nothing to restore.
+   */
+  revertImport: () => Promise<JSONContent>;
+
+  /**
    * Persist current state to Dexie. Resolves true when the state is safely stored (written, or identical
    * to the stored row); false when persistence was refused (not loaded, load failed, or blocked).
    */
@@ -154,6 +169,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   mode: 'manuscript',
   grantInstructions: '',
   grantTemplateId: null,
+  importId: null,
 
   setDocJson: (docJson) => set({ docJson }),
   setFormat: (format) => set({ format, saveState: 'Draft' }),
@@ -236,6 +252,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     mode: 'manuscript',
     grantInstructions: '',
     grantTemplateId: null,
+    importId: null,
     blockedByUnreadable: false,
   }),
 
@@ -243,8 +260,9 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
    * The user is explicitly supplying the whole document (workspace load, template apply): lifts the
    * unreadable-document block and also clears a 'failed' load status to 'ready', since there is nothing
    * left to protect from the defaults. A still-'loading' status is left alone (initialize() owns it).
+   * It also ends the document's tie to a .docx import (`importId`): what the user supplies here is not that import.
    */
-  allowOverwrite: () => set(s => ({ blockedByUnreadable: false, loadStatus: s.loadStatus === 'failed' ? 'ready' : s.loadStatus })),
+  allowOverwrite: () => set(s => ({ blockedByUnreadable: false, importId: null, loadStatus: s.loadStatus === 'failed' ? 'ready' : s.loadStatus })),
 
   initialize: async () => {
     let result: Awaited<ReturnType<typeof documentRepository.load>>;
@@ -286,6 +304,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
           mode: d.mode,
           grantInstructions: d.grantInstructions,
           grantTemplateId: d.grantTemplateId,
+          importId: d.importId ?? null,
           lastLoad,
           loadStatus: 'ready',
         });
@@ -324,18 +343,58 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   },
 
   importDocx: async (result, decisions) => {
-    if (importInFlight) throw new Error('Another import is already in progress.');
-    // While the stored document is still being read, the import and the load would race to set the store: the load can finish second.
-    if (get().loadStatus === 'loading') throw new Error('The stored document is still loading. Try again in a moment.');
-    importInFlight = true;
+    const doc = applyHeadings(result.doc, decisions.acceptedHeadings);
+    return replaceOpenDocument(set, get, async () => {
+      const { importId } = await documentRepository.importDocx({ ...result, doc }, { title: decisions.title });
+      return { importId, fallback: { docJson: doc, title: decisions.title.trim() || 'Untitled Manuscript', format: result.format } };
+    });
+  },
+
+  revertImport: () =>
+    replaceOpenDocument(set, get, async () => {
+      await documentRepository.revertImport();
+      return { importId: null, fallback: null };
+    }),
+
+  persist: async () => {
+    if (importInFlight) return false; // the import owns the document until it is committed and loaded
+    return persistState(get);
+  },
+}));
+
+type StoreSet = (partial: Partial<DocumentState>) => void;
+
+/**
+ * The shared shape of importDocx and revertImport: one document replaces the open one, atomically, and the store follows.
+ * `commit` performs the repository transaction and says what it wrote. Autosave is suspended for the whole span, the on-screen
+ * document is saved first (so the backup holds the latest edits; if that save fails nothing starts), and any failure BEFORE the
+ * commit leaves the store and the disk as they were.
+ *
+ * After the commit the disk holds the new document, so a failure to read it back must not leave the store on the old one (the next
+ * autosave would write the old document over the new row while the new package stays): the store is then set from what was committed.
+ */
+async function replaceOpenDocument(
+  set: StoreSet,
+  get: () => DocumentState,
+  commit: () => Promise<{ importId: string | null; fallback: { docJson: JSONContent; title: string; format: DocFormat } | null }>,
+): Promise<JSONContent> {
+  if (importInFlight) throw new Error('Another import is already in progress.');
+  // While the stored document is still being read, the import and the load would race to set the store: the load can finish second.
+  if (get().loadStatus === 'loading') throw new Error('The stored document is still loading. Try again in a moment.');
+  importInFlight = true;
+  try {
+    const s = get();
+    if (s.loadStatus === 'ready' && !s.blockedByUnreadable) await persistState(get);
+    const { importId, fallback } = await commit();
+    // ---- committed: from here on the store must follow the disk, whatever happens ----
+    let loaded: Awaited<ReturnType<typeof documentRepository.load>> | null = null;
     try {
-      const s = get();
-      if (s.loadStatus === 'ready' && !s.blockedByUnreadable) await persistState(get);
-      const doc = applyHeadings(result.doc, decisions.acceptedHeadings);
-      await documentRepository.importDocx({ ...result, doc }, { title: decisions.title });
-      const loaded = await documentRepository.load();
-      if (!loaded.doc) throw new Error('The imported document was stored but could not be read back.');
-      const d = loaded.doc;
+      loaded = await documentRepository.load();
+    } catch (err) {
+      console.error('The document was committed but could not be read back; using what was committed', err);
+    }
+    const d = loaded?.doc ?? null;
+    if (d && !loaded!.recoveredFromBackup) {
       set({
         title: d.title,
         content: docToHtml(d.docJson),
@@ -351,22 +410,46 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
         mode: d.mode,
         grantInstructions: d.grantInstructions,
         grantTemplateId: d.grantTemplateId,
+        importId: d.importId ?? null,
         lastLoad: { migrated: false, recoveredFromBackup: false, unreadableRowPresent: false, quarantined: false },
         // An explicit replacement of the whole document: lifts the unreadable-document block and a failed load.
         blockedByUnreadable: false,
         loadStatus: 'ready',
       });
       return d.docJson;
-    } finally {
-      importInFlight = false;
     }
-  },
-
-  persist: async () => {
-    if (importInFlight) return false; // the import owns the document until it is committed and loaded
-    return persistState(get);
-  },
-}));
+    // Read-back failed. Only an import has the document in hand (a restore would have to re-read it): hydrate it here so images show.
+    if (!fallback) {
+      set({ loadStatus: 'failed' }); // autosave stays off; a reload shows what is on disk
+      throw new Error('The previous document was restored but could not be read back. Reload the page to see it.');
+    }
+    let docJson = fallback.docJson;
+    try {
+      docJson = await hydrateAssets(fallback.docJson, id => db.assets.get(id));
+    } catch {
+      // images stay placeholders until the next load; their ids are kept
+    }
+    set({
+      title: fallback.title,
+      format: fallback.format,
+      content: docToHtml(docJson),
+      docJson,
+      pendingDocument: null,
+      comments: [],
+      citationRegistry: {},
+      citationCounter: 0,
+      figureRegistry: {},
+      figureCounter: 0,
+      importId,
+      saveState: 'Saved',
+      blockedByUnreadable: false,
+      loadStatus: 'ready',
+    });
+    return docJson;
+  } finally {
+    importInFlight = false;
+  }
+}
 
 async function persistState(get: () => DocumentState): Promise<boolean> {
   const s = get();
@@ -384,6 +467,7 @@ async function persistState(get: () => DocumentState): Promise<boolean> {
     mode: s.mode,
     grantInstructions: s.grantInstructions,
     grantTemplateId: s.grantTemplateId,
+    ...(s.importId ? { importId: s.importId } : {}),
   };
   const { warnings } = await documentRepository.save(doc);
   for (const w of warnings) {

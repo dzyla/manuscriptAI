@@ -503,21 +503,43 @@ describe('DocumentRepository.importDocx', () => {
 
   it('keeps the replaced document as a backup that later autosaves cannot push out, with its package and preservation map', async () => {
     await repo.importDocx(plain, { title: 'first' });
-    await repo.save({ ...baseDoc('typed after the first import'), title: 'first, edited', docJson: (await repo.load()).doc!.docJson });
+    const first = (await repo.load()).doc!;
+    await repo.save({ ...first, title: 'first, edited' }); // carries the import's id, as the store does
     await repo.importDocx(imported, { title: 'second' });
 
     const backups = await repo.listBackups();
     const replaced = backups.find(b => b.replacedByImport);
     expect(replaced?.pinned).toBe(true);
     expect(replaced?.row.title).toBe('first, edited');
-    expect(replaced?.replacedByImport?.package?.fileName).toBe('body-basics.docx');
-    expect(replaced?.replacedByImport?.preservation?.store).toEqual(plain.preservation);
+    const parts = await db.importBackupParts.get(replaced!.seq!);
+    expect(parts?.package?.fileName).toBe('body-basics.docx');
+    expect(parts?.preservation?.store).toEqual(plain.preservation);
+    expect(replaced!.row.importId).toBe(parts?.package?.importId);
     // the current package is the new one
     expect((await repo.getPackage())?.fileName).toBe('images.docx');
 
     // ten more distinct saves turn the ordinary ring over, but not the import backup
     for (let i = 0; i < 12; i++) await repo.save(baseDoc('edit ' + i));
     expect((await repo.listBackups()).some(b => b.replacedByImport && b.row.title === 'first, edited')).toBe(true);
+    expect((await db.importBackupParts.get(replaced!.seq!))?.package?.fileName).toBe('body-basics.docx');
+  });
+
+  it('the package and preservation map are not read, and not part of a backup row, when the ring is scanned on every save', async () => {
+    await repo.importDocx(plain, { title: 'first' });
+    await repo.importDocx(imported, { title: 'second' });
+    const rows = await db.autosaveBackups.toArray();
+    expect(rows.length).toBeGreaterThan(0);
+    for (const b of rows) {
+      expect(JSON.stringify(Object.keys(b))).not.toMatch(/package|preservation|original/);
+      expect(b.replacedByImport === undefined || b.replacedByImport === true).toBe(true);
+    }
+    let reads = 0;
+    const count = () => { reads++; };
+    db.importBackupParts.hook('reading', (o) => { count(); return o; });
+    const loaded = (await repo.load()).doc!;
+    await repo.save({ ...loaded, title: 'an ordinary autosave' });
+    await repo.save({ ...loaded, title: 'another one' });
+    expect(reads).toBe(0);
   });
 
   it('keeps only the latest few replaced-by-import backups', async () => {
@@ -526,6 +548,11 @@ describe('DocumentRepository.importDocx', () => {
     for (const t of ['a', 'b', 'c', 'd']) await small.importDocx(plain, { title: t });
     const kept = (await small.listBackups()).filter(b => b.replacedByImport).map(b => b.row.title);
     expect(kept).toEqual(['c', 'b']); // newest first; 'original' and 'a' were let go
+    // and what was let go took its package and map with it (no orphan parts)
+    const seqs = new Set((await small.listBackups()).map(b => b.seq));
+    const parts = await db.importBackupParts.toArray();
+    expect(parts.length).toBeGreaterThan(0);
+    for (const p of parts) expect(seqs.has(p.seq), String(p.seq)).toBe(true);
   });
 
   it('a failure writing the assets leaves the previous document, package, preservation map and assets exactly as they were', async () => {
@@ -657,5 +684,190 @@ describe('DocumentRepository.importDocx', () => {
     const doc = (await repo.load()).doc!.docJson;
     const headings = (doc.content ?? []).filter(n => n.type === 'heading');
     expect(headings.map(textOfDoc)).toEqual([some[0].text]);
+  });
+
+  it('the document row, the package and the preservation map carry one fresh importId, and a save keeps it', async () => {
+    const { importId } = await repo.importDocx(plain, { title: 'x' });
+    expect(importId).toBeTruthy();
+    expect((await db.documents.get('current'))?.importId).toBe(importId);
+    expect((await db.docxPackages.get('current'))?.importId).toBe(importId);
+    expect((await db.preservationStores.get('current'))?.importId).toBe(importId);
+    const loaded = (await repo.load()).doc!;
+    expect(loaded.importId).toBe(importId);
+    await repo.save({ ...loaded, title: 'edited' });
+    expect((await db.documents.get('current'))?.importId).toBe(importId);
+    expect((await db.docxPackages.get('current'))?.fileName).toBe('body-basics.docx');
+    const second = await repo.importDocx(imported, { title: 'y' });
+    expect(second.importId).not.toBe(importId);
+  });
+
+  it('a save without the importId detaches the document: the package and map leave `current` and go with the backup of the document they belonged to', async () => {
+    const { importId } = await repo.importDocx(plain, { title: 'imported' });
+    await repo.save(baseDoc('a new manuscript')); // what New Manuscript / a workspace file / a template / a text import persist
+    expect((await db.documents.get('current'))?.importId).toBeUndefined();
+    expect(await db.docxPackages.get('current')).toBeUndefined();
+    expect(await db.preservationStores.get('current')).toBeUndefined();
+    const b = (await repo.listBackups()).find(x => x.row.importId === importId)!;
+    const parts = await db.importBackupParts.get(b.seq!);
+    expect(parts?.package?.importId).toBe(importId);
+    expect(parts?.preservation?.store).toEqual(plain.preservation);
+    // an ordinary save of a document that was never imported leaves an (unrelated) package alone
+  });
+
+  it('a document that was never imported does not touch a package it does not own', async () => {
+    await repo.save(baseDoc('plain'));
+    await repo.savePackage({ documentId: 'current', original: new ArrayBuffer(4), fileName: 'legacy.docx', importedAt: 1 });
+    await repo.save(baseDoc('plain, edited'));
+    expect((await repo.getPackage())?.fileName).toBe('legacy.docx');
+  });
+
+  it('a save already queued behind a slow asset fetch cannot overwrite an import started after it (the import waits its turn, then wins)', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    const slow = createDexieRepository(db, {
+      htmlToDoc, isValidDoc, resolver,
+      fetchBytes: async () => { await gate; return { mime: 'image/png', data: new Uint8Array([1, 2, 3]).buffer }; },
+    });
+    const withBlob: LoadedDocument = {
+      ...baseDoc('old document'),
+      docJson: { type: 'doc', content: [{ type: IMAGE_NODE, attrs: { src: 'blob:http://x/1', assetId: null } }] } as JSONContent,
+    };
+    const pendingSave = slow.save(withBlob); // in flight: waiting for the fetch inside the queue
+    const pendingImport = slow.importDocx(plain, { title: 'the import' });
+    await new Promise(r => setTimeout(r, 30));
+    expect(await db.documents.count()).toBe(0); // the import has not jumped the queue
+    release();
+    await Promise.all([pendingSave, pendingImport]);
+    expect((await db.documents.get('current'))?.title).toBe('the import');
+    expect((await slow.listBackups()).some(b => b.row.title === 'T')).toBe(true); // the save landed first and is what the import replaced
+  });
+
+  it('imports over a blank or placeholder document do not use backup slots (they would push real work out)', async () => {
+    const small = createDexieRepository(db, { htmlToDoc, isValidDoc, resolver, maxImportBackups: 2 });
+    await small.save(baseDoc('real work'));
+    await small.importDocx(plain, { title: 'one' }); // replaces real work: backed up
+    for (const blank of ['', 'Start writing your manuscript here, or click "New Manuscript" to begin with an IMRAD template.']) {
+      await small.save({ ...baseDoc(blank), title: 'blank' }); // detaches 'one' (an ordinary ring backup), then is blank itself
+      await small.importDocx(plain, { title: 'again' });
+    }
+    await small.save({ ...baseDoc(''), title: 'blank' });
+    await small.importDocx(plain, { title: 'once more' });
+    const slots = (await small.listBackups()).filter(b => b.replacedByImport);
+    expect(slots).toHaveLength(1); // exactly one slot, and it is the real work
+    expect(slots[0].row.title).toBe('T');
+    expect(JSON.stringify(slots[0].row.docJson)).toContain('real work');
+  });
+
+  it('a document with only an image, or comments, is not blank', async () => {
+    const withImage: LoadedDocument = { ...baseDoc(''), docJson: htmlToDoc(`<p></p><img src="${PNG}">`) };
+    await repo.save(withImage);
+    await repo.importDocx(plain, { title: 'x' });
+    expect((await repo.listBackups()).filter(b => b.replacedByImport)).toHaveLength(1);
+    await repo.save({ ...baseDoc(''), comments: [{ id: 'c1' } as never] });
+    await repo.importDocx(plain, { title: 'y' });
+    expect((await repo.listBackups()).filter(b => b.replacedByImport)).toHaveLength(2);
+  });
+
+  it('trims the ordinary ring when an import adds to it, and never touches pinned or quarantined backups', async () => {
+    const small = createDexieRepository(db, { htmlToDoc, isValidDoc, resolver, maxBackups: 2 });
+    await small.save(baseDoc('real work'));
+    const row = (await db.documents.get('current'))!;
+    for (let i = 0; i < 5; i++) await db.autosaveBackups.add({ documentId: 'current', savedAt: i, row: { ...row, title: 'ring ' + i } });
+    await db.autosaveBackups.add({ documentId: 'current', savedAt: 9, row: { ...row, title: 'pinned' }, pinned: true });
+    await db.autosaveBackups.add({ documentId: 'current', savedAt: 9, row: { ...row, title: 'quarantined' }, quarantined: true });
+    await small.importDocx(plain, { title: 'x' });
+    const left = (await small.listBackups()).map(b => b.row.title).sort();
+    expect(left).toEqual(['T', 'pinned', 'quarantined', 'ring 3', 'ring 4'].sort());
+  });
+
+  describe('revertImport', () => {
+    it('brings back the replaced document with its own package and map, in one step, and a second revert brings the import back', async () => {
+      const a = await repo.importDocx(plain, { title: 'A' });
+      const aDoc = (await repo.load()).doc!;
+      await repo.save({ ...aDoc, title: 'A, edited' });
+      const b = await repo.importDocx(imported, { title: 'B' });
+      expect((await repo.getPackage())?.importId).toBe(b.importId);
+
+      await repo.revertImport();
+      const back = (await repo.load()).doc!;
+      expect(back.title).toBe('A, edited');
+      expect(back.importId).toBe(a.importId);
+      expect(back.docJson.content?.map(textOfDoc)).toEqual(aDoc.docJson.content?.map(textOfDoc));
+      expect((await repo.getPackage())?.fileName).toBe('body-basics.docx');
+      expect((await repo.getPackage())?.importId).toBe(a.importId);
+      expect(await repo.getPreservation()).toEqual(plain.preservation);
+      // nothing was lost: B is itself a backup now, with its package
+      const swap = (await repo.listBackups()).find(x => x.row.importId === b.importId && x.replacedByImport)!;
+      expect((await db.importBackupParts.get(swap.seq!))?.package?.fileName).toBe('images.docx');
+
+      await repo.revertImport();
+      const again = (await repo.load()).doc!;
+      expect(again.title).toBe('B');
+      expect(again.importId).toBe(b.importId);
+      expect((await repo.getPackage())?.fileName).toBe('images.docx');
+      expect(await repo.getPreservation()).toEqual(imported.preservation);
+      for (const id of collectAssetIds(imported.doc)) expect(await db.assets.get(id), id).toBeDefined();
+    });
+
+    it('restores a document that was not an import (and so has no package): the import\'s package leaves `current`', async () => {
+      await repo.save(baseDoc('my own work'));
+      await repo.importDocx(plain, { title: 'B' });
+      expect(await repo.getPackage()).toBeDefined();
+      await repo.revertImport();
+      expect(JSON.stringify((await repo.load()).doc?.docJson)).toContain('my own work');
+      expect(await repo.getPackage()).toBeUndefined();
+      expect(await repo.getPreservation()).toBeUndefined();
+      expect((await db.documents.get('current'))?.importId).toBeUndefined();
+    });
+
+    it('keeps its images: the replaced document\'s figures are still stored and hydrate', async () => {
+      await repo.importDocx(imported, { title: 'A' });
+      await repo.importDocx(plain, { title: 'B' });
+      // saves after the import (garbage collection) must not have dropped A's figures, which only the backup refers to
+      for (let i = 0; i < 3; i++) await repo.save({ ...(await repo.load()).doc!, title: 'B' + i });
+      await repo.revertImport();
+      const doc = (await repo.load()).doc!;
+      for (const img of images(doc.docJson).filter(i => i.attrs?.assetId)) expect(img.attrs?.src, String(img.attrs?.assetId)).toMatch(/^url:/);
+    });
+
+    it('rejects, changing nothing, when there is nothing to restore', async () => {
+      await repo.importDocx(plain, { title: 'over a blank document' });
+      const before = { row: await db.documents.get('current'), pkg: await db.docxPackages.get('current'), n: await db.autosaveBackups.count() };
+      await expect(repo.revertImport()).rejects.toThrow(/nothing to restore|no replaced document/i);
+      expect(await db.documents.get('current')).toEqual(before.row);
+      expect(await db.docxPackages.get('current')).toEqual(before.pkg);
+      expect(await db.autosaveBackups.count()).toBe(before.n);
+    });
+
+    it('is atomic: a failure while writing leaves the imported document, package and backups as they were', async () => {
+      await repo.save(baseDoc('my own work'));
+      await repo.importDocx(plain, { title: 'B' });
+      const before = {
+        row: await db.documents.get('current'), pkg: await db.docxPackages.get('current'), pres: await db.preservationStores.get('current'),
+        backups: await db.autosaveBackups.toArray(), parts: await db.importBackupParts.toArray(),
+      };
+      const boom = () => { throw new Error('disk full'); };
+      db.docxPackages.hook('deleting', boom);
+      try {
+        await expect(repo.revertImport()).rejects.toThrow('disk full');
+      } finally {
+        db.docxPackages.hook('deleting').unsubscribe(boom);
+      }
+      expect(await db.documents.get('current')).toEqual(before.row);
+      expect(await db.docxPackages.get('current')).toEqual(before.pkg);
+      expect(await db.preservationStores.get('current')).toEqual(before.pres);
+      expect(await db.autosaveBackups.toArray()).toEqual(before.backups);
+      expect(await db.importBackupParts.toArray()).toEqual(before.parts);
+    });
+
+    it('never restores a quarantined (unreadable) row as the document', async () => {
+      await db.documents.put({
+        id: 'current', title: 'Broken', saveState: 'Saved', docJson: { type: 'doc', content: [{ type: 'hologram' }] },
+        citationRegistry: {}, citationCounter: 0, figureRegistry: {}, figureCounter: 0, updatedAt: 1,
+      } as never);
+      await repo.importDocx(plain, { title: 'fresh' });
+      await expect(repo.revertImport()).rejects.toThrow();
+      expect((await repo.load()).doc?.title).toBe('fresh');
+    });
   });
 });

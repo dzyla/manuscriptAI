@@ -236,6 +236,13 @@ export interface DocumentRow {
   grantInstructions?: string;
   /** id of the grant template the document was created from (enables page-budget tracking) */
   grantTemplateId?: string;
+  /**
+   * Identity of the .docx import this document is (still) the editable form of: the same token is on the package and preservation
+   * rows written with it. Block ids are import-local, so provenance cannot say which package a document belongs to; this token can.
+   * Absent on a document that was not imported or that has since been replaced by another (New Manuscript, a workspace file, a
+   * template, a text import clear it, and the package goes with it).
+   */
+  importId?: string;
 }
 
 export interface CommentReply {
@@ -270,6 +277,8 @@ export interface DocxPackageRow {
   original: ArrayBuffer;
   fileName: string;
   importedAt: number;
+  /** See `DocumentRow.importId`: a writer must use this package only for a document whose `importId` equals it. */
+  importId?: string;
 }
 
 /** The mutable preservation map, kept apart from the (large, immutable) original package bytes. */
@@ -277,6 +286,18 @@ export interface PreservationRow {
   documentId: 'current';
   store: PreservationStore;
   updatedAt: number;
+  /** See `DocumentRow.importId`. */
+  importId?: string;
+}
+
+/**
+ * The package and preservation map that belonged to a backed-up document, kept apart from the backup row (keyed by its `seq`) so the
+ * save-time scan of the backup ring never reads a megabytes-large package.
+ */
+export interface BackupPartsRow {
+  seq: number;
+  package?: DocxPackageRow;
+  preservation?: PreservationRow;
 }
 
 export interface BackupRow {
@@ -289,11 +310,10 @@ export interface BackupRow {
   /** The pre-migration legacy row; never trimmed, but (unlike quarantined) a valid recovery candidate. */
   pinned?: true;
   /**
-   * Set only on the backup taken when a .docx import replaced the document: the document's own original package and preservation
-   * map, which that import overwrites (there is one `current` slot for each). Without them the replaced document's untouched Word
-   * content could no longer be re-emitted on export.
+   * Set on the backup taken when a .docx import (or the restore of one) replaced the document. Its package and preservation map, which
+   * that import overwrites (there is one `current` slot for each), are in `importBackupParts` under this backup's `seq`.
    */
-  replacedByImport?: { package?: DocxPackageRow; preservation?: PreservationRow };
+  replacedByImport?: true;
 }
 
 export interface SourceRow extends ManuscriptSource {

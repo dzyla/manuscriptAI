@@ -161,7 +161,41 @@ function describeImport(name: string, dir: 'fixtures' | 'private', want: Expect)
   });
 }
 
+/** Import `first`, then `second` over it, then restore: the first comes back whole, with its own package, map and pictures. */
+function describeRevert(first: string, second: string, dir: 'fixtures' | 'private') {
+  it(`importing ${second} over ${first} and restoring brings ${first} back exactly, and restoring again brings ${second} back`, { timeout: 120_000 }, async () => {
+    const a = await importThroughEverything(first, dir, true);
+    const aDoc = a.fresh.doc!;
+    const aIds = [...collectAssetIds(aDoc.docJson)].sort();
+    const b = await importThroughEverything(second, dir, true);
+    expect((await db.docxPackages.get('current'))?.fileName).toBe(second);
+
+    await useDocumentStore.getState().revertImport();
+    const back = (await createDexieRepository(db, { htmlToDoc, isValidDoc, resolver }).load()).doc!;
+    expect(back.title).toBe(first);
+    expect(back.importId).toBe(aDoc.importId);
+    expect([...collectAssetIds(back.docJson)].sort()).toEqual(aIds);
+    for (const id of aIds) expect(await db.assets.get(id), id).toBeDefined();
+    expect(count(back.docJson, 'heading')).toBe(count(aDoc.docJson, 'heading'));
+    expect(count(back.docJson, 'tableRow')).toBe(count(aDoc.docJson, 'tableRow'));
+    expect((back.docJson.content ?? []).map(textOf)).toEqual((aDoc.docJson.content ?? []).map(textOf));
+    const pkg = (await db.docxPackages.get('current'))!;
+    expect(pkg.fileName).toBe(first);
+    expect(sameBytes(pkg.original, a.data)).toBe(true);
+    const pres = (await db.preservationStores.get('current'))!.store;
+    expect(pres).toEqual(a.result.preservation);
+    expect(planLiftedDrawings(back.docJson, pres)).toEqual({ strip: [], emit: [] });
+
+    await useDocumentStore.getState().revertImport();
+    const again = (await createDexieRepository(db, { htmlToDoc, isValidDoc, resolver }).load()).doc!;
+    expect(again.title).toBe(second);
+    expect(again.importId).toBe(b.fresh.doc!.importId);
+    expect(sameBytes((await db.docxPackages.get('current'))!.original, b.data)).toBe(true);
+  });
+}
+
 // Committed fixtures: always run.
+describe('restore (committed fixtures)', () => describeRevert('images.docx', 'unstyled-sections.docx', 'fixtures'));
 describeImport('images.docx', 'fixtures', { tables: 0, images: 6, linkedImages: 1, headingCandidates: 0 });
 describeImport('unstyled-sections.docx', 'fixtures', { tables: 0, images: 0, headingCandidates: 7 });
 
@@ -184,6 +218,7 @@ describe.skipIf(!havePrivate('r01.docx'))('r01.docx (private)', () => {
     expect(Object.values(stored.blocks).flatMap(b => b.lifted ?? [])).toHaveLength(10);
   });
 });
+describe.skipIf(!havePrivate('snsf.docx') || !havePrivate('r01.docx'))('restore (private)', () => describeRevert('snsf.docx', 'r01.docx', 'private'));
 describe.skipIf(!havePrivate('snsf.docx'))('snsf.docx (private)', () => {
   describeImport('snsf.docx', 'private', {
     tables: 1,

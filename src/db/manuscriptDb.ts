@@ -10,6 +10,7 @@ import type {
   DocxPackageRow,
   PreservationRow,
   BackupRow,
+  BackupPartsRow,
 } from '../types';
 
 export class ManuscriptDb extends Dexie {
@@ -24,6 +25,7 @@ export class ManuscriptDb extends Dexie {
   docxPackages!: Table<DocxPackageRow>;
   autosaveBackups!: Table<BackupRow>;
   preservationStores!: Table<PreservationRow>;
+  importBackupParts!: Table<BackupPartsRow>;
 
   constructor(name = 'ManuscriptAIEditor') {
     super(name);
@@ -64,6 +66,9 @@ export class ManuscriptDb extends Dexie {
           await packages.put(rest);
         }
       });
+    // v5: the package and preservation map of a backed-up document live in their own table (keyed by the backup's seq), so scanning the
+    // backup ring on every save does not deserialise packages.
+    this.version(5).stores({ importBackupParts: 'seq' });
   }
 }
 

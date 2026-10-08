@@ -1,6 +1,6 @@
 import type { JSONContent } from '@tiptap/core';
 import type { ManuscriptDb } from './manuscriptDb';
-import type { AssetRow, BackupRow, CommentThread, DocFormat, DocumentMode, DocumentRow, DocxPackageRow } from '../types';
+import type { AssetRow, BackupRow, CommentThread, DocFormat, DocumentMode, DocumentRow, DocxPackageRow, PreservationRow } from '../types';
 import type { ImportResult } from '../docx/read';
 import { prepareAssets, hydrateAssets, collectAssetIds, liveAssetIds, type AssetUrlResolver } from './assetStore';
 import { stableStringify } from '../docx/preserve/hash';
@@ -21,6 +21,12 @@ export interface LoadedDocument {
   mode: DocumentMode;
   grantInstructions: string;
   grantTemplateId: string | null;
+  /**
+   * The .docx import this document is the editable form of (see `DocumentRow.importId`). A save carries it forward; a save without it
+   * (the document was replaced by New Manuscript, a workspace file, a template or a text import) detaches the document from its
+   * package: the package and preservation map are removed from `current` and kept with the backup of the document they belonged to.
+   */
+  importId?: string;
 }
 
 export interface LoadResult {
@@ -51,7 +57,8 @@ export interface DocumentRepository {
    * Commit a confirmed .docx import: ONE read-write transaction over the document row, the image assets, the backup ring, the
    * original package and the preservation map. Either all of it lands or none of it does (a failed import leaves the previous
    * document, its package and its assets exactly as they were). The replaced document is kept as a backup that the ring never trims
-   * (and that carries the package and preservation map this import overwrites).
+   * (its package and preservation map are kept with it, in `importBackupParts`), unless it was empty or the untouched placeholder.
+   * The new document, package and preservation map share a fresh `importId`, which is returned.
    *
    * An explicit user action, so it does not refuse when the current row is unreadable: that row is quarantined instead. Serialised
    * with saves (a save queued earlier completes first; one queued later runs after and so overwrites the import: the caller must
@@ -59,7 +66,13 @@ export interface DocumentRepository {
    *
    * `result.doc` is stored as given: apply the accepted headings (`applyHeadings`) BEFORE calling.
    */
-  importDocx(result: ImportResult, decisions: { title: string }): Promise<void>;
+  importDocx(result: ImportResult, decisions: { title: string }): Promise<{ importId: string }>;
+  /**
+   * Undo the newest import: make the document it replaced (with its package and preservation map) the current one again, in one
+   * transaction. The import being undone is itself kept as a backup of the same kind, so calling this again restores it (a swap, not
+   * a loss). Rejects when there is nothing to restore.
+   */
+  revertImport(): Promise<void>;
   listBackups(): Promise<BackupRow[]>;
   restoreBackup(seq: number): Promise<LoadedDocument>;
 }
@@ -77,10 +90,15 @@ export interface RepositoryDeps {
   resolver?: AssetUrlResolver;
   fetchBytes?: (url: string) => Promise<{ mime: string; data: ArrayBuffer }>;
   maxBackups?: number;
-  /** How many replaced-by-import backups are kept (each holds the replaced document's whole package). Default 3. */
+  /** How many replaced-by-import backups are kept (each holds the replaced document's whole package). Default 5. */
   maxImportBackups?: number;
   /** Asset ids that must survive GC because the session can still reference them (default: object-URL cache). */
   liveAssetIds?: () => Iterable<string>;
+}
+
+function newImportId(): string {
+  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  return c?.randomUUID ? c.randomUUID() : `imp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
 /** Row identity for no-op detection: everything except bookkeeping fields. */
@@ -91,7 +109,7 @@ function rowFingerprint(row: DocumentRow): string {
 
 export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): DocumentRepository {
   const maxBackups = deps.maxBackups ?? 10;
-  const maxImportBackups = deps.maxImportBackups ?? 3;
+  const maxImportBackups = deps.maxImportBackups ?? 5;
   let queue: Promise<unknown> = Promise.resolve();
 
   /** Convert a stored row to a LoadedDocument (no hydration). Returns null if the body is unusable. */
@@ -122,8 +140,33 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
         mode: row.mode ?? 'manuscript',
         grantInstructions: row.grantInstructions ?? '',
         grantTemplateId: row.grantTemplateId ?? null,
+        ...(row.importId ? { importId: row.importId } : {}),
       },
     };
+  }
+
+  /** Remove backups together with the package and preservation map kept for them. */
+  async function deleteBackups(seqs: number[]): Promise<void> {
+    if (!seqs.length) return;
+    await db.autosaveBackups.bulkDelete(seqs);
+    await db.importBackupParts.bulkDelete(seqs);
+  }
+
+  /** A document with nothing in it that is worth a backup slot: never edited, or still the placeholder. Never true for an imported document. */
+  function isTrivialRow(row: DocumentRow): boolean {
+    if (row.importId || row.comments?.length) return false;
+    const converted = rowToDoc(row);
+    if (!converted) return false; // unreadable is never "nothing"
+    if (collectAssetIds(converted.doc.docJson).size) return false;
+    const parts: string[] = [];
+    const walk = (n: JSONContent): void => {
+      if (n.type === 'text') parts.push(n.text ?? '');
+      else if (n.type && n.type !== 'doc' && n.type !== 'paragraph' && n.type !== 'heading' && !n.content) parts.push('\u0000'); // an atom, an image, a rule: content
+      n.content?.forEach(walk);
+    };
+    walk(converted.doc.docJson);
+    const text = parts.join('').trim();
+    return text === '' || (text.length < 200 && /^Start writing your manuscript here/.test(text));
   }
 
   async function hydrate(doc: LoadedDocument): Promise<LoadedDocument> {
@@ -159,11 +202,12 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
       mode: doc.mode,
       grantInstructions: doc.grantInstructions,
       grantTemplateId: doc.grantTemplateId ?? undefined,
+      ...(doc.importId ? { importId: doc.importId } : {}),
     };
     const fingerprint = rowFingerprint(row);
     const live = new Set(deps.liveAssetIds ? deps.liveAssetIds() : liveAssetIds());
     let written = true;
-    await db.transaction('rw', [db.documents, db.assets, db.autosaveBackups, db.preservationStores], async () => {
+    await db.transaction('rw', [db.documents, db.assets, db.autosaveBackups, db.preservationStores, db.docxPackages, db.importBackupParts], async () => {
       const prev = await db.documents.get('current');
       if (assets.length) await db.assets.bulkPut(assets); // idempotent (content-addressed)
       // Pin only a genuine legacy (pre-v3 HTML) row. A concurrent second migration (e.g. StrictMode
@@ -177,13 +221,25 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
         if (prev.saveState !== row.saveState) await db.documents.put({ ...prev, saveState: row.saveState });
         return;
       }
+      // The document is leaving its import (New Manuscript, a workspace file, a template, a text import): its package and preservation
+      // map are not this document's any more. They go with the backup of the document they belonged to, not into the new one.
+      const detaching = !!prev?.importId && prev.importId !== row.importId;
       if (prev) {
-        await db.autosaveBackups.add({ documentId: 'current', savedAt: Date.now(), row: prev, ...(pin ? { pinned: true as const } : {}) });
+        const seq = (await db.autosaveBackups.add({ documentId: 'current', savedAt: Date.now(), row: prev, ...(pin ? { pinned: true as const } : {}) })) as number;
+        if (detaching) {
+          const pkg = await db.docxPackages.get('current');
+          const preservation = await db.preservationStores.get('current');
+          if (pkg || preservation) await db.importBackupParts.put({ seq, ...(pkg ? { package: pkg } : {}), ...(preservation ? { preservation } : {}) });
+        }
+      }
+      if (detaching) {
+        await db.docxPackages.delete('current');
+        await db.preservationStores.delete('current');
       }
       // Quarantined (unreadable) and pinned (pre-migration) rows are exempt from the ring.
       const all = (await db.autosaveBackups.orderBy('seq').toArray()).filter(b => !b.quarantined && !b.pinned);
       const excess = all.length - maxBackups;
-      if (excess > 0) await db.autosaveBackups.bulkDelete(all.slice(0, excess).map(b => b.seq!));
+      if (excess > 0) await deleteBackups(all.slice(0, excess).map(b => b.seq!));
       await db.documents.put(row);
 
       const backups = await db.autosaveBackups.toArray();
@@ -249,7 +305,59 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
     }
   }
 
-  async function doImport(result: ImportResult, decisions: { title: string }): Promise<void> {
+  interface Replacement {
+    row: DocumentRow;
+    pkg?: DocxPackageRow;
+    preservation?: PreservationRow;
+    assets: AssetRow[];
+    /** Asset ids the new document uses that are not in `assets`: they must already be stored. */
+    needExisting: string[];
+  }
+
+  /**
+   * Make `r` the current document, inside a transaction the caller opened: back up the document it replaces (with its package and
+   * preservation map), then write the assets, the row and the package. The caller opens the transaction over the tables named in
+   * `REPLACE_TABLES`.
+   */
+  async function replaceCurrent(r: Replacement): Promise<void> {
+    // An image node whose bytes are neither in this import nor already stored would show a blank figure forever.
+    if (r.needExisting.length) {
+      const have = new Set((await db.assets.where(':id').anyOf(r.needExisting).primaryKeys()) as string[]);
+      const missing = r.needExisting.filter(id => !have.has(id));
+      if (missing.length) throw new Error(`The document refers to ${missing.length} image(s) whose bytes are missing, so it was not imported.`);
+    }
+    const prev = await db.documents.get('current');
+    // An empty or placeholder document is not worth a slot (four imports over fresh installs would otherwise push real work out).
+    if (prev && !isTrivialRow(prev)) {
+      const unreadable = rowToDoc(prev) === null;
+      const pkg = await db.docxPackages.get('current');
+      const preservation = await db.preservationStores.get('current');
+      const seq = (await db.autosaveBackups.add({
+        documentId: 'current',
+        savedAt: Date.now(),
+        row: prev,
+        // Unreadable: kept for forensics like any quarantined row (never a recovery candidate). Readable: pinned, so that ten
+        // later autosaves cannot push it out of the ring.
+        ...(unreadable ? { quarantined: true as const } : { pinned: true as const }),
+        replacedByImport: true as const,
+      })) as number;
+      if (pkg || preservation) await db.importBackupParts.put({ seq, ...(pkg ? { package: pkg } : {}), ...(preservation ? { preservation } : {}) });
+      const all = await db.autosaveBackups.orderBy('seq').toArray();
+      const ring = all.filter(b => !b.quarantined && !b.pinned);
+      if (ring.length > maxBackups) await deleteBackups(ring.slice(0, ring.length - maxBackups).map(b => b.seq!));
+      const imports = all.filter(b => b.replacedByImport && b.pinned);
+      if (imports.length > maxImportBackups) await deleteBackups(imports.slice(0, imports.length - maxImportBackups).map(b => b.seq!));
+    }
+    if (r.assets.length) await db.assets.bulkPut(r.assets); // idempotent (content-addressed)
+    await db.documents.put(r.row);
+    if (r.pkg) await db.docxPackages.put(r.pkg);
+    else await db.docxPackages.delete('current');
+    if (r.preservation) await db.preservationStores.put(r.preservation);
+    else await db.preservationStores.delete('current');
+  }
+  const REPLACE_TABLES = [db.documents, db.assets, db.autosaveBackups, db.docxPackages, db.preservationStores, db.importBackupParts];
+
+  async function doImport(result: ImportResult, decisions: { title: string }): Promise<{ importId: string }> {
     if (!deps.isValidDoc(result.doc)) {
       // Stored, it would load back as an "unreadable" document. Refuse before anything is written.
       throw new Error('The imported document is not valid for this editor, so it was not imported.');
@@ -258,63 +366,58 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
     const drafts = new Map(result.assets.map(a => [a.id, a]));
     // Only the images the document uses are stored: the garbage collector would remove any other, and the document row names the
     // ones it needs, so a figure can never be left without its bytes by a later save.
-    const rows: AssetRow[] = [...referenced]
+    const assets: AssetRow[] = [...referenced]
       .filter(id => drafts.has(id))
       .map(id => {
         const a = drafts.get(id)!;
         return { id: a.id, sha256: a.sha256, mime: a.mime, size: a.data.byteLength, data: a.data, createdAt: Date.now() };
       });
-    const needExisting = [...referenced].filter(id => !drafts.has(id));
     const title = decisions.title.trim() || 'Untitled Manuscript';
-
-    await db.transaction('rw', [db.documents, db.assets, db.autosaveBackups, db.docxPackages, db.preservationStores], async () => {
-      // An image node whose bytes are neither in this import nor already stored would show a blank figure forever.
-      if (needExisting.length) {
-        const have = new Set((await db.assets.where(':id').anyOf(needExisting).primaryKeys()) as string[]);
-        const missing = needExisting.filter(id => !have.has(id));
-        if (missing.length) throw new Error(`The imported document refers to ${missing.length} image(s) whose bytes are missing, so it was not imported.`);
-      }
+    const importId = newImportId();
+    const now = Date.now();
+    await db.transaction('rw', REPLACE_TABLES, async () => {
       const prev = await db.documents.get('current');
-      if (prev) {
-        const unreadable = rowToDoc(prev) === null;
-        const pkg = await db.docxPackages.get('current');
-        const preservation = await db.preservationStores.get('current');
-        await db.autosaveBackups.add({
-          documentId: 'current',
-          savedAt: Date.now(),
-          row: prev,
-          // Unreadable: kept for forensics like any quarantined row (never a recovery candidate). Readable: pinned, so that ten
-          // later autosaves cannot push it out of the ring.
-          ...(unreadable ? { quarantined: true as const } : { pinned: true as const }),
-          replacedByImport: { ...(pkg ? { package: pkg } : {}), ...(preservation ? { preservation } : {}) },
-        });
-        const all = await db.autosaveBackups.orderBy('seq').toArray();
-        const ring = all.filter(b => !b.quarantined && !b.pinned);
-        if (ring.length > maxBackups) await db.autosaveBackups.bulkDelete(ring.slice(0, ring.length - maxBackups).map(b => b.seq!));
-        const imports = all.filter(b => b.replacedByImport && b.pinned);
-        if (imports.length > maxImportBackups) await db.autosaveBackups.bulkDelete(imports.slice(0, imports.length - maxImportBackups).map(b => b.seq!));
-      }
-      if (rows.length) await db.assets.bulkPut(rows); // idempotent (content-addressed)
-      const now = Date.now();
-      await db.documents.put({
-        id: 'current',
-        title,
-        docJson: result.doc,
-        format: result.format,
-        comments: [],
-        schemaVersion: 3,
-        saveState: 'Saved',
-        citationRegistry: {},
-        citationCounter: 0,
-        figureRegistry: {},
-        figureCounter: 0,
-        updatedAt: now,
-        // How the author works (not what the document says) carries over; the template belongs to the replaced document.
-        mode: prev?.mode ?? 'manuscript',
-        grantInstructions: prev?.grantInstructions ?? '',
+      await replaceCurrent({
+        row: {
+          id: 'current',
+          title,
+          docJson: result.doc,
+          format: result.format,
+          comments: [],
+          schemaVersion: 3,
+          saveState: 'Saved',
+          citationRegistry: {},
+          citationCounter: 0,
+          figureRegistry: {},
+          figureCounter: 0,
+          updatedAt: now,
+          // How the author works (not what the document says) carries over; the template belongs to the replaced document.
+          mode: prev?.mode ?? 'manuscript',
+          grantInstructions: prev?.grantInstructions ?? '',
+          importId,
+        },
+        pkg: { documentId: 'current', original: result.original, fileName: result.fileName ?? title, importedAt: now, importId },
+        preservation: { documentId: 'current', store: result.preservation, updatedAt: now, importId },
+        assets,
+        needExisting: [...referenced].filter(id => !drafts.has(id)),
       });
-      await db.docxPackages.put({ documentId: 'current', original: result.original, fileName: result.fileName ?? title, importedAt: now });
-      await db.preservationStores.put({ documentId: 'current', store: result.preservation, updatedAt: now });
+    });
+    return { importId };
+  }
+
+  async function doRevert(): Promise<void> {
+    await db.transaction('rw', REPLACE_TABLES, async () => {
+      const all = (await db.autosaveBackups.orderBy('seq').toArray()).reverse();
+      const target = all.find(b => b.replacedByImport && b.pinned && rowToDoc(b.row));
+      if (!target) throw new Error('There is no replaced document to restore.');
+      const parts = await db.importBackupParts.get(target.seq!);
+      await replaceCurrent({
+        row: { ...target.row, saveState: 'Saved', updatedAt: Date.now() },
+        ...(parts?.package ? { pkg: parts.package } : {}),
+        ...(parts?.preservation ? { preservation: parts.preservation } : {}),
+        assets: [],
+        needExisting: [...collectAssetIds(target.row.docJson)],
+      });
     });
   }
 
@@ -357,6 +460,12 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
 
     importDocx(result, decisions) {
       const run = queue.then(() => doImport(result, decisions));
+      queue = run.catch(() => undefined);
+      return run;
+    },
+
+    revertImport() {
+      const run = queue.then(() => doRevert());
       queue = run.catch(() => undefined);
       return run;
     },

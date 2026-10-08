@@ -59,6 +59,28 @@ export function readRows(result: Pick<ImportResult, 'report'>): ReportRow[] {
   return rows;
 }
 
+const FOCUSABLE = 'button:not(:disabled), input:not(:disabled), [href], select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
+
+/** Keep Tab (and Shift+Tab) inside a modal: from the last control it goes to the first, and back. */
+function trapTab(e: React.KeyboardEvent<HTMLElement>): void {
+  if (e.key !== 'Tab') return;
+  const items = Array.from(e.currentTarget.querySelectorAll<HTMLElement>(FOCUSABLE));
+  if (!items.length) {
+    e.preventDefault();
+    return;
+  }
+  const first = items[0];
+  const last = items[items.length - 1];
+  const active = document.activeElement;
+  if (e.shiftKey && (active === first || !e.currentTarget.contains(active))) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && (active === last || !e.currentTarget.contains(active))) {
+    e.preventDefault();
+    first.focus();
+  }
+}
+
 const LEVEL_LABEL: Record<HeadingCandidate['level'], string> = { 1: 'H1', 2: 'H2', 3: 'H3' };
 
 export interface ImportReportDialogProps {
@@ -109,6 +131,7 @@ export default function ImportReportDialog({ result, onConfirm, onCancel, busy =
         role="dialog"
         aria-modal="true"
         aria-labelledby="import-report-title"
+        onKeyDown={trapTab}
         className="relative w-full max-w-2xl rounded-2xl shadow-2xl flex flex-col"
         style={{ border: '1px solid var(--border)', maxHeight: '88vh', background: 'var(--surface-1)', color: 'var(--text-primary)' }}
       >
@@ -119,9 +142,10 @@ export default function ImportReportDialog({ result, onConfirm, onCancel, busy =
         </div>
 
         <div className="p-5 overflow-y-auto space-y-5 text-xs">
-          <p style={{ color: 'var(--text-secondary)' }}>
-            Importing replaces the document that is open now. The open document is saved first and a copy is kept in this browser&apos;s
-            backup store, but Undo will not bring it back. Choose Cancel to keep it as it is.
+          <p style={{ color: 'var(--text-secondary)' }} data-testid="replace-notice">
+            Importing replaces the document that is open now, and Undo will not bring it back. The open document is saved first and, if it
+            has any content, kept: use &quot;Restore previous document&quot; (in the File menu, or the button on the message after the
+            import) to bring it back, or find a snapshot of its text in Version History. Choose Cancel to keep it exactly as it is.
           </p>
 
           {(rows.length > 0 || read.length > 0) && (
@@ -257,6 +281,7 @@ export function ImportProgressDialog({ fileName, size, stage, onCancel }: Import
         role="dialog"
         aria-modal="true"
         aria-labelledby="import-progress-title"
+        onKeyDown={trapTab}
         className="relative w-full max-w-sm rounded-2xl shadow-2xl p-5"
         style={{ border: '1px solid var(--border)', background: 'var(--surface-1)', color: 'var(--text-primary)' }}
       >

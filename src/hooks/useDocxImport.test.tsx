@@ -124,6 +124,23 @@ describe('useDocxImport', () => {
     expect(t.notes.at(-1)).toEqual(['Imported unstyled-sections.docx', 'success']);
   });
 
+  it('offers the action the app supplies (Restore previous document) with the success message, and none when it supplies none', async () => {
+    const action = { label: 'Restore previous document', onClick: vi.fn() };
+    const got: unknown[] = [];
+    const t = setup({ afterImportAction: () => action, notify: (m, ty, a) => { got.push([m, ty, a]); } });
+    await act(async () => { void t.api.start(file()); });
+    await tick();
+    await act(async () => { t.workers[0].finish(); });
+    await act(async () => { await t.api.confirm([]); });
+    expect(got.at(-1)).toEqual(['Imported unstyled-sections.docx', 'success', action]);
+    const t2 = setup({ afterImportAction: () => undefined });
+    await act(async () => { void t2.api.start(file()); });
+    await tick();
+    await act(async () => { t2.workers[0].finish(); });
+    await act(async () => { await t2.api.confirm([]); });
+    expect(t2.notes.at(-1)?.[1]).toBe('success');
+  });
+
   it('commit is called exactly once with title and accepted headings (and with the result that was reviewed)', async () => {
     const t = setup();
     await act(async () => { void t.api.start(file('My grant.docx')); });

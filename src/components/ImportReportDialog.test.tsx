@@ -74,6 +74,17 @@ describe('reportRows', () => {
   it('readRows lists what was read for orientation', () => {
     expect(Object.fromEntries(readRows({ report: busyReport() }).map(r => [r.key, r.value]))).toEqual({ page: 9, list: 2, table: 1, image: 4 });
   });
+
+  it('readRows adds the three kinds of picture together, both kinds of citation together, and shows bibliographies on their own', () => {
+    const r = createReport();
+    recordFeature(r, 'inlineImage', 3);
+    recordFeature(r, 'floatingImageSquare', 5);
+    recordFeature(r, 'floatingImageOther', 7);
+    recordFeature(r, 'nativeCitation', 11);
+    recordFeature(r, 'externalCitation', 13);
+    recordFeature(r, 'externalBibliography', 2);
+    expect(Object.fromEntries(readRows({ report: r }).map(x => [x.key, x.value]))).toEqual({ image: 15, citation: 24, bibliography: 2 });
+  });
 });
 
 describe('ImportReportDialog', () => {
@@ -89,6 +100,62 @@ describe('ImportReportDialog', () => {
     expect(q(el, '[data-testid="row-comment"]').textContent).toContain('5');
     expect(q(el, '[data-testid="row-comment"]').textContent).toContain('2 of them are not anchored in the main text.');
     expect(el.textContent).toContain('x.docx');
+  });
+
+  it('says that Undo will not bring the replaced document back, and says how it can be brought back', () => {
+    const el = mount(<ImportReportDialog result={{ report: createReport(), headingCandidates: [] }} onConfirm={noop} onCancel={noop} />);
+    const text = q(el, '[data-testid="replace-notice"]').textContent!.replace(/\s+/g, ' ');
+    expect(text).toContain('Undo will not bring it back');
+    expect(text).toContain('Restore previous document');
+    expect(text).toContain('Version History');
+    expect(text).toContain('Cancel');
+  });
+
+  it('opens with focus on Cancel, the safe choice', () => {
+    const el = mount(<ImportReportDialog result={{ report: createReport(), headingCandidates: [] }} onConfirm={noop} onCancel={noop} />);
+    expect(document.activeElement).toBe(button(el, /^Cancel$/));
+  });
+
+  it('clicking the backdrop cancels, unless the import is being written', () => {
+    const onCancel = vi.fn();
+    const el = mount(<ImportReportDialog result={{ report: createReport(), headingCandidates: [] }} onConfirm={noop} onCancel={onCancel} />);
+    click(q(el, '[data-testid="import-report-dialog"] > div.absolute'));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    act(() => { root!.render(<ImportReportDialog result={{ report: createReport(), headingCandidates: [] }} busy onConfirm={noop} onCancel={onCancel} />); });
+    click(q(el, '[data-testid="import-report-dialog"] > div.absolute'));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('labels each candidate with its level', () => {
+    const result = {
+      report: createReport(),
+      headingCandidates: [1, 2, 3].map(level => ({ index: level, level: level as 1 | 2 | 3, text: `T${level}`, evidence: ['e'], confidence: 'format' as const })),
+    };
+    const el = mount(<ImportReportDialog result={result} onConfirm={noop} onCancel={noop} />);
+    const labels = qa(el, '[data-testid="heading-candidates"] > li').map(li => li.textContent!.replace(/e$/, ''));
+    expect(labels).toEqual(['H1T1', 'H2T2', 'H3T3']);
+  });
+
+  it('keeps Tab inside the dialog: from the last control to the first, and Shift+Tab back', () => {
+    const result = { report: createReport(), headingCandidates: [{ index: 1, level: 1 as const, text: 'Aims', evidence: ['e'], confidence: 'name' as const }] };
+    const el = mount(<ImportReportDialog result={result} onConfirm={noop} onCancel={noop} />);
+    const dialog = q(el, '[role="dialog"]');
+    const controls = qa(dialog, 'button, input');
+    const first = controls[0];
+    const last = controls[controls.length - 1];
+    const press = (shiftKey: boolean) => {
+      const ev = new KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true, cancelable: true });
+      act(() => { document.activeElement!.dispatchEvent(ev); });
+      return ev;
+    };
+    last.focus();
+    expect(press(false).defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(first);
+    expect(press(true).defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(last);
+    // in the middle Tab is left alone for the browser
+    controls[1].focus();
+    expect(press(false).defaultPrevented).toBe(false);
   });
 
   it('calls onCancel for Cancel and for Escape, and onConfirm for Import', () => {
@@ -189,6 +256,16 @@ describe('ImportReportDialog', () => {
 });
 
 describe('ImportProgressDialog', () => {
+  it('keeps focus on its one button when Tab is pressed', () => {
+    const el = mount(<ImportProgressDialog fileName="a.docx" onCancel={() => {}} />);
+    const cancel = button(el, /^Cancel$/);
+    expect(document.activeElement).toBe(cancel);
+    const ev = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    act(() => { cancel.dispatchEvent(ev); });
+    expect(ev.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(cancel);
+  });
+
   it('names the file (and its size when large), shows the step, and Cancel and Escape both get out', () => {
     const onCancel = vi.fn();
     const el = mount(<ImportProgressDialog fileName="big grant.docx" size={6.5 * 1024 * 1024} stage="body" onCancel={onCancel} />);
