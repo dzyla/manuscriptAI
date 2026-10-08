@@ -7,7 +7,7 @@ import { mainDocumentPart } from './opc';
 import { readParagraph, blockChildren, unwrapGoogleSdt, isGoogleSdt } from './paragraphs';
 import { readRuns } from './runs';
 import type { ReadContext } from './context';
-import { createReport } from '../fidelity';
+import { createReport, summarizeReport } from '../fidelity';
 import { emptyPreservationStore } from '../preserve/types';
 import { isBlockUntouched } from '../preserve/hash';
 import { parseXml } from '../preserve/xml';
@@ -264,6 +264,12 @@ describe('body-basics.docx: nothing the app does not model is dropped', async ()
     expect(preserved(atom.attrs!.fragmentId).xml).toContain('insertedword');
   });
 
+  it('tells the report the document holds a tracked change, as well as keeping it opaque', () => {
+    expect(r.report.counts.trackedChange).toBe(1);
+    expect(r.report.warnings.some(w => w.feature === 'trackedChange' && w.category === 3)).toBe(true);
+    expect(summarizeReport(r.report)).toMatch(/1 tracked change/);
+  });
+
   it('keeps a non-Google content control opaque', () => {
     const p = find(r.blocks, 'Control: ');
     const atom = descendants(p, 'opaqueInline')[0];
@@ -435,5 +441,71 @@ describe('blockChildren', async () => {
     const out = blockChildren(body, r.ctx);
     expect(out.map(e => e.localName)).toEqual(['p', 'p', 'sdt', 'tbl']);
     expect((r.report.counts.googleWrapper ?? 0) - before).toBe(2);
+  });
+});
+
+describe('review material and fields are reported by what they are', async () => {
+  const W = `xmlns:w="${W_NS}"`;
+  const read = async (inner: string) => {
+    const r = await readBody('body-basics.docx');
+    const report = createReport();
+    const ctx = { ...r.ctx, report };
+    const p = parseXml(`<w:p ${W}>${inner}</w:p>`).documentElement;
+    const out = readRuns(p, ctx);
+    return { out, report, ctx };
+  };
+  const t = (s: string) => `<w:r><w:t>${s}</w:t></w:r>`;
+
+  it('counts one comment once however many anchors it has, and keeps every anchor', async () => {
+    const { out, report } = await read(
+      `<w:commentRangeStart w:id="4"/>${t('a')}<w:commentRangeEnd w:id="4"/><w:r><w:commentReference w:id="4"/></w:r>` +
+        `<w:commentRangeStart w:id="5"/>${t('b')}<w:commentRangeEnd w:id="5"/>`,
+    );
+    expect(out.filter(n => n.type === 'opaqueInline')).toHaveLength(5);
+    expect(report.counts.comment).toBe(2);
+    expect(report.byCategory[3]).toBe(5);
+    expect(summarizeReport(report)).toMatch(/2 comments/);
+  });
+
+  it('counts each insertion and deletion as a tracked change', async () => {
+    const { report } = await read(
+      `<w:ins w:id="1" w:author="x">${t('i')}</w:ins><w:del w:id="2" w:author="x"><w:r><w:delText>d</w:delText></w:r></w:del>`,
+    );
+    expect(report.counts.trackedChange).toBe(2);
+    expect(report.byCategory[3]).toBe(2);
+    expect(summarizeReport(report)).toMatch(/2 tracked changes/);
+  });
+
+  const field = (instr: string) =>
+    `<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> ${instr} </w:instrText></w:r>` +
+    `<w:r><w:fldChar w:fldCharType="separate"/></w:r>${t('(Smith, 2020)')}<w:r><w:fldChar w:fldCharType="end"/></w:r>`;
+
+  it('reports a split citation-manager field as an external citation and warns, leaving the result as editable text', async () => {
+    const { out, report } = await read(field('ADDIN CSL_CITATION {"citationItems":[]}'));
+    expect(out.map(n => n.type)).toEqual(['opaqueInline', 'opaqueInline', 'opaqueInline', 'text', 'opaqueInline']);
+    expect(out[1].attrs).toMatchObject({ kind: 'unknownField', label: 'citation field code' });
+    expect(out[3].text).toBe('(Smith, 2020)');
+    expect(report.counts.externalCitation).toBe(1);
+    expect(report.warnings.filter(w => w.feature === 'externalCitation' && w.category === 2)).toHaveLength(1);
+    expect(summarizeReport(report)).toMatch(/1 citation/);
+  });
+
+  it('warns once however many citation fields there are, and counts each', async () => {
+    const { report } = await read(field('ADDIN ZOTERO_ITEM CSL_CITATION {}') + field('ADDIN EN.CITE x') + field('ADDIN Mendeley Citation{x}'));
+    expect(report.counts.externalCitation).toBe(3);
+    expect(report.warnings.filter(w => w.feature === 'externalCitation')).toHaveLength(1);
+  });
+
+  it('does not call an ordinary field a citation, and does not count the continuation of a split instruction', async () => {
+    const { report } = await read(
+      field('PAGE') + `<w:r><w:instrText xml:space="preserve">ADDIN CSL_CITATION {</w:instrText></w:r><w:r><w:instrText>"x":1}</w:instrText></w:r>`,
+    );
+    expect(report.counts.externalCitation).toBe(1);
+  });
+
+  it('reports a simple citation field too', async () => {
+    const { out, report } = await read(`<w:fldSimple w:instr=" ADDIN ZOTERO_ITEM {}">${t('[1]')}</w:fldSimple>`);
+    expect(out).toHaveLength(1);
+    expect(report.counts.externalCitation).toBe(1);
   });
 });

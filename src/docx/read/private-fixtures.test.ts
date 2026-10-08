@@ -10,7 +10,7 @@ import { parseXmlStrict } from '../preserve/xml';
 import { readStyles } from './styles';
 import { readPageSetup } from './pageSetup';
 import { mainDocumentPart } from './opc';
-import { createReport } from '../fidelity';
+import { createReport, summarizeReport } from '../fidelity';
 import type { JSONContent } from '@tiptap/core';
 import { emptyPreservationStore } from '../preserve/types';
 import { isBlockUntouched } from '../preserve/hash';
@@ -150,24 +150,29 @@ describe.skipIf(docs.length === 0)('private real-world documents', () => {
     const googleInsideFragments = allSdts.filter(e => isGoogleSdt(e) && keptWhole(e)).length;
     expect(report.byCategory[3]).toBe(atoms);
 
-    // 4. no text dropped: every non-blank w:t character is in the document text or in a preserved fragment
+    // 4. no text dropped: every non-blank character of w:t, w:delText and w:instrText is in the document text or in a
+    //    preserved fragment. Whitespace is ignored because the reader legitimately trims un-preserved w:t and turns
+    //    w:tab / w:br into other whitespace; w:noBreakHyphen ('-') and w:softHyphen (U+00AD) add one visible character
+    //    each, so they are added to the source side, counting only those the reader turned into document text.
     const strip = (s: string) => s.replace(/\s+/g, '');
     const docText = (x: JSONContent): string => (x.type === 'text' ? x.text ?? '' : (x.content ?? []).map(docText).join(''));
-    const wText = (root: Element): string =>
-      Array.from(root.getElementsByTagNameNS(W_NS, 't')).map(t => t.textContent ?? '').join('');
-    const sourceChars = strip(sources.map(wText).join('')).length;
-    const noBreakHyphens = sources.reduce((a, p) => a + p.getElementsByTagNameNS(W_NS, 'noBreakHyphen').length, 0);
-    const fragmentChars = strip(
-      Object.values(ctx.preservation.fragments).map(f => wText(parseXml(f.xml).documentElement)).join(''),
-    ).length;
+    const TEXT_ELEMENTS = ['t', 'delText', 'instrText'];
+    const textIn = (root: Element): string =>
+      TEXT_ELEMENTS.flatMap(n => Array.from(root.getElementsByTagNameNS(W_NS, n))).map(t => t.textContent ?? '').join('');
+    const hyphensIn = (root: Element): number =>
+      root.getElementsByTagNameNS(W_NS, 'noBreakHyphen').length + root.getElementsByTagNameNS(W_NS, 'softHyphen').length;
+    const fragmentRoots = Object.values(ctx.preservation.fragments).map(f => parseXml(f.xml).documentElement);
+    const sourceChars = strip(sources.map(textIn).join('')).length;
+    const hyphens = sources.reduce((a, p) => a + hyphensIn(p), 0) - fragmentRoots.reduce((a, r) => a + hyphensIn(r), 0);
+    const fragmentChars = strip(fragmentRoots.map(textIn).join('')).length;
     const docChars = strip(docText(doc)).length;
-    expect(docChars + fragmentChars).toBe(sourceChars + noBreakHyphens);
+    expect(docChars + fragmentChars).toBe(sourceChars + hyphens);
 
     console.log(
       `body: ${sources.length} paragraphs read (${headings} headings, ${paragraphs} body), ${otherBlocks} non-paragraph body blocks left to later tasks, ` +
         `${report.counts.googleWrapper ?? 0} Google wrappers unwrapped (${blockLevelWrappers} at block level, ${googleInsideFragments} more kept inside preserved fragments), ${atoms} opaque atoms ` +
         `(${Object.values(ctx.preservation.fragments).length} fragments), ${pageBreaks} page breaks, ${links} linked runs, ` +
-        `${Object.keys(ctx.preservation.blocks).length} block fragments, ${report.warnings.length} warnings, text chars conserved ${docChars}+${fragmentChars}=${sourceChars + noBreakHyphens}`,
+        `${Object.keys(ctx.preservation.blocks).length} block fragments, ${report.warnings.length} warnings, summary "${summarizeReport(report)}", text chars conserved ${docChars}+${fragmentChars}=${sourceChars + hyphens}`,
     );
   });
 });

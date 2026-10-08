@@ -1,0 +1,44 @@
+import { describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { isBlockUntouched } from '../preserve/hash';
+
+let failNext = 0;
+vi.mock('../../extensions/schemaSpecs', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../extensions/schemaSpecs')>();
+  return {
+    ...actual,
+    specNormalizeNode: (n: unknown) => {
+      if (failNext > 0) {
+        failNext--;
+        throw new Error('forced');
+      }
+      return actual.specNormalizeNode(n as never);
+    },
+  };
+});
+
+const { openPackage } = await import('./package');
+const { readStyles } = await import('./styles');
+const { readParagraph } = await import('./paragraphs');
+const { createReport } = await import('../fidelity');
+const { emptyPreservationStore } = await import('../preserve/types');
+const { parseXml } = await import('../preserve/xml');
+const { W_NS } = await import('./ooxml');
+
+describe('a paragraph that cannot be normalized', () => {
+  it('keeps its text but is never stamped as untouched, and stores no block fragment', async () => {
+    const b = readFileSync(new URL('../../test/fixtures/docx/minimal.docx', import.meta.url));
+    const pkg = await openPackage(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer);
+    const report = createReport();
+    const preservation = emptyPreservationStore();
+    const ctx = { pkg, styles: readStyles(pkg, report), report, preservation, assets: [], nextId: () => 'b1' };
+    const p = parseXml(`<w:p xmlns:w="${W_NS}"><w:r><w:rPr><w:b/></w:rPr><w:t>kept text</w:t></w:r></w:p>`).documentElement;
+    failNext = 1;
+    const node = readParagraph(p, ctx) as { content: { text: string }[]; attrs: Record<string, unknown> };
+    expect(node.content[0].text).toBe('kept text');
+    expect(node.attrs.ooxml).toBeNull();
+    expect(isBlockUntouched(node as never)).toBe(false);
+    expect(Object.keys(preservation.blocks)).toEqual([]);
+    expect(report.warnings.some(w => /could not be represented/.test(w.message))).toBe(true);
+  });
+});

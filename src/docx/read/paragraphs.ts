@@ -114,10 +114,12 @@ export function readParagraph(p: Element, ctx: ReadContext): JSONContent | JSONC
   try {
     normalized = specNormalizeNode(node);
   } catch {
-    // Cannot happen for nodes this reader builds; if it ever does, keep the text rather than fail the import.
-    warnOnce(ctx.report, 'part', 'A paragraph could not be represented exactly; its plain text was kept.', 2);
-    const text = (content ?? []).map(c => c.text ?? '').join('');
-    normalized = specNormalizeNode({ type: 'paragraph', attrs: { styleId: null }, ...(text ? { content: [{ type: 'text', text }] } : {}) });
+    // Cannot happen for nodes this reader builds. If it ever does, keep the text, but stamp NOTHING:
+    // a degraded node must never read as "untouched", or its degraded content would become the export
+    // basis after the first edit. Without provenance the exporter regenerates it and the report says so.
+    warnOnce(ctx.report, 'part', 'A paragraph could not be represented exactly; only its plain text was kept and its original formatting will not be reused.', 2);
+    const text = content.map(c => c.text ?? '').join('');
+    return specNormalizeNode({ type: 'paragraph', attrs: { styleId: null }, ...(text ? { content: [{ type: 'text', text }] } : {}) });
   }
   const blockId = ctx.nextId();
   ctx.preservation.blocks[blockId] = captureFragment(p);
