@@ -101,13 +101,27 @@ export const ResizableImage = Node.create({
       src:   { default: null },
       alt:   { default: '' },
       title: { default: '' },
-      width: { default: '100%' },
-      align: { default: 'center' },
+      width: {
+        default: '100%',
+        parseHTML: (el: HTMLElement) => el.style.width || el.getAttribute('width') || '100%',
+      },
+      align: {
+        default: 'center',
+        parseHTML: (el: HTMLElement) => {
+          const a = el.getAttribute('data-align');
+          return a === 'left' || a === 'center' || a === 'right' ? a : 'center';
+        },
+      },
+      assetId: {
+        default: null,
+        parseHTML: (el: HTMLElement) => el.getAttribute('data-asset-id'),
+        renderHTML: (attrs: Record<string, unknown>) => (attrs.assetId ? { 'data-asset-id': attrs.assetId } : {}),
+      },
     };
   },
 
   parseHTML() {
-    return [{ tag: 'img[src]' }];
+    return [{ tag: 'img[src]' }, { tag: 'img[data-asset-id]' }];
   },
 
   renderHTML({ HTMLAttributes }) {
