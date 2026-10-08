@@ -218,10 +218,13 @@ function formatRejection(text: string, rest: string): string | null {
 
 const plural = (n: number, one: string, many = one + 's') => `${n} ${n === 1 ? one : many}`;
 
-/** The document already styles at least one heading (a Heading style or a direct outline level). */
+/**
+ * The document already styles at least one section heading (a Heading style or a direct outline level) among its top-level
+ * blocks. A heading inside a table cell or a list item is a label in a layout (a boxed form title), not evidence that the
+ * author styled the document's section titles, so it does not count.
+ */
 export function hasHeadings(doc: JSONContent): boolean {
-  const walk = (n: JSONContent): boolean => n.type === 'heading' || (n.content ?? []).some(walk);
-  return walk(doc);
+  return (doc.content ?? []).some(n => n.type === 'heading');
 }
 
 function isBlank(d: ParagraphDraft): boolean {

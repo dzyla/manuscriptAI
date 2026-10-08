@@ -29,7 +29,7 @@ import { warnOnce, type ReadContext } from './context';
 import { childElements, firstW, int, isW, onOff, wAttr } from './ooxml';
 import { classifyOpaque, readOpaque, snapshotCommentIds } from './opaque';
 import { blockChildren, readParagraph } from './paragraphs';
-import { groupListParagraphs, listCounterKey, readNumbering } from './numbering';
+import { getNumbering, groupListParagraphs, listCounterKey } from './numbering';
 
 /** 1 twip = 1/1440 in = 96/1440 CSS px. */
 const twipsToPx = (t: number): number => Math.max(1, Math.round(t / 15));
@@ -166,17 +166,22 @@ interface BuiltCell {
   content: JSONContent[];
 }
 
-/** Withdraw everything a failed or abandoned table read added, like readParagraph does for a paragraph. */
-function rollbackPoint(ctx: ReadContext): () => void {
-  const blocks = new Set(Object.keys(ctx.preservation.blocks));
-  const fragments = new Set(Object.keys(ctx.preservation.fragments));
+/**
+ * Withdraw what an abandoned table read added. O(1) to take: the report counts are small, the comment ids are restored by size, and
+ * the block and fragment entries are removed by the ids this read asked `ctx.nextId` for (see `readTableAt`), never by scanning the
+ * preservation maps, which would make a document with thousands of tables quadratic.
+ */
+function rollbackPoint(ctx: ReadContext, created: string[]): () => void {
   const counts = { ...ctx.report.counts };
   const byCategory = { ...ctx.report.byCategory };
   const warnings = ctx.report.warnings.length;
   const restoreComments = snapshotCommentIds(ctx.report);
   return () => {
-    for (const id of Object.keys(ctx.preservation.blocks)) if (!blocks.has(id)) delete ctx.preservation.blocks[id];
-    for (const id of Object.keys(ctx.preservation.fragments)) if (!fragments.has(id)) delete ctx.preservation.fragments[id];
+    for (const id of created) {
+      delete ctx.preservation.blocks[id];
+      delete ctx.preservation.fragments[id];
+    }
+    created.length = 0;
     ctx.report.counts = counts;
     ctx.report.byCategory = byCategory;
     ctx.report.warnings.length = warnings;
@@ -202,7 +207,7 @@ function readCell(tc: Element, ctx: ReadContext, depth: number): JSONContent[] {
       nodes.push(readOpaque(el, ctx, c.kind, c.label, { block: true }));
     }
   }
-  const numbering = (ctx.numbering ??= readNumbering(ctx.pkg, ctx.report));
+  const numbering = getNumbering(ctx);
   const grouped = groupListParagraphs(nodes.map(node => ({ node })), numbering, ctx);
 
   // Lists are grouped per cell, so a numbered list that carries on from an earlier cell starts again here.
@@ -229,11 +234,28 @@ function readCell(tc: Element, ctx: ReadContext, depth: number): JSONContent[] {
   }
   mine.forEach(k => used.add(k));
   // A cell holds at least one block. A cell with no paragraph in the source (malformed) gets an empty one, which stands for nothing in the file.
+  // WRITER: the opposite case. A cell that ENDS with a nested table has no trailing paragraph here, but Word requires a final `<w:p/>`
+  // in every `<w:tc>` (it is in the original fragment). When re-emitting such a cell, add an empty `<w:p/>` after the table.
   return grouped.length ? grouped : [{ type: 'paragraph' }];
 }
 
 function readTableAt(tbl: Element, ctx: ReadContext, depth: number): JSONContent {
-  const rollback = rollbackPoint(ctx);
+  // Every id this read (and the tables nested in it) takes is logged, so an abandoned read can remove exactly its own entries.
+  const created: string[] = [];
+  const outerNextId = ctx.nextId;
+  ctx.nextId = () => {
+    const id = outerNextId();
+    created.push(id);
+    return id;
+  };
+  try {
+    return readTableBody(tbl, ctx, depth, rollbackPoint(ctx, created));
+  } finally {
+    ctx.nextId = outerNextId;
+  }
+}
+
+function readTableBody(tbl: Element, ctx: ReadContext, depth: number, rollback: () => void): JSONContent {
   if (depth >= MAX_DEPTH) return keepWhole(tbl, ctx, rollback, KEPT_WHOLE_DEPTH);
 
   const issues = new Set<Issue>();

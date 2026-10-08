@@ -255,6 +255,14 @@ export function readNumbering(pkg: DocxPackage, report?: ImportReport): Numberin
   return map;
 }
 
+/**
+ * The document's numbering definitions, read once per import: every reader that needs them (the body, table cells) calls this
+ * instead of `readNumbering`, so a malformed numbering part is parsed, and warned about, a single time.
+ */
+export function getNumbering(ctx: ReadContext): NumberingMap {
+  return (ctx.numbering ??= readNumbering(ctx.pkg, ctx.report));
+}
+
 // ─── which numbering a paragraph has ────────────────────────────────────────────────────────────────────────────
 
 interface ParaNumPr {

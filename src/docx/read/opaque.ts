@@ -40,10 +40,17 @@ export function recordField(key: 'externalCitation' | 'externalBibliography', ct
   for (const a of codeAtoms) if (a.attrs) a.attrs.label = label;
 }
 
-/** Capture the comment ids counted so far; the returned function restores that state (used when a paragraph's atoms are withdrawn). */
+/**
+ * Remember how many comment ids are counted so far; the returned function forgets every id counted after that (used when a
+ * paragraph's or table's atoms are withdrawn). O(1) to take: ids are kept in counting order, so only the restore walks the set.
+ */
 export function snapshotCommentIds(report: ImportReport): () => void {
-  const before = new Set(seenComments.get(report) ?? []);
-  return () => void seenComments.set(report, before);
+  const before = seenComments.get(report)?.size ?? 0;
+  return () => {
+    const seen = seenComments.get(report);
+    if (!seen || seen.size <= before) return;
+    [...seen].slice(before).forEach(id => seen.delete(id));
+  };
 }
 
 /** Comment ids already counted, so one comment (start, end and reference) is one `comment`. */

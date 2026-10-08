@@ -8,13 +8,13 @@ import { readStyles } from './styles';
 import { mainDocumentPart } from './opc';
 import { readParagraph, blockChildren } from './paragraphs';
 import { readTable } from './tables';
-import { groupListParagraphs, readNumbering } from './numbering';
+import { getNumbering, groupListParagraphs } from './numbering';
 import { inferHeadings } from './headings';
 import { readOpaque, classifyOpaque } from './opaque';
 import type { ReadContext } from './context';
 import { createReport, FIDELITY } from '../fidelity';
 import { emptyPreservationStore } from '../preserve/types';
-import { isBlockUntouched } from '../preserve/hash';
+import { blockHash, isBlockUntouched, structureHash } from '../preserve/hash';
 import { parseXml } from '../preserve/xml';
 import { getSpecSchema } from '../../extensions/schemaSpecs';
 import { W_NS, isW } from './ooxml';
@@ -26,7 +26,7 @@ const load = (name: string): ArrayBuffer => {
 
 /**
  * What the body reader (Task 9) will do with the block stream: paragraphs, tables, anything else opaque, then the list grouping.
- * The numbering is set on the context once, as the body reader will.
+ * Numbering comes from `getNumbering(ctx)`, as the body reader will get it.
  */
 async function readDocument(data: ArrayBuffer) {
   const pkg = await openPackage(data);
@@ -40,7 +40,6 @@ async function readDocument(data: ArrayBuffer) {
     assets: [],
     nextId: () => `b${++n}`,
   };
-  ctx.numbering = readNumbering(pkg, report);
   const body = pkg.xml(mainDocumentPart(pkg))!.getElementsByTagNameNS(W_NS, 'body')[0];
   const sources = blockChildren(body, ctx).filter(el => !isW(el, 'sectPr'));
   const flat = sources.flatMap((el): JSONContent[] => {
@@ -49,7 +48,7 @@ async function readDocument(data: ArrayBuffer) {
     const c = classifyOpaque(el);
     return [readOpaque(el, ctx, c.kind, c.label, { block: true })];
   });
-  const blocks = groupListParagraphs(flat.map(node => ({ node })), ctx.numbering, ctx);
+  const blocks = groupListParagraphs(flat.map(node => ({ node })), getNumbering(ctx), ctx);
   return { pkg, ctx, report, body, sources, blocks, doc: { type: 'doc', content: blocks } as JSONContent };
 }
 
@@ -103,7 +102,7 @@ const NUMBERING = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 </w:numbering>`;
 const STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="${WNS}"><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style></w:styles>`;
 
-async function inline(bodyXml: string): Promise<ArrayBuffer> {
+async function inline(bodyXml: string, numberingXml = NUMBERING): Promise<ArrayBuffer> {
   const zip = new JSZip();
   const ct = 'application/vnd.openxmlformats-officedocument.wordprocessingml';
   zip.file('[Content_Types].xml', `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="${ct}.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="${ct}.styles+xml"/><Override PartName="/word/numbering.xml" ContentType="${ct}.numbering+xml"/></Types>`);
@@ -111,7 +110,7 @@ async function inline(bodyXml: string): Promise<ArrayBuffer> {
   zip.file('word/_rels/document.xml.rels', `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${RNS}/styles" Target="styles.xml"/><Relationship Id="rId2" Type="${RNS}/numbering" Target="numbering.xml"/></Relationships>`);
   zip.file('word/document.xml', `<?xml version="1.0"?><w:document xmlns:w="${WNS}"><w:body>${bodyXml}</w:body></w:document>`);
   zip.file('word/styles.xml', STYLES);
-  zip.file('word/numbering.xml', NUMBERING);
+  zip.file('word/numbering.xml', numberingXml);
   return zip.generateAsync({ type: 'arraybuffer' });
 }
 const readInline = async (bodyXml: string) => readDocument(await inline(bodyXml));
@@ -686,5 +685,201 @@ describe('tables: heading inference sees the grouped document, tables included',
     );
     const found = inferHeadings(r.doc, r.ctx);
     expect(found.map(c => c.text)).toEqual(['Results', 'Discussion']);
+  });
+});
+
+// ─── review round 1 ─────────────────────────────────────────────────────────────────────────────────────────────
+
+const REV = 'w:id="1" w:author="A" w:date="2026-01-01T00:00:00Z"';
+
+describe('tables: every property the model cannot hold is recorded with its own message', () => {
+  const oneCell = (tcPr = '', trPr = '', tblPr = '', gridXml = grid(1000)) => tbl(gridXml, tr(tc(p('x'), tcPr), trPr), tblPr);
+  const layout = (r: Awaited<ReturnType<typeof readDocument>>) => r.report.warnings.filter(w => w.feature === 'tableLayout');
+
+  const cases: Array<[string, () => string, RegExp]> = [
+    ['gridBefore', () => oneCell('', '<w:gridBefore w:val="1"/>'), /gridBefore/],
+    ['gridAfter', () => oneCell('', '<w:gridAfter w:val="1"/>'), /gridAfter/],
+    ['row insertion', () => oneCell('', `<w:ins ${REV}/>`), /whole table row/],
+    ['row deletion', () => oneCell('', `<w:del ${REV}/>`), /whole table row/],
+    ['trPrChange', () => oneCell('', `<w:trPrChange ${REV}><w:trPr/></w:trPrChange>`), /formatting/],
+    ['cellIns', () => oneCell(`<w:cellIns ${REV}/>`), /formatting/],
+    ['cellDel', () => oneCell(`<w:cellDel ${REV}/>`), /formatting/],
+    ['cellMerge', () => oneCell(`<w:cellMerge ${REV} w:vMerge="rest"/>`), /formatting/],
+    ['tcPrChange', () => oneCell(`<w:tcPrChange ${REV}><w:tcPr/></w:tcPrChange>`), /formatting/],
+    ['tblPrChange', () => oneCell('', '', `<w:tblPrChange ${REV}><w:tblPr/></w:tblPrChange>`), /formatting/],
+    ['tblGridChange', () => oneCell('', '', '', `<w:tblGrid><w:gridCol w:w="1000"/><w:tblGridChange ${REV}><w:tblGrid/></w:tblGridChange></w:tblGrid>`), /formatting/],
+    ['tblPrEx', () => tbl(grid(1000), tr('<w:tblPrEx><w:tblW w:w="1" w:type="dxa"/></w:tblPrEx>' + tc(p('x')))), /tblPrEx/],
+    ['floating table', () => oneCell('', '', '<w:tblpPr w:leftFromText="100"/>'), /floating table/],
+    ['legacy hMerge', () => oneCell('<w:hMerge w:val="restart"/>'), /hMerge/],
+    ['oversized gridSpan', () => oneCell('<w:gridSpan w:val="64"/>'), /more grid columns than Word allows/],
+    ['content control around a cell', () => tbl(grid(1000), tr(`<w:sdt><w:sdtPr/><w:sdtContent>${tc(p('x'))}</w:sdtContent></w:sdt>`)), /content control/],
+    ['bookmark between rows', () => tbl(grid(1000), '<w:bookmarkStart w:id="2" w:name="m"/>' + tr(tc(p('x')))), /Markup between/],
+    ['comment range between cells', () => tbl(grid(1000), tr('<w:commentRangeStart w:id="3"/>' + tc(p('x')))), /Markup between/],
+    ['orphan continuation', () => tbl(grid(1000), tr(tc('<w:p/>', cont))), /no matching cell above/],
+    ['continuation with content', () => tbl(grid(1000), tr(tc(p('top'), restart)) + tr(tc(p('hidden'), cont))), /content that Word does not show/],
+  ];
+  it.each(cases)('%s: one category-2 tableLayout record with its own message', async (_name, xml, message) => {
+    const r = await readInline(xml());
+    expect(r.blocks[0].type).toBe('table');
+    expect(r.report.counts.tableLayout).toBe(1);
+    expect(layout(r)).toHaveLength(1);
+    expect(layout(r)[0].category).toBe(2);
+    expect(layout(r)[0].message).toMatch(message);
+    expectTextConserved(r, Array.from(r.body.getElementsByTagNameNS(W_NS, 'tbl')));
+  });
+
+  it('the orphan and the hidden-content messages are different', async () => {
+    const a = layout(await readInline(tbl(grid(1000), tr(tc('<w:p/>', cont)))))[0].message;
+    const b = layout(await readInline(tbl(grid(1000), tr(tc(p('top'), restart)) + tr(tc(p('hidden'), cont)))))[0].message;
+    expect(a).not.toBe(b);
+  });
+
+  const borderCases: Array<[string, string, string, string]> = [
+    ['table-level shd', '', '', '<w:shd w:val="clear" w:fill="DDDDDD"/>'],
+    ['tblBorders', '', '', '<w:tblBorders><w:top w:val="single" w:sz="4"/></w:tblBorders>'],
+    ['cell-level shd alone', '<w:shd w:val="clear" w:fill="DDDDDD"/>', '', ''],
+    ['tcBorders alone', '<w:tcBorders><w:top w:val="single" w:sz="4"/></w:tcBorders>', '', ''],
+  ];
+  it.each(borderCases)('%s alone is recorded once as a category-2 table border/shading approximation', async (_n, tcPr, trPr, tblPr) => {
+    const r = await readInline(oneCell(tcPr, trPr, tblPr));
+    expect(r.report.counts.tableBorders).toBe(1);
+    expect(r.report.warnings.filter(w => w.feature === 'tableBorders').map(w => w.category)).toEqual([2]);
+    expect(r.report.counts.tableLayout).toBeUndefined();
+  });
+
+  it('a gridCol with width 0 gives no colwidth for the columns it covers, and the next column keeps its own', async () => {
+    const r = await readInline(tbl(grid(0, 1500), tr(tc(p('a')) + tc(p('b')))));
+    expect(cellsOf(rowsOf(r.blocks[0])[0]).map(c => c.attrs!.colwidth)).toEqual([null, [100]]);
+  });
+
+  it('a continuation cell carrying only proofErr, or only an empty run with lastRenderedPageBreak, is blank and folds', async () => {
+    const proof = '<w:p><w:proofErr w:type="spellStart"/><w:proofErr w:type="spellEnd"/></w:p>';
+    const rendered = '<w:p><w:pPr><w:rPr/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:lastRenderedPageBreak/></w:r></w:p>';
+    for (const blank of [proof, rendered]) {
+      const r = await readInline(tbl(grid(1000), tr(tc(p('top'), restart)) + tr(tc(blank, cont))));
+      expect(cellsOf(rowsOf(r.blocks[0])[0])[0].attrs).toMatchObject({ rowspan: 2 });
+      expect(r.report.counts.tableLayout).toBeUndefined();
+    }
+  });
+
+  it('an ordered list inside a nested table is not mistaken for a continuation by the outer cell', async () => {
+    const inner = tbl(grid(1000), tr(tc(li('inner one', 2) + li('inner two', 2))));
+    const r = await readInline(tbl(grid(3000), tr(tc(p('outer') + inner))));
+    expect(all(r.blocks, n => n.type === 'orderedList')).toHaveLength(1);
+    expect(r.report.counts.complexNumbering).toBeUndefined();
+  });
+});
+
+describe('tables: structureHash separates "the table was edited" from "the table changed shape"', () => {
+  const clone = <T,>(x: T): T => JSON.parse(JSON.stringify(x)) as T;
+  const prov = (t: JSONContent) => t.attrs!.ooxml as { blockId: string; sourceHash: string; structureHash: string };
+
+  it('is stored on every table, nested ones included, and matches the table as read', async () => {
+    const r = await readDocument(load('tables.docx'));
+    const tables = all(r.blocks, n => n.type === 'table');
+    expect(tables).toHaveLength(2);
+    for (const t of tables) {
+      expect(prov(t).structureHash).toMatch(/^[0-9a-f]{14}$/);
+      expect(structureHash(t)).toBe(prov(t).structureHash);
+    }
+    expect(prov(tables[0]).structureHash).not.toBe(prov(tables[1]).structureHash);
+    expect(all(r.blocks, n => n.type === 'paragraph').every(x => !('structureHash' in (x.attrs!.ooxml as object)))).toBe(true);
+  });
+
+  it('a text-only edit in a cell keeps the structure hash and changes the content hash', async () => {
+    const r = await readDocument(load('tables.docx'));
+    const table = r.blocks.find(b => b.type === 'table')!;
+    const edited = clone(table);
+    const para = all([edited], n => n.type === 'paragraph').find(x => textOf(x) === 'r1 c4')!;
+    para.content = [{ type: 'text', text: 'r1 c4 edited' }];
+    expect(isBlockUntouched(edited)).toBe(false);
+    expect(blockHash(edited)).not.toBe(prov(table).sourceHash);
+    expect(structureHash(edited)).toBe(prov(table).structureHash);
+    // the edited paragraph is no longer untouched, the others still are: the writer patches only that one into the original <w:tbl>
+    const untouched = all([edited], n => n.type === 'paragraph').filter(isBlockUntouched);
+    expect(untouched).toHaveLength(all([table], n => n.type === 'paragraph').length - 1);
+  });
+
+  it('a text edit inside a NESTED table, and a paragraph added to or removed from a cell, keep the structure hash', async () => {
+    const r = await readDocument(load('tables.docx'));
+    const table = r.blocks.find(b => b.type === 'table')!;
+    const edited = clone(table);
+    all([edited], n => n.type === 'paragraph').find(x => textOf(x) === 'nested 3')!.content = [{ type: 'text', text: 'changed' }];
+    expect(structureHash(edited)).toBe(prov(table).structureHash);
+    const withExtra = clone(table);
+    const cell = all([withExtra], n => n.type === 'tableCell').find(c => textOf(c) === 'r1 c4')!;
+    cell.content!.push({ type: 'paragraph', content: [{ type: 'text', text: 'new line' }] });
+    expect(structureHash(withExtra)).toBe(prov(table).structureHash);
+    const fewer = clone(table);
+    const two = all([fewer], n => n.type === 'tableCell').find(c => textOf(c).startsWith('r2 c2'))!;
+    two.content = [two.content![0]];
+    expect(structureHash(fewer)).toBe(prov(table).structureHash);
+  });
+
+  it('adding or removing a row, a cell, or a nested row changes it; so does a span, a width or header-ness', async () => {
+    const r = await readDocument(load('tables.docx'));
+    const table = r.blocks.find(b => b.type === 'table')!;
+    const h = prov(table).structureHash;
+    const addRow = clone(table);
+    addRow.content!.push(clone(addRow.content![addRow.content!.length - 1]));
+    expect(structureHash(addRow)).not.toBe(h);
+    const dropRow = clone(table);
+    dropRow.content!.pop();
+    expect(structureHash(dropRow)).not.toBe(h);
+    const dropCell = clone(table);
+    dropCell.content![0].content!.pop();
+    expect(structureHash(dropCell)).not.toBe(h);
+    const nestedRow = clone(table);
+    all([nestedRow], n => n.type === 'table')[1].content!.pop();
+    expect(structureHash(nestedRow)).not.toBe(h);
+    const colspan = clone(table);
+    all([colspan], n => n.type === 'tableCell')[0].attrs!.colspan = 2;
+    expect(structureHash(colspan)).not.toBe(h);
+    const rowspan = clone(table);
+    all([rowspan], n => n.type === 'tableCell')[0].attrs!.rowspan = 3;
+    expect(structureHash(rowspan)).not.toBe(h);
+    const width = clone(table);
+    all([width], n => n.type === 'tableCell')[0].attrs!.colwidth = [999];
+    expect(structureHash(width)).not.toBe(h);
+    const header = clone(table);
+    header.content![1].content![0].type = 'tableHeader';
+    expect(structureHash(header)).not.toBe(h);
+  });
+
+  it('survives schema normalization and a JSON round trip', async () => {
+    const r = await readDocument(load('tables.docx'));
+    const back = getSpecSchema().nodeFromJSON(r.doc).toJSON() as JSONContent;
+    const t = back.content!.find(b => b.type === 'table')!;
+    expect(prov(t).structureHash).toBe(prov(r.blocks[1]).structureHash);
+    expect(structureHash(t)).toBe(prov(t).structureHash);
+  });
+});
+
+describe('tables: shared state', () => {
+  it('numbering is parsed once for tables and body together: a damaged numbering part warns once', async () => {
+    const r = await readDocument(await inline(tbl(grid(1000), tr(tc(p('a')))) + tbl(grid(1000), tr(tc(p('b')))) + p('c'), '<w:numbering xmlns:w="x"'));
+    expect(r.report.warnings.filter(w => /numbering\.xml could not be read/.test(w.message))).toHaveLength(1);
+  });
+
+  it('a table-heavy document reads in linear time (12000 one-cell tables)', async () => {
+    const one = tbl(grid(1000), tr(tc(p('x'))));
+    const started = Date.now();
+    const r = await readInline(one.repeat(12000));
+    expect(r.blocks).toHaveLength(12000);
+    expect(Date.now() - started).toBeLessThan(8000);
+  }, 60000);
+
+  it('an abandoned read removes exactly its own blocks and fragments, not its neighbours\'', async () => {
+    // a table whose cell paragraphs register blocks, nested inside one that is then kept whole at the depth limit
+    let xml = tbl(grid(1000), tr(tc(p('deepest') + '<w:bookmarkStart w:id="9" w:name="x"/>')));
+    for (let i = 0; i < 11; i++) xml = tbl(grid(1000), tr(tc(p('level ' + i) + xml)));
+    const r = await readInline(p('before') + xml + p('after'));
+    const kept = all(r.blocks, n => n.type === 'opaqueBlock');
+    expect(kept).toHaveLength(1);
+    // every block entry is referenced by a paragraph or table in the model; no orphan is left behind
+    const referenced = new Set(all(r.blocks, n => !!n.attrs?.ooxml).map(blockIdOf));
+    expect(Object.keys(r.ctx.preservation.blocks).sort()).toEqual([...referenced].sort());
+    // the fragment of the kept-whole table is the only fragment (the bookmark inside it lives in that table's XML)
+    expect(Object.keys(r.ctx.preservation.fragments)).toEqual([kept[0].attrs!.fragmentId]);
   });
 });

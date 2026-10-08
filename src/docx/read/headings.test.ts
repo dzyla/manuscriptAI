@@ -893,14 +893,30 @@ describe('detection skipped because the document has a styled heading', () => {
     expect(warns[0].message).toContain('3 unstyled lines');
   });
 
-  it('the one styled heading may sit inside a table cell: the whole document is still skipped', () => {
+  const readCtx = (report: ReturnType<typeof createReport>) =>
+    ({ styles: { format: createFormat('nih'), styleIdByWordId: new Map() }, report, preservation: emptyPreservationStore() }) as unknown as ReadContext;
+
+  it('a styled heading inside a table cell does not suppress inference for the section titles outside it', () => {
     const table: JSONContent = { type: 'table', content: [{ type: 'tableRow', content: [{ type: 'tableCell', content: [heading] }] }] };
     const doc: JSONContent = { type: 'doc', content: [table, ...unstyled] };
+    expect(hasHeadings(doc)).toBe(false);
+    const report = createReport();
+    const got = inferHeadings(doc, readCtx(report));
+    expect(got.map(c => c.text)).toContain('Specific Aims');
+    expect(report.counts.inferredHeading).toBe(got.length);
+  });
+
+  it('a styled heading inside a list item does not count either', () => {
+    const list: JSONContent = { type: 'bulletList', content: [{ type: 'listItem', content: [heading] }] };
+    expect(hasHeadings({ type: 'doc', content: [list, ...unstyled] })).toBe(false);
+  });
+
+  it('a styled heading at the top level, beside a table, still suppresses inference', () => {
+    const table: JSONContent = { type: 'table', content: [{ type: 'tableRow', content: [{ type: 'tableCell', content: [para('Cell text')] }] }] };
+    const doc: JSONContent = { type: 'doc', content: [heading, table, ...unstyled] };
     expect(hasHeadings(doc)).toBe(true);
     const report = createReport();
-    const fmt = createFormat('nih');
-    const got = inferHeadings(doc, { styles: { format: fmt, styleIdByWordId: new Map() }, report, preservation: emptyPreservationStore() } as unknown as ReadContext);
-    expect(got).toEqual([]);
+    expect(inferHeadings(doc, readCtx(report))).toEqual([]);
     expect(report.warnings.filter(w => w.feature === 'inferredHeading')).toHaveLength(1);
   });
 

@@ -13,14 +13,14 @@ import { mainDocumentPart } from './opc';
 import { createReport, summarizeReport } from '../fidelity';
 import type { JSONContent } from '@tiptap/core';
 import { emptyPreservationStore } from '../preserve/types';
-import { isBlockUntouched } from '../preserve/hash';
+import { isBlockUntouched, structureHash } from '../preserve/hash';
 import { parseXml } from '../preserve/xml';
 import { getSpecSchema } from '../../extensions/schemaSpecs';
 import { W_NS, isW } from './ooxml';
 import { blockChildren, readParagraph, paragraphDrafts } from './paragraphs';
 import { applyHeadings, bodyFontSize, detectHeadings, hasHeadings, inferHeadings } from './headings';
 import { isGoogleSdt } from './sdt';
-import { groupListParagraphs, readNumbering } from './numbering';
+import { getNumbering, groupListParagraphs, readNumbering } from './numbering';
 import { readTable } from './tables';
 import type { ReadContext } from './context';
 
@@ -44,11 +44,10 @@ async function readBlocks(name: string) {
     assets: [],
     nextId: () => `b${++n}`,
   };
-  ctx.numbering = readNumbering(pkg, report);
   const body = pkg.xml(mainDocumentPart(pkg))!.getElementsByTagNameNS(W_NS, 'body')[0];
   const sources = blockChildren(body, ctx).filter(el => isW(el, 'p') || isW(el, 'tbl'));
   const flat = sources.flatMap((el): JSONContent[] => (isW(el, 'p') ? [readParagraph(el, ctx)].flat() : [readTable(el, ctx)]));
-  const blocks = groupListParagraphs(flat.map(node => ({ node })), ctx.numbering, ctx);
+  const blocks = groupListParagraphs(flat.map(node => ({ node })), getNumbering(ctx), ctx);
   return { pkg, ctx, report, body, sources, flat, blocks, doc: { type: 'doc', content: blocks } as JSONContent };
 }
 
@@ -443,6 +442,18 @@ describe.skipIf(docs.length === 0)('private real-world documents', () => {
       expect(frag, 'table fragment').toBeDefined();
       expect(parseXml(frag.xml).documentElement.localName).toBe('tbl');
     }
+    // 3b. a text-only edit in a cell leaves the table's structure hash alone (the writer can patch the original <w:tbl>) and changes its content hash
+    for (const t of tableNodes) {
+      const stored = (t.attrs!.ooxml as { structureHash: string }).structureHash;
+      expect(structureHash(t)).toBe(stored);
+      const edited = JSON.parse(JSON.stringify(t)) as JSONContent;
+      const target = all([edited], n => n.type === 'text')[0];
+      if (target) {
+        target.text = (target.text ?? '') + '!';
+        expect(structureHash(edited)).toBe(stored);
+        expect(isBlockUntouched(edited)).toBe(false);
+      }
+    }
     // 4. the model with its tables is a valid document and provenance survives schema normalization
     const normalized = getSpecSchema().nodeFromJSON(doc);
     expect(() => normalized.check()).not.toThrow();
@@ -458,6 +469,12 @@ describe.skipIf(docs.length === 0)('private real-world documents', () => {
     const fragChars = strip(fragRoots.map(textIn).join('')).length;
     const hyphens = hyphensIn(body) - fragRoots.reduce((a, r) => a + hyphensIn(r), 0);
     expect(docChars + fragChars).toBe(strip(textIn(body)).length + hyphens);
+
+    // Neither real document has a table property the model cannot hold, so nothing is recorded as tableLayout. tableBorders also counts
+    // the table STYLE that carries borders (styles.xml, read by readStyles): r01 has one such style and no table, snsf has the style
+    // plus its table's own tblBorders.
+    expect(report.counts.tableLayout).toBeUndefined();
+    expect(report.counts.tableBorders ?? 0).toBe(name === 'snsf.docx' ? 2 : 1);
 
     // ── hand-measured shape of the two real documents ───────────────────────────────────────────────────────────
     if (name === 'r01.docx') {

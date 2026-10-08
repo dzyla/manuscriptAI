@@ -8,6 +8,8 @@ export const PROVENANCE_NODE_TYPES = [
 export interface OoxmlProvenanceAttr {
   blockId: string;
   sourceHash: string;
+  /** Tables only: `structureHash` of the table as imported (see docx/preserve/hash.ts). */
+  structureHash?: string;
 }
 
 function parseProvenance(raw: string | null): OoxmlProvenanceAttr | null {
@@ -15,7 +17,7 @@ function parseProvenance(raw: string | null): OoxmlProvenanceAttr | null {
   try {
     const v = JSON.parse(raw);
     return v && typeof v.blockId === 'string' && typeof v.sourceHash === 'string'
-      ? { blockId: v.blockId, sourceHash: v.sourceHash }
+      ? { blockId: v.blockId, sourceHash: v.sourceHash, ...(typeof v.structureHash === 'string' ? { structureHash: v.structureHash } : {}) }
       : null;
   } catch {
     return null;
