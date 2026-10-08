@@ -1,3 +1,6 @@
+import type { JSONContent } from '@tiptap/core';
+import type { PreservationStore } from './docx/preserve/types';
+
 export type AgentType = 'manager' | 'editor' | 'reviewer-2' | 'researcher' | 'literature-reviewer' | 'manuscript-ai' | 'citation-checker' | 'statistician' | 'consistency' | 'reporting';
 
 export interface SemanticSearchResult {
@@ -192,7 +195,13 @@ export interface ResolvedStyle {
 export interface DocumentRow {
   id: 'current';
   title: string;
-  content: string;
+  /** Legacy (≤ v2) HTML body. Present only on rows not yet migrated; never written by v3 code. */
+  content?: string;
+  /** Canonical document (v3). */
+  docJson?: JSONContent;
+  format?: DocFormat;
+  comments?: CommentThread[];
+  schemaVersion?: 3;
   saveState: 'Draft' | 'Saved' | 'Auto-saved';
   citationRegistry: Record<string, number>;
   citationCounter: number;
@@ -204,6 +213,48 @@ export interface DocumentRow {
   grantInstructions?: string;
   /** id of the grant template the document was created from (enables page-budget tracking) */
   grantTemplateId?: string;
+}
+
+export interface CommentReply {
+  id: string;
+  author: string;
+  initials?: string;
+  date: string; // ISO 8601
+  text: string;
+}
+
+export interface CommentThread extends CommentReply {
+  replies: CommentReply[];
+  resolved: boolean;
+  source: 'user' | 'docx' | 'ai';
+  /** anchor text was deleted; shown in the rail's "Detached" section */
+  orphaned?: boolean;
+  /** original Word identifiers, kept for round-trip (spec §4.4) */
+  wordIds?: { id?: string; paraId?: string; durableId?: string };
+}
+
+export interface AssetRow {
+  id: string;
+  sha256: string;
+  mime: string;
+  size: number;
+  data: ArrayBuffer;
+  createdAt: number;
+}
+
+export interface DocxPackageRow {
+  documentId: 'current';
+  original: ArrayBuffer;
+  fileName: string;
+  preservation: PreservationStore;
+  importedAt: number;
+}
+
+export interface BackupRow {
+  seq?: number;
+  documentId: 'current';
+  savedAt: number;
+  row: DocumentRow;
 }
 
 export interface SourceRow extends ManuscriptSource {

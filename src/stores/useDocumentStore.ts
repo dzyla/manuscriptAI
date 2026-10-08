@@ -162,7 +162,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       if (row) {
         set({
           title: row.title,
-          content: row.content,
+          content: row.content ?? '',
           saveState: row.saveState,
           citationRegistry: row.citationRegistry,
           citationCounter: row.citationCounter,
