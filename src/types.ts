@@ -190,6 +190,34 @@ export interface ResolvedStyle {
   align: 'left' | 'center' | 'right' | 'justify';
 }
 
+// ─── Prose style audit (sub-project H) ────────────────────────────────────────
+
+export interface SentenceAudit {
+  start: number;
+  end: number;
+  words: number;
+  tells: string[];
+  /** kernel severity: words + 8 × weighted tell count */
+  severity: number;
+}
+
+export interface AuditSummary {
+  sentences: number;
+  meanWords: number;
+  pctOver35: number;
+  /** coefficient of variation of sentence length — uniformity is itself a tell */
+  lengthCv: number;
+  counts: Record<string, number>;
+  /** occurrences per 100 sentences */
+  rates: Record<string, number>;
+}
+
+export interface AuditMetrics {
+  summary: AuditSummary;
+  sentences: SentenceAudit[];
+  sections: { title: string; summary: AuditSummary }[];
+}
+
 // ─── Dexie row types ──────────────────────────────────────────────────────────
 
 export interface DocumentRow {
