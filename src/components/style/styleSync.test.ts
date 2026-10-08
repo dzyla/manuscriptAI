@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import { Editor } from '@tiptap/core';
 import { getSchemaExtensions, htmlToDoc } from '../../extensions/schema';
 import { auditText } from '../../services/proseAudit/metrics';
@@ -34,6 +34,7 @@ describe('staleness guard (sentencesToDraw)', () => {
 describe('flatRangeToPm (behind EditorRef.selectFlatRange)', () => {
   const editor = new Editor({ extensions: getSchemaExtensions(), content: htmlToDoc('<p>First sentence here. Second sentence follows.</p>') });
   const flat = flattenDoc(editor.state.doc).text;
+  afterAll(() => editor.destroy());
 
   it('maps a valid span to the document positions of the same text', () => {
     const start = flat.indexOf('Second');

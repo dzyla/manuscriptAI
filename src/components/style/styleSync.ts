@@ -1,3 +1,4 @@
+import type { Node as PMNode } from '@tiptap/pm/model';
 import { worstSentences } from '../../services/proseAudit/metrics';
 import { flattenDoc, flatSpanToPm } from '../../utils/textMatch';
 import type { AuditMetrics, SentenceAudit } from '../../types';
@@ -27,7 +28,7 @@ export function sentencesToDraw(
 }
 
 /** Map a span in flattenDoc text offsets to document positions, or null when it is out of range / unmappable. */
-export function flatRangeToPm(doc: any, start: number, end: number): { from: number; to: number } | null {
+export function flatRangeToPm(doc: PMNode, start: number, end: number): { from: number; to: number } | null {
   const flat = flattenDoc(doc);
   if (start < 0 || end > flat.text.length || end <= start) return null;
   return flatSpanToPm(flat, start, end);

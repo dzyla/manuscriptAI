@@ -85,8 +85,8 @@ describe('StylePanel rows', () => {
     }
   });
 
-  it('tells the reader that some patterns are down-weighted', () => {
+  it('tells the reader that heavy use of down-weighted patterns can look closer to their voice', () => {
     render(<StylePanel {...props} />);
-    expect(screen.getByTestId('style-discount-note').textContent).toMatch(/count for less/i);
+    expect(screen.getByTestId('style-discount-note').textContent).toMatch(/weighted down.*closer to your voice than it reads/i);
   });
 });
