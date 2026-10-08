@@ -41,7 +41,7 @@ export default function App() {
   // ─── Zustand stores ────────────────────────────────────────────────────────
   const {
     title, content, saveState, citationRegistry,
-    setTitle, setContent, setSaveState,
+    setTitle, setContent, setDocJson, setSaveState,
     insertCitation: storeInsertCitation,
     removeCitation: storeRemoveCitation,
     renumberCitations: storeRenumberCitations,
@@ -244,6 +244,12 @@ export default function App() {
   // Initialize all stores on mount (loads from Dexie, migrating from localforage if needed)
   useEffect(() => {
     Promise.all([initDocument(), initAI(), initSources()]).then(() => {
+      const { lastLoad } = useDocumentStore.getState();
+      if (lastLoad.recoveredFromBackup) {
+        showToast('Your last save could not be read. Restored the most recent backup.', 'error');
+      } else if (lastLoad.unreadableRowPresent) {
+        showToast('Your saved document could not be opened (it may come from a newer version of the app). A protected copy was kept; you are seeing a blank document.', 'error');
+      }
       // After loading, apply citation migration to content if needed
       const { content: loadedContent, citationRegistry: reg } = useDocumentStore.getState();
       if (Object.keys(reg).length > 0 && !loadedContent.includes('data-citation-node')) {
@@ -1331,6 +1337,7 @@ export default function App() {
             content={content}
             showPageGuides={mode === 'grant'}
             onChange={(html) => setContent(html)}
+            onDocChange={setDocJson}
             suggestions={suggestions}
             onSuggestionClick={handleSuggestionClick}
             onSelectionQuery={handleSelectionQuery}

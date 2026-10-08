@@ -1,10 +1,22 @@
 import { create } from 'zustand';
+import type { JSONContent } from '@tiptap/core';
 import { db } from '../db/manuscriptDb';
-import type { DocumentRow, DocumentMode } from '../types';
+import { createDexieRepository, type LoadedDocument } from '../db/documentRepository';
+import { htmlToDoc, docToHtml, isValidDoc } from '../extensions/schema';
+import { createFormat } from '../services/formatPresets';
+import type { CommentThread, DocFormat, DocumentMode } from '../types';
+
+export const documentRepository = createDexieRepository(db, { htmlToDoc, isValidDoc });
 
 interface DocumentState {
   title: string;
+  /** Derived HTML (never persisted). Writing it commands the editor; the editor then reports docJson. */
   content: string;
+  /** Canonical document, always produced by the editor (onDocChange) or the repository. */
+  docJson: JSONContent | null;
+  format: DocFormat;
+  comments: CommentThread[];
+  lastLoad: { migrated: boolean; recoveredFromBackup: boolean; unreadableRowPresent: boolean };
   saveState: 'Draft' | 'Saved' | 'Auto-saved';
   citationRegistry: Record<string, number>;
   citationCounter: number;
@@ -15,6 +27,9 @@ interface DocumentState {
   grantTemplateId: string | null;
 
   setTitle: (title: string) => void;
+  setDocJson: (doc: JSONContent) => void;
+  setFormat: (format: DocFormat) => void;
+  setComments: (comments: CommentThread[]) => void;
   setContent: (content: string) => void;
   setSaveState: (s: DocumentState['saveState']) => void;
   setCitationRegistry: (reg: Record<string, number>) => void;
@@ -72,6 +87,10 @@ const DEFAULT_CONTENT = '<p>Start writing your manuscript here, or click "New Ma
 export const useDocumentStore = create<DocumentState>((set, get) => ({
   title: 'Untitled Manuscript',
   content: DEFAULT_CONTENT,
+  docJson: null,
+  format: createFormat('nih'),
+  comments: [],
+  lastLoad: { migrated: false, recoveredFromBackup: false, unreadableRowPresent: false },
   saveState: 'Draft',
   citationRegistry: {},
   citationCounter: 0,
@@ -81,6 +100,9 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   grantInstructions: '',
   grantTemplateId: null,
 
+  setDocJson: (docJson) => set({ docJson }),
+  setFormat: (format) => set({ format, saveState: 'Draft' }),
+  setComments: (comments) => set({ comments, saveState: 'Draft' }),
   setTitle: (title) => set({ title, saveState: 'Draft' }),
   setContent: (content) => set({ content, saveState: 'Draft' }),
   setSaveState: (saveState) => set({ saveState }),
@@ -145,6 +167,9 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   resetDocument: () => set({
     title: 'Untitled Manuscript',
     content: DEFAULT_CONTENT,
+    docJson: null,
+    format: createFormat('nih'),
+    comments: [],
     saveState: 'Draft',
     citationRegistry: {},
     citationCounter: 0,
@@ -157,25 +182,40 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
 
   initialize: async () => {
     try {
-      // Try Dexie first
-      const row = await db.documents.get('current');
-      if (row) {
+      const result = await documentRepository.load();
+      if (result.doc) {
+        const d = result.doc;
         set({
-          title: row.title,
-          content: row.content ?? '',
-          saveState: row.saveState,
-          citationRegistry: row.citationRegistry,
-          citationCounter: row.citationCounter,
-          figureRegistry: row.figureRegistry ?? {},
-          figureCounter: row.figureCounter ?? 0,
-          mode: row.mode ?? 'manuscript',
-          grantInstructions: row.grantInstructions ?? '',
-          grantTemplateId: row.grantTemplateId ?? null,
+          title: d.title,
+          content: docToHtml(d.docJson),
+          docJson: d.docJson,
+          format: d.format,
+          comments: d.comments,
+          saveState: d.saveState,
+          citationRegistry: d.citationRegistry,
+          citationCounter: d.citationCounter,
+          figureRegistry: d.figureRegistry,
+          figureCounter: d.figureCounter,
+          mode: d.mode,
+          grantInstructions: d.grantInstructions,
+          grantTemplateId: d.grantTemplateId,
+          lastLoad: {
+            migrated: result.migrated,
+            recoveredFromBackup: result.recoveredFromBackup,
+            unreadableRowPresent: result.unreadableRowPresent,
+          },
         });
         return;
       }
+      set({
+        lastLoad: {
+          migrated: false,
+          recoveredFromBackup: result.recoveredFromBackup,
+          unreadableRowPresent: result.unreadableRowPresent,
+        },
+      });
 
-      // Fall back to legacy localforage
+      // Fall back to legacy localforage (pre-Dexie installs)
       const localforage = await import('localforage');
       const data: any = await localforage.default.getItem('manuscript-ai-editor-autosave');
       if (data?.content) {
@@ -183,6 +223,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
         set({
           title: data.title || 'Untitled Manuscript',
           content: data.content,
+          docJson: htmlToDoc(data.content),
           saveState: 'Auto-saved',
           citationRegistry: registry,
           citationCounter: Object.keys(registry).length,
@@ -198,21 +239,21 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   },
 
   persist: async () => {
-    const { title, content, saveState, citationRegistry, citationCounter, figureRegistry, figureCounter, mode, grantInstructions, grantTemplateId } = get();
-    const row: DocumentRow = {
-      id: 'current',
-      title,
-      content,
-      saveState,
-      citationRegistry,
-      citationCounter,
-      figureRegistry,
-      figureCounter,
-      updatedAt: Date.now(),
-      mode,
-      grantInstructions,
-      grantTemplateId: grantTemplateId ?? undefined,
+    const s = get();
+    const doc: LoadedDocument = {
+      title: s.title,
+      saveState: s.saveState,
+      docJson: s.docJson ?? htmlToDoc(s.content),
+      format: s.format,
+      comments: s.comments,
+      citationRegistry: s.citationRegistry,
+      citationCounter: s.citationCounter,
+      figureRegistry: s.figureRegistry,
+      figureCounter: s.figureCounter,
+      mode: s.mode,
+      grantInstructions: s.grantInstructions,
+      grantTemplateId: s.grantTemplateId,
     };
-    await db.documents.put(row);
+    await documentRepository.save(doc);
   },
 }));

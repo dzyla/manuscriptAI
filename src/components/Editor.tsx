@@ -1,4 +1,5 @@
 import { useEditor, EditorContent } from '@tiptap/react';
+import type { JSONContent } from '@tiptap/core';
 import { BubbleMenu } from '@tiptap/react/menus';
 import Placeholder from '@tiptap/extension-placeholder';
 import { forwardRef, useImperativeHandle, useEffect, useState, useRef, useCallback, useMemo } from 'react';
@@ -6,6 +7,7 @@ import { createPortal } from 'react-dom';
 import { AgentType, Suggestion, ManuscriptSource } from '../types';
 import { GrammarChecker } from '../extensions/GrammarChecker';
 import { getSchemaExtensions } from '../extensions/schema';
+import { OpaqueFragmentGuard } from '../extensions/preserve/OpaqueNodes';
 import {
   Bold, Italic, Underline as UnderlineIcon, List, ListOrdered,
   AlignLeft, AlignCenter, AlignRight, AlignJustify, Quote, Heading2,
@@ -23,6 +25,8 @@ import { findTextPositionRobust, flattenDoc } from '../utils/textMatch';
 interface EditorProps {
   content: string;
   onChange: (content: string) => void;
+  /** Called with the canonical document after every content change (including external setContent). */
+  onDocChange?: (doc: JSONContent) => void;
   suggestions: Suggestion[];
   onSuggestionClick: (suggestionId: string) => void;
   onSelectionQuery?: (selectedText: string, instruction: string, agent: AgentType) => void;
@@ -118,7 +122,7 @@ const BUBBLE_ACTIONS: { label: string; instruction: string; agent: AgentType; ic
   },
 ];
 
-const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggestions, onSuggestionClick, onSelectionQuery, onTransformSelection, onRewriteSection, onAnalyzeSection, onVerifyClaim, onSearchSimilar, sources, citationRegistry, onInsertCitation, isDistractionFree, editorZoom = 100, editorWidth = 'normal', aiSettings, onAnalyzeImage, onInsertFigure, showPageGuides = false }, ref) => {
+const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocChange, suggestions, onSuggestionClick, onSelectionQuery, onTransformSelection, onRewriteSection, onAnalyzeSection, onVerifyClaim, onSearchSimilar, sources, citationRegistry, onInsertCitation, isDistractionFree, editorZoom = 100, editorWidth = 'normal', aiSettings, onAnalyzeImage, onInsertFigure, showPageGuides = false }, ref) => {
   const [isMounted, setIsMounted] = useState(false);
 
   // ── Page guides: dashed page-break lines at NIH-format intervals ──────────
@@ -153,6 +157,8 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
   const [thesaurusLoading, setThesaurusLoading] = useState(false);
   const [currentSectionTitle, setCurrentSectionTitle] = useState<string | null>(null);
   const [selectionWordCount, setSelectionWordCount] = useState(0);
+  const onDocChangeRef = useRef(onDocChange);
+  useEffect(() => { onDocChangeRef.current = onDocChange; }, [onDocChange]);
   const isExternalUpdate = useRef(false);
   const lastExternalContent = useRef(content);
   const instructionInputRef = useRef<HTMLInputElement>(null);
@@ -191,6 +197,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
   const editor = useEditor({
     extensions: [
       ...getSchemaExtensions(),
+      OpaqueFragmentGuard,
       Placeholder.configure({ placeholder: 'Start writing your manuscript here...' }),
       GrammarChecker,
       AutoComplete.configure({
@@ -203,7 +210,9 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
       }),
     ],
     content,
+    onCreate: ({ editor }) => { onDocChangeRef.current?.(editor.getJSON()); },
     onUpdate: ({ editor }) => {
+      onDocChangeRef.current?.(editor.getJSON());
       if (isExternalUpdate.current) return;
       const html = editor.getHTML();
       lastExternalContent.current = html;
@@ -457,6 +466,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
     if (content !== lastExternalContent.current) {
       isExternalUpdate.current = true;
       editor.commands.setContent(content);
+      onDocChangeRef.current?.(editor.getJSON());
       lastExternalContent.current = content;
       setTimeout(() => { isExternalUpdate.current = false; }, 0);
     }
@@ -753,6 +763,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, suggesti
       if (!editor) return;
       isExternalUpdate.current = true;
       editor.commands.setContent(html);
+      onDocChangeRef.current?.(editor.getJSON());
       lastExternalContent.current = html;
       setTimeout(() => { isExternalUpdate.current = false; }, 0);
     },
