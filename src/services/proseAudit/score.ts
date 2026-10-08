@@ -89,10 +89,6 @@ export function styleDistance(
     const m = value(MACHINE_REFERENCE, metric);
     const dev = deviation(metric, d, v, m);
     deviations.push({ metric, label: label(metric), voice: v, draft: d, deviation: Math.round(dev * 100) / 100 });
-    // A metric that is zero in the voice, the machine reference and the draft carries
-    // no information. It still gets a row (the panel lists every metric) but is kept
-    // out of the weighted mean so unmeasured placeholders do not dilute the score.
-    if (d === 0 && v === 0 && m === 0) continue;
     weighted += dev * weight;
     total += weight;
   }

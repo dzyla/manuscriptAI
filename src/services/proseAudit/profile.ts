@@ -8,12 +8,10 @@ export const RECOMMENDED_PROFILE_WORDS = 2000;
 /**
  * Builds a reference AuditSummary from the handful of values we actually have.
  *
- * Every pattern NOT listed in `rates` defaults to 0. Those zeros mean "effectively
- * absent in both reference texts", not "measured as zero": the calibration table
- * covers only seven metrics, and em dashes, stock vocabulary, throat-clearing and
- * the other additions were never tabulated. styleDistance() skips a metric that is
- * zero in the voice, the machine reference and the draft, so these placeholders do
- * not dilute the score.
+ * Every pattern NOT listed in `rates` defaults to 0. Those zeros mean "not
+ * tabulated / effectively absent in that reference text", not "measured as zero".
+ * The human side leaves the nine additional tells at 0; the machine side gives them
+ * the chosen threshold below so a fully machine-style draft can approach 100.
  *
  * `lengthCv` is deliberately NOT a reference value (always 0 here). Its direction is
  * inverted relative to the other tells (machine prose is more uniform, so a LOWER
@@ -44,6 +42,13 @@ function summaryFrom(partial: { meanWords: number; pctOver35: number; rates: Rec
  * human 'tricolon' 4.4.
  *
  * Estimate, not measured: machine-side 'tricolon' 12.
+ *
+ * Chosen thresholds, not measured: machine-side 5 for 'not X but/instead', 'instead of',
+ * 'This/That anaphora', 'throat-clearing', 'em dash', 'not only but also',
+ * 'paragraph connective', 'summary flourish' and 'stock vocabulary'. 5 occurrences per
+ * 100 sentences is treated as fully machine-like for that tell; it equals the default
+ * span, and it is replaced in effect once the author builds a real voice profile. Neither
+ * the skill's table nor any corpus supplied these.
  */
 
 /**
@@ -60,7 +65,11 @@ export const GENERIC_HUMAN_SUMMARY: AuditSummary = summaryFrom({
 export const MACHINE_REFERENCE: AuditSummary = summaryFrom({
   meanWords: 26.8,
   pctOver35: 27,
-  rates: { 'rather than': 25.2, semicolon: 21, 'which is appositive': 7, 'is what cleft': 4, 'initial Because': 4, tricolon: 12 },
+  rates: {
+    'rather than': 25.2, semicolon: 21, 'which is appositive': 7, 'is what cleft': 4, 'initial Because': 4, tricolon: 12,
+    'not X but/instead': 5, 'instead of': 5, 'This/That anaphora': 5, 'throat-clearing': 5, 'em dash': 5,
+    'not only but also': 5, 'paragraph connective': 5, 'summary flourish': 5, 'stock vocabulary': 5,
+  },
 });
 
 export function buildProfile(name: string, samples: string[]): { profile: VoiceProfile; warning?: string } {

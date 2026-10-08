@@ -112,21 +112,38 @@ describe('styleDistance', () => {
     expect(Number.isFinite(styleDistance(MACHINE_REFERENCE, noRates).score)).toBe(true);
   });
 
-  it('still reports a row for every metric but scores only informative ones', () => {
+  it('reports a row for every metric', () => {
     const r = styleDistance(GENERIC_HUMAN_SUMMARY, GENERIC_HUMAN_SUMMARY);
     expect(r.deviations.map(d => d.metric).sort()).toEqual(Object.keys(WEIGHTS).sort());
   });
 
-  it('a tell the references never mention still raises the score', () => {
-    const withDashes: AuditSummary = {
-      ...GENERIC_HUMAN_SUMMARY,
-      rates: { ...GENERIC_HUMAN_SUMMARY.rates, 'em dash': 15 },
-    };
-    const base = styleDistance(GENERIC_HUMAN_SUMMARY, GENERIC_HUMAN_SUMMARY);
-    const r = styleDistance(withDashes, GENERIC_HUMAN_SUMMARY);
-    expect(base.score).toBe(0);
-    expect(r.score).toBeGreaterThan(0);
-    expect(r.deviations[0].metric).toBe('em dash');
+  const NINE = [
+    'not X but/instead', 'instead of', 'This/That anaphora', 'throat-clearing', 'em dash',
+    'not only but also', 'paragraph connective', 'summary flourish', 'stock vocabulary',
+  ];
+  const withRates = (base: AuditSummary, rates: Record<string, number>): AuditSummary => ({
+    ...base,
+    rates: { ...base.rates, ...rates },
+  });
+
+  it.each(NINE)('score is monotone in the draft rate of %s', metric => {
+    const scores = [0, 0.1, 1, 5].map(r =>
+      styleDistance(withRates(GENERIC_HUMAN_SUMMARY, { [metric]: r }), GENERIC_HUMAN_SUMMARY).score);
+    for (let i = 1; i < scores.length; i++) expect(scores[i]).toBeGreaterThanOrEqual(scores[i - 1]);
+    expect(scores[3]).toBeGreaterThan(scores[0]);
+  });
+
+  it('a trace of every unreferenced tell never lowers the score', () => {
+    // A draft that is machine-like on the seven calibrated metrics only. Its ceiling is
+    // about 52: the nine other tells carry about half the total weight and sit at ~0.
+    // (A ">= 90" expectation is unreachable with a plain weighted mean.) The point of this
+    // test is monotonicity: adding a trace of each tell must not reduce the score.
+    const sevenOnly = withRates(MACHINE_REFERENCE, Object.fromEntries(NINE.map(m => [m, 0])));
+    const traces = withRates(sevenOnly, Object.fromEntries(NINE.map(m => [m, 0.1])));
+    const without = styleDistance(sevenOnly, GENERIC_HUMAN_SUMMARY).score;
+    const withTraces = styleDistance(traces, GENERIC_HUMAN_SUMMARY).score;
+    expect(withTraces).toBeGreaterThanOrEqual(without);
+    expect(without).toBeGreaterThanOrEqual(45);
   });
 
   describe('when the author voice sits near the machine reference', () => {
