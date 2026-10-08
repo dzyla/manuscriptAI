@@ -199,3 +199,111 @@ describe('replaceRangeWithText', () => {
     e.destroy();
   });
 });
+
+describe('replaceRangeWithText preserves the surrounding block and marks', () => {
+  function mk(html: string) {
+    return new Editor({ extensions: [...getSchemaExtensions()], content: htmlToDoc(html) });
+  }
+  const firstBlock = (e: Editor) => e.getJSON().content![0];
+  const texts = ['A B', 'A\nB'];
+
+  for (const text of texts) {
+    const label = text.includes('\n') ? 'multi-line' : 'single-line';
+
+    it(`keeps a heading at the same level (${label})`, () => {
+      const e = mk('<h2>First sentence here. Second one.</h2>');
+      expect(replaceRangeWithText(e, 1, 21, text)).toBe(true);
+      const b = firstBlock(e);
+      expect(b.type).toBe('heading');
+      expect(b.attrs?.level).toBe(2);
+      e.destroy();
+    });
+
+    it(`keeps textAlign on a centered paragraph (${label})`, () => {
+      const e = mk('<p style="text-align: center">First sentence here. Second one.</p>');
+      expect(firstBlock(e).attrs?.textAlign).toBe('center');
+      expect(replaceRangeWithText(e, 1, 21, text)).toBe(true);
+      expect(firstBlock(e).attrs?.textAlign).toBe('center');
+      expect(e.state.doc.childCount).toBe(1);
+      e.destroy();
+    });
+
+    it(`keeps the ooxml provenance attribute (${label})`, () => {
+      const e = mk('<p data-ooxml=\'{"blockId":"b1","sourceHash":"h1"}\'>First sentence here. Second one.</p>');
+      expect(firstBlock(e).attrs?.ooxml).toEqual({ blockId: 'b1', sourceHash: 'h1' });
+      expect(replaceRangeWithText(e, 1, 21, text)).toBe(true);
+      expect(firstBlock(e).attrs?.ooxml).toEqual({ blockId: 'b1', sourceHash: 'h1' });
+      e.destroy();
+    });
+
+    it(`keeps the replaced range's marks (${label})`, () => {
+      const e = mk('<p>plain <strong>bold words</strong> tail</p>');
+      expect(replaceRangeWithText(e, 7, 17, text)).toBe(true);
+      const inline = (firstBlock(e).content ?? []).filter(n => n.type === 'text') as { text?: string; marks?: { type: string }[] }[];
+      const boldText = inline.filter(n => n.marks?.some(m => m.type === 'bold')).map(n => n.text ?? '').join('');
+      expect(boldText).toBe(text.replace('\n', ''));
+      expect(inline[0].marks ?? []).toEqual([]);
+      e.destroy();
+    });
+  }
+
+  it('rejects NaN / non-integer bounds and empty text', () => {
+    const e = mk('<p>placeholder words</p>');
+    expect(replaceRangeWithText(e, NaN, 5, 'x')).toBe(false);
+    expect(replaceRangeWithText(e, 1, 5.5, 'x')).toBe(false);
+    expect(replaceRangeWithText(e, 1, 5, '')).toBe(false);
+    e.destroy();
+  });
+
+  it('normalizes a lone CR to a hard break', () => {
+    const e = mk('<p>placeholder words</p>');
+    expect(replaceRangeWithText(e, 1, 12, 'One.\rTwo.')).toBe(true);
+    expect(e.getJSON().content![0].content!.map(n => n.type)).toEqual(['text', 'hardBreak', 'text']);
+    e.destroy();
+  });
+});
+
+describe('StyleHighlights audit gating', () => {
+  it('schedules no audit while disabled, and does once enabled; a throwing consumer is contained', () => {
+    vi.useFakeTimers();
+    try {
+      const reports: number[] = [];
+      let throwOnReport = false;
+      const editor = new Editor({
+        extensions: [...getSchemaExtensions(), StyleHighlights.configure({
+          getEnabled: () => false,
+          getSentences: () => [],
+          onReport: m => { if (throwOnReport) throw new Error('boom'); reports.push(m.sentences.length); },
+          debounceMs: 50,
+        })],
+        content: htmlToDoc('<p>One sentence here.</p>'),
+      });
+      editor.commands.insertContentAt(1, 'A ');
+      vi.advanceTimersByTime(500);
+      expect(reports).toHaveLength(0);
+
+      editor.commands.setStyleHighlightsEnabled(true);
+      editor.commands.insertContentAt(1, 'B ');
+      vi.advanceTimersByTime(60);
+      expect(reports).toHaveLength(1);
+
+      throwOnReport = true;
+      editor.commands.insertContentAt(1, 'C ');
+      expect(() => vi.advanceTimersByTime(60)).not.toThrow();
+      editor.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not write the enabled override on a can() dry run', () => {
+    const editor = new Editor({
+      extensions: [...getSchemaExtensions(), StyleHighlights.configure({ getEnabled: () => false, getSentences: () => [{ start: 0, end: 10, words: 5, tells: ['semicolon'], severity: 20 }] })],
+      content: htmlToDoc('<p>We purified the complex; it was pure.</p>'),
+    });
+    expect(editor.can().setStyleHighlightsEnabled(true)).toBe(true);
+    editor.commands.refreshStyleAudit();
+    expect(decoCount(editor)).toBe(0);
+    editor.destroy();
+  });
+});

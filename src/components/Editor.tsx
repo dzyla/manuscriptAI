@@ -74,7 +74,7 @@ export interface EditorRef {
   getFigureOrder: () => string[];
   updateFigures: (registry: Record<string, number>) => void;
   insertFigureLabelNode: (figureId: string, num: number) => void;
-  /** Replace an exact document range with literal text (not HTML; newlines become hard breaks). Returns false for an invalid range. */
+  /** Replace an exact document range with literal text (not HTML; newlines become hard breaks; keeps the block and the range's marks; does not take focus). Returns false for an invalid range or empty text. */
   replaceRange: (from: number, to: number, text: string) => boolean;
 }
 

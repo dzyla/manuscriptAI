@@ -1,7 +1,7 @@
 import { Extension, type Editor, type JSONContent } from '@tiptap/core';
-import { Plugin, PluginKey } from '@tiptap/pm/state';
+import { Plugin, PluginKey, Selection } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
-import type { Node as PMNode } from '@tiptap/pm/model';
+import { Fragment, type Node as PMNode } from '@tiptap/pm/model';
 import { flattenDoc, flatSpanToPm } from '../utils/textMatch';
 import { auditText } from '../services/proseAudit/metrics';
 import type { AuditMetrics, SentenceAudit } from '../types';
@@ -18,7 +18,10 @@ declare module '@tiptap/core' {
     styleHighlights: {
       /** Rebuild the highlight decorations from the current sentences / enabled state. */
       refreshStyleAudit: () => ReturnType;
-      /** Override the enabled option at runtime and rebuild the decorations. */
+      /**
+       * Override the enabled option at runtime and rebuild the decorations. The override is
+       * sticky: once set it shadows `options.getEnabled()` for the life of the editor.
+       */
       setStyleHighlightsEnabled: (on: boolean) => ReturnType;
     };
   }
@@ -76,8 +79,10 @@ export const StyleHighlights = Extension.create<StyleHighlightsOptions, { enable
       setStyleHighlightsEnabled:
         (on: boolean) =>
         ({ dispatch, tr }) => {
-          this.storage.enabledOverride = on;
-          if (dispatch) tr.setMeta(styleHighlightsKey, { refresh: true });
+          if (dispatch) {
+            this.storage.enabledOverride = on;
+            tr.setMeta(styleHighlightsKey, { refresh: true });
+          }
           return true;
         },
     };
@@ -91,14 +96,22 @@ export const StyleHighlights = Extension.create<StyleHighlightsOptions, { enable
 
     const isEnabled = () => storage.enabledOverride ?? options.getEnabled();
 
-    /** Re-audit off the critical path; the report goes to the host, which feeds sentences back. */
+    /**
+     * Re-audit off the critical path; the report goes to the host, which feeds sentences back.
+     * Only runs while highlighting is enabled, so users who never open the style feature pay nothing.
+     * The host must enable highlighting (or call setStyleHighlightsEnabled) to receive reports.
+     */
     const scheduleReport = () => {
-      if (!options.onReport) return;
+      if (!options.onReport || !isEnabled()) return;
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         timer = null;
         if (editor.isDestroyed) return;
-        options.onReport?.(auditText(flattenDoc(editor.state.doc).text));
+        try {
+          options.onReport?.(auditText(flattenDoc(editor.state.doc).text));
+        } catch (err) {
+          console.error('Style audit failed', err);
+        }
       }, options.debounceMs ?? 400);
     };
 
@@ -135,20 +148,46 @@ export const StyleHighlights = Extension.create<StyleHighlightsOptions, { enable
 });
 
 /**
- * Replace an exact document range with LITERAL text (never parsed as HTML, so
- * `p < 0.05`, `&` and `<control>` survive verbatim). Newlines become hardBreak
- * nodes inside the same block; no new paragraphs are created. Runs as one
- * transaction (one undo step). Returns false, changing nothing, when the range
- * is out of bounds or empty.
+ * Replace an exact document range with LITERAL text, never parsed as HTML
+ * (`p < 0.05`, `&amp;` and `<b>` survive verbatim).
+ *
+ * - Newlines (`\n`, `\r\n`, lone `\r`) become hardBreak nodes inside the same
+ *   block; no paragraphs are created.
+ * - The fragment is built here and applied with `tr.replaceWith`, not through
+ *   `insertContentAt`: that command shifts the start back by one at offset 0 of a
+ *   textblock when the content has a non-text node, which would swap the block
+ *   (heading -> paragraph) and drop its attrs (textAlign, ooxml). One code path is
+ *   used for single- and multi-line text so both behave identically.
+ * - The inserted text carries the marks of the replaced range (as `tr.insertText` does).
+ * - One transaction, so one undo step. It does not move focus; the caller decides.
+ * - Returns false and changes nothing for a non-integer, out-of-bounds or empty
+ *   range, and for empty text (so this cannot be used to delete a range).
  */
 export function replaceRangeWithText(editor: Editor, from: number, to: number, text: string): boolean {
   const size = editor.state.doc.content.size;
+  if (!Number.isInteger(from) || !Number.isInteger(to)) return false;
   if (from < 0 || to > size || to <= from) return false;
-  const content: JSONContent[] = [];
-  text.split(/\r?\n/).forEach((line, i) => {
-    if (i > 0) content.push({ type: 'hardBreak' });
-    if (line) content.push({ type: 'text', text: line });
+  const lines = text.split(/\r\n|\r|\n/);
+  if (lines.every(l => l === '')) return false;
+  return editor.commands.command(({ tr, dispatch }) => {
+    const { doc } = tr;
+    const schema = doc.type.schema;
+    const marks = doc.resolve(from).marksAcross(doc.resolve(to)) ?? [];
+    const nodes: PMNode[] = [];
+    lines.forEach((line, i) => {
+      if (i > 0) nodes.push(schema.nodes.hardBreak.create(null, null, marks.filter(m => schema.nodes.hardBreak.allowsMarkType(m.type))));
+      if (line) nodes.push(schema.text(line, marks));
+    });
+    const fragment = Fragment.from(nodes);
+    try {
+      tr.replaceWith(from, to, fragment);
+    } catch {
+      return false;
+    }
+    if (dispatch) {
+      const end = tr.mapping.map(from, -1) + fragment.size;
+      tr.setSelection(Selection.near(tr.doc.resolve(Math.min(end, tr.doc.content.size)), -1));
+    }
+    return true;
   });
-  if (content.length === 0) return false;
-  return editor.chain().focus().insertContentAt({ from, to }, content).run();
 }
