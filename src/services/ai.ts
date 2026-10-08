@@ -1298,7 +1298,7 @@ interface LLMOptions {
   stop?: string[];
 }
 
-async function callLLM(prompt: string, settings: AISettings, systemPrompt: string, jsonMode: boolean = false, images?: AttachedImage[], signal?: AbortSignal, maxTokens?: number, opts: Omit<LLMOptions, 'jsonMode' | 'images' | 'signal' | 'maxTokens'> = {}): Promise<string> {
+export async function callLLM(prompt: string, settings: AISettings, systemPrompt: string, jsonMode: boolean = false, images?: AttachedImage[], signal?: AbortSignal, maxTokens?: number, opts: Omit<LLMOptions, 'jsonMode' | 'images' | 'signal' | 'maxTokens'> = {}): Promise<string> {
   const { jsonSchema, temperature, stop } = opts;
   if (settings.provider === 'local') {
     return callLocalLLM(prompt, settings, systemPrompt, images, signal, maxTokens, jsonMode, jsonSchema, temperature, stop);

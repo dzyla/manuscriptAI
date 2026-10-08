@@ -2,7 +2,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Editor } from '@tiptap/core';
 import { getSchemaExtensions, htmlToDoc } from './schema';
-import { StyleHighlights, sentenceDecorations, replaceRangeWithText } from './StyleHighlights';
+import { StyleHighlights, sentenceDecorations, replaceRangeWithText, replaceFlatSentence, resolveFlatSentence } from './StyleHighlights';
+import { stampProvenance, isBlockUntouched } from '../docx/preserve/hash';
+import { normalizeDoc } from './schema';
+import type { JSONContent } from '@tiptap/core';
 import { auditText, worstSentences } from '../services/proseAudit/metrics';
 import { flattenDoc } from '../utils/textMatch';
 
@@ -382,3 +385,92 @@ describe('StyleHighlights audit gating', () => {
     editor.destroy();
   });
 });
+
+describe('replaceFlatSentence on imported (provenance-stamped) paragraphs', () => {
+  const S1 = 'The effect was selected kinetically rather than thermodynamically; we measured 42 complexes at pH 5.5 [3].';
+  const para = (text: string): JSONContent => ({ type: 'paragraph', content: [{ type: 'text', text }] });
+  const stamped = (texts: string[]): JSONContent[] => {
+    const doc = normalizeDoc({ type: 'doc', content: texts.map(para) });
+    return doc.content!.map((n, i) => stampProvenance(n, `b${i + 1}`));
+  };
+  const mkDoc = (blocks: JSONContent[]) =>
+    new Editor({ extensions: [...getSchemaExtensions(), StyleHighlights.configure({ getEnabled: () => true, getSentences: () => [] })], content: { type: 'doc', content: blocks } });
+  const blocks = (e: Editor) => (e.getJSON().content ?? []) as JSONContent[];
+
+  it('keeps ooxml on the rewritten paragraph, marks only it as edited, and leaves every sibling untouched', () => {
+    const e = mkDoc(stamped(['Intro paragraph with its own words here.', `Lead sentence stays. ${S1} Tail sentence stays.`, 'Closing paragraph with other words.']));
+    expect(blocks(e).every(isBlockUntouched)).toBe(true);
+    const text = flattenDoc(e.state.doc).text;
+    const start = text.indexOf(S1);
+    expect(replaceFlatSentence(e, start, start + S1.length, S1, 'Kinetics select the state. We measured 42 complexes at pH 5.5 [3].').ok).toBe(true);
+    const after = blocks(e);
+    expect(after[1].attrs?.ooxml).toMatchObject({ blockId: 'b2' });
+    expect(isBlockUntouched(after[1])).toBe(false);
+    expect(isBlockUntouched(after[0])).toBe(true);
+    expect(isBlockUntouched(after[2])).toBe(true);
+    expect(flattenDoc(e.state.doc).text).toContain('Lead sentence stays. Kinetics select the state.');
+    expect(flattenDoc(e.state.doc).text).toContain('[3]. Tail sentence stays.');
+    e.destroy();
+  });
+
+  it('is one undo step that restores the untouched paragraph exactly', () => {
+    const e = mkDoc(stamped([S1, 'Other paragraph here.']));
+    const start = flattenDoc(e.state.doc).text.indexOf(S1);
+    replaceFlatSentence(e, start, start + S1.length, S1, 'Kinetics select the state.');
+    expect(isBlockUntouched(blocks(e)[0])).toBe(false);
+    e.commands.undo();
+    expect(blocks(e).every(isBlockUntouched)).toBe(true);
+    expect(flattenDoc(e.state.doc).text).toContain(S1);
+    e.destroy();
+  });
+
+  it('works at the very start and the very end of a paragraph, and in a paragraph with no provenance', () => {
+    const e = mkDoc([...stamped(['Only sentence in the first paragraph here.']), normalizeDoc({ type: 'doc', content: [para('Plain paragraph with no provenance at all.')] }).content![0]]);
+    const t = flattenDoc(e.state.doc).text;
+    const first = 'Only sentence in the first paragraph here.';
+    expect(replaceFlatSentence(e, t.indexOf(first), t.indexOf(first) + first.length, first, 'The first paragraph has one sentence.').ok).toBe(true);
+    const t2 = flattenDoc(e.state.doc).text;
+    const plain = 'Plain paragraph with no provenance at all.';
+    expect(replaceFlatSentence(e, t2.indexOf(plain), t2.indexOf(plain) + plain.length, plain, 'This paragraph has no provenance.').ok).toBe(true);
+    expect(blocks(e)[1].attrs?.ooxml ?? null).toBeNull();
+    expect(flattenDoc(e.state.doc).text).toBe('The first paragraph has one sentence.\n\nThis paragraph has no provenance.');
+    e.destroy();
+  });
+
+  it('refuses a stale sentence and changes nothing', () => {
+    const e = mkDoc(stamped([S1]));
+    const before = JSON.stringify(e.getJSON());
+    const r = replaceFlatSentence(e, 0, S1.length, 'The document was edited meanwhile.', 'x y z w.');
+    expect(r).toEqual({ ok: false, reason: 'stale' });
+    expect(JSON.stringify(e.getJSON())).toBe(before);
+    e.destroy();
+  });
+
+  it('refuses a sentence that spans a hard break', () => {
+    const e = mkDoc(normalizeDoc({ type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'First half of it' }, { type: 'hardBreak' }, { type: 'text', text: 'second half of it.' }] }] }).content!);
+    const flat = flattenDoc(e.state.doc).text;
+    expect(resolveFlatSentence(e, 0, flat.length, flat)).toEqual({ ok: false, reason: 'hard-break' });
+    e.destroy();
+  });
+
+  it('keeps literal text: p < 0.01 and ampersands survive', () => {
+    const s = 'Binding fell at low pH (p < 0.01) in A &amp; B.';
+    const e = mkDoc(stamped([s]));
+    const flat = flattenDoc(e.state.doc).text;
+    expect(replaceFlatSentence(e, 0, flat.length, flat, 'Binding fell (p < 0.01) in A &amp; B <b>x</b>.').ok).toBe(true);
+    expect(flattenDoc(e.state.doc).text).toBe('Binding fell (p < 0.01) in A &amp; B <b>x</b>.');
+    e.destroy();
+  });
+
+  it('counts citation atoms inside the span', () => {
+    const e = mkDoc(htmlBlocks('<p>The receptor binds the protein <span data-citation-node="" data-source-ids="s1" data-nums="1">[1]</span>; affinity was nanomolar.</p>'));
+    const flat = flattenDoc(e.state.doc).text;
+    const r = resolveFlatSentence(e, 0, flat.length, flat);
+    expect(r.ok && r.citations).toBe(1);
+    e.destroy();
+  });
+});
+
+function htmlBlocks(html: string): JSONContent[] {
+  return htmlToDoc(html).content!;
+}

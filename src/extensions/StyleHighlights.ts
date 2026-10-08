@@ -206,3 +206,39 @@ export function replaceRangeWithText(editor: Editor, from: number, to: number, t
     return true;
   });
 }
+
+export type FlatSentenceTarget =
+  | { ok: true; from: number; to: number; citations: number }
+  | { ok: false; reason: 'stale' | 'unmappable' | 'hard-break' };
+
+/**
+ * Resolve a sentence given as getPlainText() offsets to document positions, but only if the
+ * document still reads `expected` there (the sentence may have been edited while the model ran).
+ * A sentence that spans a hard break is refused: the flat text has no separator at a break, so
+ * the text the model saw ("line oneline two") is not what the reader sees.
+ * `citations` counts citation atoms inside the span; replacing them turns them into plain "[N]" text.
+ */
+export function resolveFlatSentence(editor: Editor, start: number, end: number, expected: string): FlatSentenceTarget {
+  const doc = editor.state.doc;
+  const flat = flattenDoc(doc);
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end > flat.text.length || end <= start) return { ok: false, reason: 'stale' };
+  if (flat.text.slice(start, end) !== expected) return { ok: false, reason: 'stale' };
+  const span = flatSpanToPm(flat, start, end);
+  if (!span) return { ok: false, reason: 'unmappable' };
+  let hardBreak = false;
+  let citations = 0;
+  doc.nodesBetween(span.from, span.to, node => {
+    if (node.type.name === 'hardBreak') hardBreak = true;
+    if (node.type.name === 'citation') citations++;
+    return true;
+  });
+  if (hardBreak) return { ok: false, reason: 'hard-break' };
+  return { ok: true, from: span.from, to: span.to, citations };
+}
+
+/** Replace exactly one sentence (offsets plus the text it must still read) in a single undoable transaction. */
+export function replaceFlatSentence(editor: Editor, start: number, end: number, expected: string, text: string): FlatSentenceTarget {
+  const target = resolveFlatSentence(editor, start, end, expected);
+  if (!target.ok) return target;
+  return replaceRangeWithText(editor, target.from, target.to, text) ? target : { ok: false, reason: 'unmappable' };
+}

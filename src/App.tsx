@@ -16,6 +16,8 @@ import { detectorSuggestions } from './services/detectors';
 import { buildReviewNote } from './utils/reviewNotes';
 import { findTextSpan } from './utils/textMatch';
 import { auditText } from './services/proseAudit/metrics';
+import { rewriteSentence, neighbourSentences } from './services/proseAudit/rewrite';
+import { sentenceId } from './components/style/StylePanel';
 import { sentencesToDraw, auditMatchesDoc } from './components/style/styleSync';
 import { setDocumentContext, trimSectionToLimit, type AgentTool } from './services/ai';
 import { GrantTemplatePicker, GrantInstructionsModal, GrantToolbar } from './components/GrantPanel';
@@ -101,7 +103,8 @@ export default function App() {
   // sentence offsets are only ever applied to a document that still matches (see styleSentences below).
   const [styleAudit, setStyleAudit] = useState<{ metrics: AuditMetrics; text: string } | null>(null);
   const [drawStyleHighlights, setDrawStyleHighlights] = useState(false);
-  const [rewritingId] = useState<string | null>(null); // set by the rewrite wiring (next task)
+  const [rewritingId, setRewritingId] = useState<string | null>(null);
+  const rewriteAbort = useRef<AbortController | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(400);
   const [zoom, setZoom] = useState(100);
   const [editorWidth, setEditorWidth] = useState<'normal' | 'wide' | 'full'>('normal');
@@ -311,9 +314,55 @@ export default function App() {
     }
   }, [styleAudit, showToast]);
 
-  const handleStyleRewrite = useCallback(() => {
-    showToast('Rewrite in my voice is not wired up yet.', 'info');
-  }, [showToast]);
+  useEffect(() => () => rewriteAbort.current?.abort(), []);
+
+  // Rewrite one flagged sentence in the author's voice and apply it as a single undoable editor transaction.
+  // The deterministic guards in rewriteSentence decide whether the text is safe; this only maps and applies it.
+  const handleStyleRewrite = useCallback(async (s: SentenceAudit) => {
+    const ed = editorRef.current;
+    if (!ed || rewriteAbort.current) return;
+    const plain = ed.getPlainText();
+    if (!auditMatchesDoc(styleAudit, plain)) {
+      showToast('The document changed since this sentence was measured. The panel is refreshing.', 'info');
+      return;
+    }
+    const sentence = plain.slice(s.start, s.end);
+    const target = ed.resolveFlatSentence(s.start, s.end, sentence);
+    if (!target.ok) {
+      showToast('reason' in target && target.reason === 'hard-break'
+        ? 'This sentence contains a line break. Rewrite it by hand.'
+        : 'That sentence cannot be located in the document. Re-run the style check.', 'info');
+      return;
+    }
+    const ac = new AbortController();
+    rewriteAbort.current = ac;
+    setRewritingId(sentenceId(s));
+    try {
+      const result = await rewriteSentence({
+        sentence,
+        ...neighbourSentences(plain, s.start, s.end),
+        profile: aiSettings.voiceProfile,
+        settings: aiSettings,
+        signal: ac.signal,
+      });
+      // The model took seconds; apply only if the sentence is still exactly where it was.
+      const applied = editorRef.current?.replaceFlatSentence(s.start, s.end, sentence, result.text);
+      if (!applied?.ok) {
+        showToast('The sentence changed while it was being rewritten, so nothing was applied.', 'error');
+        return;
+      }
+      const notes = [
+        ...(result.warnings.length ? [`check facts: ${result.warnings[0]}`] : []),
+        ...(applied.citations > 0 ? ['citations in this sentence are now plain text'] : []),
+      ];
+      showToast(notes.length ? `Rewritten, but ${notes.join('; ')}. Ctrl+Z undoes it.` : 'Sentence rewritten. Ctrl+Z undoes it.', notes.length ? 'info' : 'success');
+    } catch (e) {
+      if (!(e instanceof DOMException && e.name === 'AbortError')) showToast(e instanceof Error ? e.message : 'Rewrite failed.', 'error');
+    } finally {
+      rewriteAbort.current = null;
+      setRewritingId(null);
+    }
+  }, [aiSettings, styleAudit, showToast]);
 
   // Initialize all stores on mount (loads from Dexie, migrating from localforage if needed)
   useEffect(() => {
