@@ -7,6 +7,12 @@ import { htmlToDoc, isValidDoc } from '../extensions/schema';
 import { createFormat } from '../services/formatPresets';
 import { IMAGE_NODE } from './assetStore';
 import { emptyPreservationStore } from '../docx/preserve/types';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import type { JSONContent } from '@tiptap/core';
+import { readDocx, type ImportResult } from '../docx/read';
+import { applyHeadings } from '../docx/read/headings';
+import { collectAssetIds } from './assetStore';
 
 const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
 let db: ManuscriptDb;
@@ -444,5 +450,212 @@ describe('Dexie v4 upgrade', () => {
       upgraded.close();
       await Dexie.delete(legacyName);
     }
+  });
+});
+
+// ─── importDocx: one transaction ──────────────────────────────────────────────────────────────────────────────
+
+const fixture = (name: string): ArrayBuffer => {
+  const b = readFileSync(join(process.cwd(), 'src/test/fixtures/docx', name));
+  // Copied into an ArrayBuffer made by THIS environment's constructor: under jsdom, a Buffer's own buffer comes from another realm and
+  // the zip reader does not recognise it.
+  const out = new ArrayBuffer(b.byteLength);
+  new Uint8Array(out).set(b);
+  return out;
+};
+const textOfDoc = (n: JSONContent): string => (n.type === 'text' ? n.text ?? '' : (n.content ?? []).map(textOfDoc).join(''));
+const images = (doc: JSONContent): JSONContent[] => (doc.type === IMAGE_NODE ? [doc] : []).concat((doc.content ?? []).flatMap(images));
+
+describe('DocumentRepository.importDocx', () => {
+  let imported: ImportResult;
+  let plain: ImportResult;
+  beforeEach(async () => {
+    imported = await readDocx(fixture('images.docx'), undefined, 'images.docx');
+    plain = await readDocx(fixture('body-basics.docx'), undefined, 'body-basics.docx');
+  });
+
+  it('writes the document, its images, the package and the preservation map together, and loads back', async () => {
+    expect(imported.assets.length).toBeGreaterThan(0);
+    await repo.importDocx(imported, { title: 'My import' });
+
+    const row = await db.documents.get('current');
+    expect(row?.title).toBe('My import');
+    expect(row?.schemaVersion).toBe(3);
+    expect(row?.docJson).toEqual(imported.doc);
+    expect(row?.format).toEqual(imported.format);
+    expect(row?.saveState).toBe('Saved');
+
+    const pkg = await repo.getPackage();
+    expect(pkg?.fileName).toBe('images.docx');
+    expect(new Uint8Array(pkg!.original)).toEqual(new Uint8Array(fixture('images.docx')));
+    expect(await repo.getPreservation()).toEqual(imported.preservation);
+
+    const need = collectAssetIds(imported.doc);
+    expect(need.size).toBeGreaterThan(0);
+    for (const id of need) expect(await db.assets.get(id), id).toBeDefined();
+
+    const loaded = await repo.load();
+    expect(loaded.unreadableRowPresent).toBe(false);
+    expect(loaded.doc?.title).toBe('My import');
+    // every picture is hydrated from its stored bytes, none is left blank
+    for (const img of images(loaded.doc!.docJson).filter(i => i.attrs?.assetId)) expect(img.attrs?.src, String(img.attrs?.assetId)).toMatch(/^url:/);
+  });
+
+  it('keeps the replaced document as a backup that later autosaves cannot push out, with its package and preservation map', async () => {
+    await repo.importDocx(plain, { title: 'first' });
+    await repo.save({ ...baseDoc('typed after the first import'), title: 'first, edited', docJson: (await repo.load()).doc!.docJson });
+    await repo.importDocx(imported, { title: 'second' });
+
+    const backups = await repo.listBackups();
+    const replaced = backups.find(b => b.replacedByImport);
+    expect(replaced?.pinned).toBe(true);
+    expect(replaced?.row.title).toBe('first, edited');
+    expect(replaced?.replacedByImport?.package?.fileName).toBe('body-basics.docx');
+    expect(replaced?.replacedByImport?.preservation?.store).toEqual(plain.preservation);
+    // the current package is the new one
+    expect((await repo.getPackage())?.fileName).toBe('images.docx');
+
+    // ten more distinct saves turn the ordinary ring over, but not the import backup
+    for (let i = 0; i < 12; i++) await repo.save(baseDoc('edit ' + i));
+    expect((await repo.listBackups()).some(b => b.replacedByImport && b.row.title === 'first, edited')).toBe(true);
+  });
+
+  it('keeps only the latest few replaced-by-import backups', async () => {
+    const small = createDexieRepository(db, { htmlToDoc, isValidDoc, resolver, maxImportBackups: 2 });
+    await small.save(baseDoc('original'));
+    for (const t of ['a', 'b', 'c', 'd']) await small.importDocx(plain, { title: t });
+    const kept = (await small.listBackups()).filter(b => b.replacedByImport).map(b => b.row.title);
+    expect(kept).toEqual(['c', 'b']); // newest first; 'original' and 'a' were let go
+  });
+
+  it('a failure writing the assets leaves the previous document, package, preservation map and assets exactly as they were', async () => {
+    await repo.importDocx(plain, { title: 'previous' });
+    const before = {
+      row: await db.documents.get('current'),
+      pkg: await db.docxPackages.get('current'),
+      pres: await db.preservationStores.get('current'),
+      assets: await db.assets.toArray(),
+      backups: await db.autosaveBackups.toArray(),
+    };
+    const boom = () => { throw new DOMException('quota', 'QuotaExceededError'); };
+    db.assets.hook('creating', boom);
+    try {
+      await expect(repo.importDocx(imported, { title: 'doomed' })).rejects.toThrow();
+    } finally {
+      db.assets.hook('creating').unsubscribe(boom);
+    }
+    expect(await db.documents.get('current')).toEqual(before.row);
+    expect(await db.docxPackages.get('current')).toEqual(before.pkg);
+    expect(await db.preservationStores.get('current')).toEqual(before.pres);
+    expect(await db.assets.toArray()).toEqual(before.assets);
+    expect(await db.autosaveBackups.toArray()).toEqual(before.backups); // not even the backup of the previous row
+    // nothing of the failed import is left: its images are not stored
+    for (const a of imported.assets) expect(await db.assets.get(a.id)).toBeUndefined();
+    // and the repository still works afterwards
+    await repo.importDocx(imported, { title: 'retry' });
+    expect((await repo.load()).doc?.title).toBe('retry');
+  });
+
+  it('a failure after the assets were written (the package) rolls the assets back too', async () => {
+    await repo.save(baseDoc('previous'));
+    const boom = () => { throw new Error('disk full'); };
+    db.docxPackages.hook('creating', boom);
+    try {
+      await expect(repo.importDocx(imported, { title: 'doomed' })).rejects.toThrow('disk full');
+    } finally {
+      db.docxPackages.hook('creating').unsubscribe(boom);
+    }
+    expect(await db.assets.count()).toBe(0);
+    expect((await db.documents.get('current'))?.title).toBe('T');
+    expect(await db.autosaveBackups.count()).toBe(0);
+  });
+
+  it('refuses a document the editor could not read back, before writing anything', async () => {
+    await repo.save(baseDoc('previous'));
+    const bad = { ...plain, doc: { type: 'doc', content: [{ type: 'hologram' }] } as JSONContent };
+    await expect(repo.importDocx(bad, { title: 'x' })).rejects.toThrow(/not valid/);
+    expect(JSON.stringify((await db.documents.get('current'))?.docJson)).toContain('previous');
+    expect(await db.docxPackages.count()).toBe(0);
+  });
+
+  it('refuses a document whose image has neither bytes in the import nor a stored asset, instead of storing a blank figure', async () => {
+    await repo.save(baseDoc('previous'));
+    const stripped = { ...imported, assets: [] };
+    await expect(repo.importDocx(stripped, { title: 'x' })).rejects.toThrow(/missing/);
+    expect(await db.docxPackages.count()).toBe(0);
+    expect(JSON.stringify((await db.documents.get('current'))?.docJson)).toContain('previous');
+  });
+
+  it('stores only the images the document uses (an unreferenced draft would be collected and is never written)', async () => {
+    const extra = { id: 'a_unused', sha256: 'f'.repeat(64), mime: 'image/png', data: new Uint8Array([1, 2, 3]).buffer };
+    await repo.importDocx({ ...imported, assets: [...imported.assets, extra] }, { title: 'x' });
+    expect(await db.assets.get('a_unused')).toBeUndefined();
+    expect(await db.assets.count()).toBe(collectAssetIds(imported.doc).size);
+  });
+
+  it('images survive the next save and its garbage collection (a figure is never blanked by an ordinary autosave)', async () => {
+    await repo.importDocx(imported, { title: 'x' });
+    const loaded = (await repo.load()).doc!;
+    await repo.save({ ...loaded, saveState: 'Draft', title: 'edited' });
+    for (const id of collectAssetIds(imported.doc)) expect(await db.assets.get(id), id).toBeDefined();
+    // the same with a repository that knows of no session URLs, and after the backup ring has turned over
+    for (let i = 0; i < 12; i++) await repo.save({ ...loaded, title: 'edit ' + i });
+    for (const id of collectAssetIds(imported.doc)) expect(await db.assets.get(id), id).toBeDefined();
+  });
+
+  it('is an explicit replacement: it succeeds over an unreadable row, which is quarantined rather than lost', async () => {
+    await db.documents.put({
+      id: 'current', title: 'Broken', saveState: 'Saved', docJson: { type: 'doc', content: [{ type: 'hologram' }] },
+      citationRegistry: {}, citationCounter: 0, figureRegistry: {}, figureCounter: 0, updatedAt: 1,
+    } as never);
+    await repo.importDocx(plain, { title: 'fresh' });
+    const backups = await repo.listBackups();
+    expect(backups.some(b => b.quarantined && b.row.title === 'Broken')).toBe(true);
+    const loaded = await repo.load();
+    expect(loaded.unreadableRowPresent).toBe(false);
+    expect(loaded.recoveredFromBackup).toBe(false);
+    expect(loaded.doc?.title).toBe('fresh');
+  });
+
+  it('carries over how the author works (mode, funder instructions) but not the replaced document\'s template', async () => {
+    await repo.save({ ...baseDoc('x'), mode: 'grant', grantInstructions: 'page limit 12', grantTemplateId: 'r01' });
+    await repo.importDocx(plain, { title: 'x' });
+    const row = await db.documents.get('current');
+    expect(row?.mode).toBe('grant');
+    expect(row?.grantInstructions).toBe('page limit 12');
+    expect(row?.grantTemplateId).toBeUndefined();
+    expect(row?.comments).toEqual([]);
+    expect(row?.citationRegistry).toEqual({});
+  });
+
+  it('two imports started together both complete, in call order, as one document each time (the last wins; the first is the backup)', async () => {
+    await repo.save(baseDoc('original'));
+    const p1 = repo.importDocx(plain, { title: 'one' });
+    const p2 = repo.importDocx(imported, { title: 'two' });
+    await Promise.all([p1, p2]);
+    expect(await db.documents.count()).toBe(1);
+    expect((await repo.load()).doc?.title).toBe('two');
+    expect((await repo.getPackage())?.fileName).toBe('images.docx');
+    const titles = (await repo.listBackups()).filter(b => b.replacedByImport).map(b => b.row.title);
+    expect(titles).toEqual(['one', 'T']); // 'one' replaced by 'two'; the original (title 'T') replaced by 'one'
+  });
+
+  it('a failed import does not poison the queue for the saves behind it', async () => {
+    const bad = { ...plain, doc: { type: 'doc', content: [{ type: 'hologram' }] } as JSONContent };
+    const p1 = repo.importDocx(bad, { title: 'x' }).catch(e => e);
+    const p2 = repo.save(baseDoc('after'));
+    expect(await p1).toBeInstanceOf(Error);
+    await p2;
+    expect(JSON.stringify((await repo.load()).doc?.docJson)).toContain('after');
+  });
+
+  it('applies exactly the headings it is given (the repository stores the document as received)', async () => {
+    const un = await readDocx(fixture('unstyled-sections.docx'), undefined, 'u.docx');
+    expect(un.headingCandidates.length).toBeGreaterThan(1);
+    const some = [un.headingCandidates[0]];
+    await repo.importDocx({ ...un, doc: applyHeadings(un.doc, some) }, { title: 'x' });
+    const doc = (await repo.load()).doc!.docJson;
+    const headings = (doc.content ?? []).filter(n => n.type === 'heading');
+    expect(headings.map(textOfDoc)).toEqual([some[0].text]);
   });
 });

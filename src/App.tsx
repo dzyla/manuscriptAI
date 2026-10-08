@@ -4,6 +4,10 @@ import Sidebar from './components/Sidebar';
 import SettingsModal from './components/SettingsModal';
 import PostDraftingView from './components/PostDraftingView';
 import VersionHistoryPopup from './components/VersionHistoryPopup';
+import ImportReportDialog, { ImportProgressDialog } from './components/ImportReportDialog';
+import { titleFromFileName } from './services/docxImport';
+import { useDocxImport } from './hooks/useDocxImport';
+import { textToHtml } from './utils/textImport';
 import { AgentType, Message, Suggestion, HistoryItem, AISettings, ManuscriptSource, AttachedImage, VersionSnapshot } from './types';
 import { searchSimilarManuscripts } from './services/manuscriptSearch';
 import { expandCitationNums, formatCitationGroup, mergeAdjacentCitations } from './services/citations';
@@ -52,7 +56,7 @@ export default function App() {
     resetDocument, persist: persistDocument, initialize: initDocument,
     mode, grantInstructions, grantTemplateId,
     setMode, setGrantInstructions, setGrantTemplateId,
-    loadStatus, blockedByUnreadable, lastLoad, allowOverwrite,
+    loadStatus, blockedByUnreadable, lastLoad, allowOverwrite, importDocx,
   } = useDocumentStore();
 
   const {
@@ -1071,9 +1075,41 @@ export default function App() {
     return doDownload(format);
   };
 
+  // ─── .docx import ──────────────────────────────────────────────────────────
+  // The file is read in a Worker (the page stays responsive); NOTHING is written until the author confirms the report.
+  const docxImport = useDocxImport({
+    commit: importDocx,
+    // setDocument records no undo history: Ctrl+Z cannot bring the replaced document back (the dialog says so).
+    showInEditor: doc => editorRef.current?.setDocument(doc),
+    onImported: () => useAIStore.getState().setSuggestions([]), // their text offsets belong to the replaced document
+    notify: (message, type) => showToast(message, type),
+  });
+
+  const handleImportText = async (file: File) => {
+    const plainNow = content.replace(/<[^>]*>/g, '').replace(/Start writing your manuscript here.*$/, '').trim();
+    if (plainNow.length > 20 && !window.confirm(`Replace the open document with ${file.name}? Any unsaved changes will be lost.`)) return;
+    try {
+      const html = textToHtml(await file.text(), file.name.toLowerCase().endsWith('.md'));
+      setTitle(titleFromFileName(file.name));
+      setContent(html);
+      editorRef.current?.setContent(html);
+      allowOverwrite(); // explicit user replacement of the document
+      if (await persistDocument()) showToast(`Imported ${file.name}`, 'success');
+      else showToast('Imported, but it could not be saved to local storage. Use "Save Workspace" to keep a copy.', 'error');
+    } catch (err) {
+      console.error('Text import failed', err);
+      showToast(`Could not import ${file.name}`, 'error');
+    }
+  };
+
   const handleLoadWorkspace = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
+    // Choosing the same file again must fire onChange again.
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    const lowerName = file.name.toLowerCase();
+    if (lowerName.endsWith('.docx')) { void docxImport.start(file); return; }
+    if (lowerName.endsWith('.md') || lowerName.endsWith('.txt')) { void handleImportText(file); return; }
     const reader = new FileReader();
     reader.onload = async (e) => {
       try {
@@ -1524,6 +1560,18 @@ export default function App() {
         manuscriptText={stripHtml(content)}
         aiSettings={aiSettings}
       />
+
+      {docxImport.state?.phase === 'reading' && (
+        <ImportProgressDialog fileName={docxImport.state.fileName} size={docxImport.state.size} stage={docxImport.state.stage} onCancel={docxImport.cancelRead} />
+      )}
+      {docxImport.state?.phase === 'review' && (
+        <ImportReportDialog
+          result={docxImport.state.result}
+          busy={docxImport.state.committing}
+          onCancel={docxImport.cancelReview}
+          onConfirm={({ acceptedHeadings }) => { void docxImport.confirm(acceptedHeadings); }}
+        />
+      )}
 
       {/* Persistent storage warnings (never auto-dismissed) */}
       {(loadStatus === 'failed' || blockedByUnreadable) && (

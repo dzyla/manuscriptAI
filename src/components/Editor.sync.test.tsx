@@ -3,6 +3,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { createRef, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { JSONContent } from '@tiptap/core';
+import { undoDepth, redoDepth } from '@tiptap/pm/history';
 import Editor, { type EditorRef } from './Editor';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -97,5 +98,56 @@ describe('Editor pendingDocument coordination', () => {
     render('<p>x</p>', null, true);
     expect(calls.synced).toHaveLength(1);
     expect(calls.ready).toBe(1);
+  });
+});
+
+describe('loading a document is not an edit (undo history)', () => {
+  const NEW_DOC: JSONContent = {
+    type: 'doc',
+    content: [{ type: 'paragraph', content: [{ type: 'text', text: 'imported text' }] }],
+  };
+  // TipTap hangs its editor on the ProseMirror element
+  const editorOf = () => (host!.querySelector('.ProseMirror') as unknown as { editor: import('@tiptap/core').Editor }).editor;
+
+  it('Ctrl+Z right after the first load does nothing (it must not blank or restore the placeholder)', () => {
+    const { ref, render } = mount();
+    render('<p>derived html</p>', P);
+    const ed = editorOf();
+    expect(undoDepth(ed.state)).toBe(0);
+    ed.commands.undo();
+    expect(ref.current!.getHTML()).toBe('<p>loaded from json</p>');
+  });
+
+  it('setDocument (a .docx import) is not undoable, and edits made to the REPLACED document leave the undo stack too', () => {
+    const { ref, render } = mount();
+    render('<p>derived html</p>', P);
+    render('<p>loaded from json</p>', null);
+    const ed = editorOf();
+    // the author edits the open document: that is undoable...
+    act(() => { ed.commands.insertContentAt(1, 'XYZ '); });
+    expect(undoDepth(ed.state)).toBeGreaterThan(0);
+    // ...then imports another document over it
+    act(() => { ref.current!.setDocument(NEW_DOC); });
+    expect(ref.current!.getHTML()).toBe('<p>imported text</p>');
+    expect(undoDepth(ed.state)).toBe(0);
+    expect(redoDepth(ed.state)).toBe(0);
+    // Ctrl+Z neither blanks the import nor splices the old edit into it
+    act(() => { ed.commands.undo(); ed.commands.undo(); });
+    expect(ref.current!.getHTML()).toBe('<p>imported text</p>');
+    act(() => { ed.commands.redo(); });
+    expect(ref.current!.getHTML()).toBe('<p>imported text</p>');
+  });
+
+  it('edits made AFTER the import are undoable, back to the import and no further', () => {
+    const { ref, render } = mount();
+    render('<p>derived html</p>', P);
+    render('<p>loaded from json</p>', null);
+    const ed = editorOf();
+    act(() => { ref.current!.setDocument(NEW_DOC); });
+    act(() => { ed.commands.insertContentAt(1, 'typed '); });
+    expect(ref.current!.getHTML()).toBe('<p>typed imported text</p>');
+    expect(undoDepth(ed.state)).toBe(1);
+    act(() => { ed.commands.undo(); ed.commands.undo(); });
+    expect(ref.current!.getHTML()).toBe('<p>imported text</p>');
   });
 });

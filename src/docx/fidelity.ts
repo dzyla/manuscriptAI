@@ -73,6 +73,15 @@ export function addWarning(r: ImportReport, feature: FeatureKey | 'part', messag
 
 const plural = (n: number, one: string, many = one + 's') => `${n} ${n === 1 ? one : many}`;
 
+/**
+ * How many category-3 atoms are kept but neither edited nor already counted under a heading of their own (tracked changes, comment
+ * anchors, citation fields): equations, footnote markers, fields, content controls and so on. The "preserved read-only" figure.
+ */
+export function preservedReadOnly(r: ImportReport): { count: number; hasDescribed: boolean } {
+  const described = r.described ? r.described.trackedChange + r.described.commentAnchor + r.described.citationField : 0;
+  return { count: Math.max(0, r.byCategory[3] - described), hasDescribed: described > 0 };
+}
+
 export function summarizeReport(r: ImportReport): string {
   const parts: string[] = [];
   if (r.pageCount) parts.push(plural(r.pageCount, 'page'));
@@ -86,9 +95,8 @@ export function summarizeReport(r: ImportReport): string {
   if (c.externalBibliography) parts.push(plural(c.externalBibliography, 'bibliography', 'bibliographies'));
   // The atoms that are tracked changes, comment anchors or the pieces of a citation field are the ones counted above; what is left is everything else the
   // document holds that the editor keeps but cannot edit (equations, footnote markers, fields, content controls, ...).
-  const described = r.described ? r.described.trackedChange + r.described.commentAnchor + r.described.citationField : 0;
-  const other = Math.max(0, r.byCategory[3] - described);
-  if (other) parts.push(`${other} ${described ? 'other ' : ''}preserved read-only`);
+  const { count: other, hasDescribed } = preservedReadOnly(r);
+  if (other) parts.push(`${other} ${hasDescribed ? 'other ' : ''}preserved read-only`);
   if (r.warnings.length) parts.push(plural(r.warnings.length, 'warning'));
   return parts.length ? `Imported ${parts.join(' · ')}` : 'Imported document';
 }

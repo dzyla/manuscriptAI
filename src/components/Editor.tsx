@@ -140,6 +140,9 @@ const BUBBLE_ACTIONS: { label: string; instruction: string; agent: AgentType; ic
   },
 ];
 
+/** prosemirror-history's plugin key (it does not export it); the same string addresses the plugin and its transaction metadata. */
+const HISTORY_PLUGIN_KEY = 'history$';
+
 const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocChange, pendingDocument, onPendingDocumentApplied, loadSettled = false, onDocumentReady, onContentSynced, suggestions, onSuggestionClick, onSelectionQuery, onTransformSelection, onRewriteSection, onAnalyzeSection, onVerifyClaim, onSearchSimilar, sources, citationRegistry, onInsertCitation, isDistractionFree, editorZoom = 100, editorWidth = 'normal', aiSettings, onAnalyzeImage, onInsertFigure, showPageGuides = false }, ref) => {
   const [isMounted, setIsMounted] = useState(false);
 
@@ -498,7 +501,19 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
   const applyDocument = useCallback((doc: JSONContent) => {
     if (!editor) return;
     holdExternalUpdate();
-    editor.commands.setContent(doc);
+    // Loading a document is not an edit: it must not be undoable (Ctrl+Z right after a load, or after a .docx import, would
+    // otherwise bring back the document it replaced, or an empty one) and the edits made to the PREVIOUS document must not stay
+    // on the undo stack, where undoing them would splice their text into this one. Marking the transaction `addToHistory: false`
+    // is not enough for the second part (the history would only re-map the old entries), so the history state is also replaced
+    // with a fresh, empty one.
+    editor.chain().command(({ tr, state }) => {
+      tr.setMeta('addToHistory', false);
+      const history = state.plugins.find(p => (p as unknown as { key: string }).key === HISTORY_PLUGIN_KEY);
+      const init = (history?.spec as unknown as { state?: { init?: () => unknown } } | undefined)?.state?.init;
+      const fresh = init?.();
+      if (fresh) tr.setMeta(HISTORY_PLUGIN_KEY, { historyState: fresh });
+      return true;
+    }).setContent(doc).run();
     const html = editor.getHTML();
     lastExternalContent.current = html;
     onDocChangeRef.current?.(editor.getJSON());

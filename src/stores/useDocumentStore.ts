@@ -6,6 +6,8 @@ import { htmlToDoc, docToHtml, isValidDoc } from '../extensions/schema';
 import { migrateLegacyCitations } from '../utils/migrateCitations';
 import { createFormat } from '../services/formatPresets';
 import type { CommentThread, DocFormat, DocumentMode } from '../types';
+import type { ImportResult, HeadingCandidate } from '../docx/read';
+import { applyHeadings } from '../docx/read/headings';
 
 export const documentRepository = createDexieRepository(db, { htmlToDoc, isValidDoc, migrateLegacyHtml: migrateLegacyCitations });
 
@@ -106,6 +108,20 @@ interface DocumentState {
   initialize: () => Promise<void>;
 
   /**
+   * Commit a confirmed .docx import and make it the open document. In order: save what is on screen (so the backup of the replaced
+   * document holds the latest edits; if that save FAILS the import is not started), apply the headings the author accepted (and only
+   * those), write everything in one transaction (`documentRepository.importDocx`), reload the committed document and put it in the
+   * store. Autosave is suspended for the whole span: a save queued after the commit would write the replaced document back over the
+   * import. Any failure leaves the previous document, in the store and on disk, exactly as it was.
+   *
+   * Returns the committed document (images resolved to object URLs). The CALLER feeds it to the editor with `EditorRef.setDocument`
+   * (which does not record undo history); `pendingDocument` is deliberately not used, because the editor skips a pending document
+   * identical to the last one it applied, and re-importing a file after editing the first import would then be silently dropped.
+   * Only one import runs at a time.
+   */
+  importDocx: (result: ImportResult, decisions: { title: string; acceptedHeadings: HeadingCandidate[] }) => Promise<JSONContent>;
+
+  /**
    * Persist current state to Dexie. Resolves true when the state is safely stored (written, or identical
    * to the stored row); false when persistence was refused (not loaded, load failed, or blocked).
    */
@@ -114,6 +130,9 @@ interface DocumentState {
 
 /** Save warnings already logged this session (autosave runs every 30 s; log each problem once). */
 const reportedWarnings = new Set<string>();
+
+/** True from the start of an import's first save to the end of its commit and reload; `persist` writes nothing meanwhile. */
+let importInFlight = false;
 
 const DEFAULT_CONTENT = '<p>Start writing your manuscript here, or click "New Manuscript" to begin with an IMRAD template.</p>';
 
@@ -304,29 +323,71 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     }
   },
 
-  persist: async () => {
-    const s = get();
-    if (s.loadStatus !== 'ready' || s.blockedByUnreadable) return false;
-    const doc: LoadedDocument = {
-      title: s.title,
-      saveState: s.saveState,
-      docJson: s.docJson ?? htmlToDoc(s.content),
-      format: s.format,
-      comments: s.comments,
-      citationRegistry: s.citationRegistry,
-      citationCounter: s.citationCounter,
-      figureRegistry: s.figureRegistry,
-      figureCounter: s.figureCounter,
-      mode: s.mode,
-      grantInstructions: s.grantInstructions,
-      grantTemplateId: s.grantTemplateId,
-    };
-    const { warnings } = await documentRepository.save(doc);
-    for (const w of warnings) {
-      if (reportedWarnings.has(w)) continue;
-      reportedWarnings.add(w);
-      console.warn(w);
+  importDocx: async (result, decisions) => {
+    if (importInFlight) throw new Error('Another import is already in progress.');
+    importInFlight = true;
+    try {
+      const s = get();
+      if (s.loadStatus === 'ready' && !s.blockedByUnreadable) await persistState(get);
+      const doc = applyHeadings(result.doc, decisions.acceptedHeadings);
+      await documentRepository.importDocx({ ...result, doc }, { title: decisions.title });
+      const loaded = await documentRepository.load();
+      if (!loaded.doc) throw new Error('The imported document was stored but could not be read back.');
+      const d = loaded.doc;
+      set({
+        title: d.title,
+        content: docToHtml(d.docJson),
+        docJson: d.docJson,
+        pendingDocument: null,
+        format: d.format,
+        comments: d.comments,
+        saveState: d.saveState,
+        citationRegistry: d.citationRegistry,
+        citationCounter: d.citationCounter,
+        figureRegistry: d.figureRegistry,
+        figureCounter: d.figureCounter,
+        mode: d.mode,
+        grantInstructions: d.grantInstructions,
+        grantTemplateId: d.grantTemplateId,
+        lastLoad: { migrated: false, recoveredFromBackup: false, unreadableRowPresent: false, quarantined: false },
+        // An explicit replacement of the whole document: lifts the unreadable-document block and a failed load.
+        blockedByUnreadable: false,
+        loadStatus: 'ready',
+      });
+      return d.docJson;
+    } finally {
+      importInFlight = false;
     }
-    return true;
+  },
+
+  persist: async () => {
+    if (importInFlight) return false; // the import owns the document until it is committed and loaded
+    return persistState(get);
   },
 }));
+
+async function persistState(get: () => DocumentState): Promise<boolean> {
+  const s = get();
+  if (s.loadStatus !== 'ready' || s.blockedByUnreadable) return false;
+  const doc: LoadedDocument = {
+    title: s.title,
+    saveState: s.saveState,
+    docJson: s.docJson ?? htmlToDoc(s.content),
+    format: s.format,
+    comments: s.comments,
+    citationRegistry: s.citationRegistry,
+    citationCounter: s.citationCounter,
+    figureRegistry: s.figureRegistry,
+    figureCounter: s.figureCounter,
+    mode: s.mode,
+    grantInstructions: s.grantInstructions,
+    grantTemplateId: s.grantTemplateId,
+  };
+  const { warnings } = await documentRepository.save(doc);
+  for (const w of warnings) {
+    if (reportedWarnings.has(w)) continue;
+    reportedWarnings.add(w);
+    console.warn(w);
+  }
+  return true;
+}

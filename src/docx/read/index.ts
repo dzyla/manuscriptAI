@@ -59,12 +59,28 @@ export interface ImportResult {
   original: ArrayBuffer;
 }
 
-export async function readDocx(data: ArrayBuffer, limits?: OpenOptions, fileName?: string): Promise<ImportResult> {
+/** The steps of a read, in order, for a progress display. Reported before each step starts. */
+export type ImportStage = 'opening' | 'styles' | 'body' | 'headings' | 'report';
+
+/**
+ * `onStage` (optional) is told which step is starting. It is progress information only: it is never given document content, and a
+ * callback that throws does not stop the read.
+ */
+export async function readDocx(data: ArrayBuffer, limits?: OpenOptions, fileName?: string, onStage?: (stage: ImportStage) => void): Promise<ImportResult> {
+  const stage = (s: ImportStage): void => {
+    try {
+      onStage?.(s);
+    } catch {
+      // progress display must never fail a read
+    }
+  };
+  stage('opening');
   const pkg = await openPackage(data, limits);
   const report = createReport();
   const preservation = emptyPreservationStore();
   const assets: AssetDraft[] = [];
   let counter = 0;
+  stage('styles');
   const ctx: ReadContext = {
     pkg,
     styles: readStyles(pkg, report),
@@ -80,12 +96,15 @@ export async function readDocx(data: ArrayBuffer, limits?: OpenOptions, fileName
   const body = mainDoc.getElementsByTagNameNS(W_NS, 'body')[0];
   if (!body) throw new DocxOpenError('corrupt', 'The main document part has no body.');
 
+  stage('body');
   const { blocks } = await readBody(body, ctx);
   // A document needs a block. An empty body reads as one empty paragraph, which claims no original XML (nothing was there).
   const content = blocks.length ? blocks : [specNormalizeNode({ type: 'paragraph', attrs: { styleId: null } })];
   const doc: JSONContent = { type: 'doc', content };
+  stage('headings');
   const headingCandidates = inferHeadings(doc, ctx);
 
+  stage('report');
   const { page, extraSections } = readPageSetup(body, report);
   if (extraSections > 0) {
     recordFeature(report, 'sectionBreak', extraSections);

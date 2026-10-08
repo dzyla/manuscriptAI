@@ -288,6 +288,12 @@ export interface BackupRow {
   quarantined?: true;
   /** The pre-migration legacy row; never trimmed, but (unlike quarantined) a valid recovery candidate. */
   pinned?: true;
+  /**
+   * Set only on the backup taken when a .docx import replaced the document: the document's own original package and preservation
+   * map, which that import overwrites (there is one `current` slot for each). Without them the replaced document's untouched Word
+   * content could no longer be re-emitted on export.
+   */
+  replacedByImport?: { package?: DocxPackageRow; preservation?: PreservationRow };
 }
 
 export interface SourceRow extends ManuscriptSource {

@@ -3,6 +3,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { db } from '../db/manuscriptDb';
 import { useDocumentStore, documentRepository } from './useDocumentStore';
 import { htmlToDoc } from '../extensions/schema';
+import { readDocx } from '../docx/read';
+import { loadDocx } from '../test/docxFixtures';
 
 beforeEach(async () => {
   await db.delete();
@@ -158,5 +160,114 @@ describe('useDocumentStore (v3)', () => {
       expect(backups).toHaveLength(1); // only the pinned pre-migration row; no defaults in the ring
       expect(backups[0].pinned).toBe(true);
     });
+  });
+});
+
+describe('useDocumentStore.importDocx', () => {
+  const textOf = (n: any): string => (n.type === 'text' ? n.text : (n.content ?? []).map(textOf).join(''));
+
+  it('saves what is on screen first, so the backup of the replaced document holds the latest edits', async () => {
+    await useDocumentStore.getState().initialize();
+    useDocumentStore.getState().setDocJson(htmlToDoc('<p>typed since the last autosave</p>'));
+    const r = await readDocx(loadDocx('body-basics.docx'), undefined, 'body-basics.docx');
+    await useDocumentStore.getState().importDocx(r, { title: 'Imported', acceptedHeadings: [] });
+    const replaced = (await db.autosaveBackups.toArray()).find(b => b.replacedByImport);
+    expect(JSON.stringify(replaced?.row.docJson)).toContain('typed since the last autosave');
+  });
+
+  it('does not start when the pre-import save fails, and changes nothing', async () => {
+    await useDocumentStore.getState().initialize();
+    useDocumentStore.getState().setDocJson(htmlToDoc('<p>unsaved work</p>'));
+    const boom = () => { throw new Error('disk full'); };
+    db.documents.hook('creating', boom);
+    db.documents.hook('updating', boom);
+    const r = await readDocx(loadDocx('body-basics.docx'), undefined, 'body-basics.docx');
+    try {
+      await expect(useDocumentStore.getState().importDocx(r, { title: 'Imported', acceptedHeadings: [] })).rejects.toThrow();
+    } finally {
+      db.documents.hook('creating').unsubscribe(boom);
+      db.documents.hook('updating').unsubscribe(boom);
+    }
+    expect(JSON.stringify(useDocumentStore.getState().docJson)).toContain('unsaved work');
+    expect(await db.docxPackages.count()).toBe(0);
+    // and a later import is allowed (the in-flight flag was released)
+    await useDocumentStore.getState().importDocx(r, { title: 'Imported', acceptedHeadings: [] });
+    expect(useDocumentStore.getState().title).toBe('Imported');
+  });
+
+  it('puts the committed document in the store, lifts the unreadable-document block, and leaves no pending document for the editor to re-apply', async () => {
+    await unreadableRow();
+    await useDocumentStore.getState().initialize();
+    expect(useDocumentStore.getState().blockedByUnreadable).toBe(true);
+    const r = await readDocx(loadDocx('body-basics.docx'), undefined, 'body-basics.docx');
+    const docJson = await useDocumentStore.getState().importDocx(r, { title: 'Imported', acceptedHeadings: [] });
+    const s = useDocumentStore.getState();
+    expect(s.blockedByUnreadable).toBe(false);
+    expect(s.loadStatus).toBe('ready');
+    expect(s.pendingDocument).toBeNull();
+    expect(s.docJson).toBe(docJson);
+    expect(s.title).toBe('Imported');
+    expect(s.saveState).toBe('Saved');
+    expect(s.content).toContain(textOf(r.doc).slice(0, 12));
+    expect(await s.persist()).toBe(true); // saving works again
+  });
+
+  it('applies exactly the accepted headings: none by default, and only those that are passed', async () => {
+    const r = await readDocx(loadDocx('unstyled-sections.docx'), undefined, 'u.docx');
+    expect(r.headingCandidates.length).toBeGreaterThan(1);
+    await useDocumentStore.getState().initialize();
+    const none = await useDocumentStore.getState().importDocx(r, { title: 'x', acceptedHeadings: [] });
+    expect((none.content ?? []).filter(n => n.type === 'heading')).toHaveLength(0);
+    const two = r.headingCandidates.slice(0, 2);
+    const some = await useDocumentStore.getState().importDocx(r, { title: 'x', acceptedHeadings: two });
+    expect((some.content ?? []).filter(n => n.type === 'heading').map(textOf)).toEqual(two.map(h => h.text));
+    // the result the caller holds was not mutated by applying headings
+    expect((r.doc.content ?? []).filter(n => n.type === 'heading')).toHaveLength(0);
+  });
+
+  it('autosave cannot write the replaced document back over the import while it is being committed', async () => {
+    await useDocumentStore.getState().initialize();
+    useDocumentStore.getState().setDocJson(htmlToDoc('<p>old document</p>'));
+    const r = await readDocx(loadDocx('body-basics.docx'), undefined, 'body-basics.docx');
+    const pending = useDocumentStore.getState().importDocx(r, { title: 'Imported', acceptedHeadings: [] });
+    // the 30 s autosave (or a title blur) fires right now, with the OLD document still in the store
+    const during = await useDocumentStore.getState().persist();
+    await pending;
+    expect(during).toBe(false);
+    expect((await db.documents.get('current'))?.title).toBe('Imported');
+    expect(JSON.stringify((await db.documents.get('current'))?.docJson)).not.toContain('old document');
+    // once the import is over, saving is back
+    expect(await useDocumentStore.getState().persist()).toBe(true);
+    expect((await db.documents.get('current'))?.title).toBe('Imported');
+  });
+
+  it('refuses a second import while one is running (the first completes, nothing is interleaved)', async () => {
+    await useDocumentStore.getState().initialize();
+    const r = await readDocx(loadDocx('body-basics.docx'), undefined, 'body-basics.docx');
+    const first = useDocumentStore.getState().importDocx(r, { title: 'first', acceptedHeadings: [] });
+    await expect(useDocumentStore.getState().importDocx(r, { title: 'second', acceptedHeadings: [] })).rejects.toThrow(/already in progress/);
+    await first;
+    expect(useDocumentStore.getState().title).toBe('first');
+    expect((await db.documents.get('current'))?.title).toBe('first');
+  });
+
+  it('a failed import leaves the document in the store and on disk as it was', async () => {
+    await useDocumentStore.getState().initialize();
+    useDocumentStore.getState().setDocJson(htmlToDoc('<p>mine</p>'));
+    await useDocumentStore.getState().persist();
+    const before = await db.documents.get('current');
+    const r = await readDocx(loadDocx('images.docx'), undefined, 'images.docx');
+    const boom = () => { throw new DOMException('quota', 'QuotaExceededError'); };
+    db.assets.hook('creating', boom);
+    try {
+      await expect(useDocumentStore.getState().importDocx(r, { title: 'doomed', acceptedHeadings: [] })).rejects.toThrow();
+    } finally {
+      db.assets.hook('creating').unsubscribe(boom);
+    }
+    expect(await db.documents.get('current')).toEqual(before);
+    expect(useDocumentStore.getState().title).not.toBe('doomed');
+    expect(JSON.stringify(useDocumentStore.getState().docJson)).toContain('mine');
+    expect(await db.docxPackages.count()).toBe(0);
+    expect(await db.assets.count()).toBe(0);
   });
 });
