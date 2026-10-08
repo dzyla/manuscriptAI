@@ -34,7 +34,7 @@ export function Rail({ active, badges, onSelect }: {
             onClick={() => onSelect(key)}
           >
             <Icon size={16} />
-            {count ? <span className="u-rail-badge" data-testid={`badge-${key}`}>{count}</span> : null}
+            {count ? <span className="u-rail-badge" data-testid={`badge-${key}`}>{count > 99 ? '99+' : count}</span> : null}
           </button>
         );
       })}

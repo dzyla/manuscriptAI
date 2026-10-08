@@ -2,10 +2,9 @@ import { useMemo } from 'react';
 import { useAIStore } from '../../stores/useAIStore';
 import { flaggedSentences, MAX_REWRITE_WORDS } from '../../services/proseAudit/metrics';
 import { activeSummary } from '../../services/proseAudit/profile';
-import { TELL_PATTERNS } from '../../services/proseAudit/patterns';
 import type { AuditMetrics, SentenceAudit } from '../../types';
 import { VoiceProfileManager } from './VoiceProfileManager';
-import { styleRows, sectionRows } from './styleRows';
+import { styleRows, sectionRows, sentenceEvidence } from './styleRows';
 
 /*
  * Reading the score (for maintainers; nothing here is shown to the user).
@@ -32,6 +31,8 @@ export interface StylePanelProps {
   highlightsOn: boolean;
   onToggleHighlights: (on: boolean) => void;
   rewritingId?: string | null;
+  /** The review list shows flagged sentences as rows, so its copy of this panel leaves the list out. */
+  showWorst?: boolean;
 }
 
 const BAND_STYLES = {
@@ -58,7 +59,7 @@ const HEADING = 'mb-1 text-[10px] font-bold uppercase tracking-widest';
 /** Stable id for a sentence, shared with the host's `rewritingId`. */
 export const sentenceId = (s: SentenceAudit) => `${s.start}-${s.end}`;
 
-export function StylePanel({ metrics, onJumpToSentence, onRewrite, highlightsOn, onToggleHighlights, rewritingId }: StylePanelProps) {
+export function StylePanel({ metrics, onJumpToSentence, onRewrite, highlightsOn, onToggleHighlights, rewritingId, showWorst = true }: StylePanelProps) {
   const voiceProfile = useAIStore(s => s.aiSettings.voiceProfile);
   const { summary: voice, isGeneric } = activeSummary(voiceProfile);
 
@@ -165,7 +166,7 @@ export function StylePanel({ metrics, onJumpToSentence, onRewrite, highlightsOn,
         </div>
       )}
 
-      <div>
+      {showWorst && <div>
         <div className={HEADING} style={muted}>Worst sentences</div>
         <ul className="space-y-2">
           {worst.map(s => {
@@ -178,12 +179,13 @@ export function StylePanel({ metrics, onJumpToSentence, onRewrite, highlightsOn,
                   style={{ color: 'var(--text-secondary)' }}
                   onClick={() => onJumpToSentence(s)}
                 >
-                  {s.words} words · {s.tells.map(t => TELL_PATTERNS[t]?.label ?? t).join(', ') || (s.words > 35 ? 'over 35 words' : 'no specific pattern')}
+                  {sentenceEvidence(s)}
                 </button>
                 {s.words > MAX_REWRITE_WORDS ? (
                   <div className="mt-1 text-[10px]" style={muted}>Too long to rewrite in one step. Split it by hand first.</div>
                 ) : (
                   <button
+                    data-testid="control-rewrite"
                     className="mt-1 text-[11px] font-semibold text-blue-600 hover:underline disabled:opacity-50"
                     disabled={busy}
                     onClick={() => onRewrite(s)}
@@ -195,7 +197,7 @@ export function StylePanel({ metrics, onJumpToSentence, onRewrite, highlightsOn,
             );
           })}
         </ul>
-      </div>
+      </div>}
     </div>
   );
 }

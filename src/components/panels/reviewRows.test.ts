@@ -1,0 +1,109 @@
+import { describe, it, expect } from 'vitest';
+import { reviewRows } from './reviewRows';
+import type { Suggestion, SentenceAudit } from '../../types';
+
+const TEXT = 'Alpha sentence here. Beta sentence here; with a semicolon. Gamma sentence here.';
+const sug = (over: Partial<Suggestion> = {}): Suggestion => ({
+  id: 's1', originalText: 'Gamma sentence here.', suggestedText: 'Gamma is shorter.',
+  explanation: 'Tighten it.', agent: 'editor', startIndex: 58, endIndex: 78, ...over,
+});
+const flag = (over: Partial<SentenceAudit> = {}): SentenceAudit =>
+  ({ start: 21, end: 57, words: 7, tells: ['semicolon'], severity: 63, ...over });
+
+describe('reviewRows', () => {
+  it('orders every kind by position in the document, not by kind', () => {
+    const rows = reviewRows({
+      suggestions: [sug()], flagged: [flag()],
+      grammar: [{ start: 0, end: 20, message: 'Consider a comma.' }],
+      plainText: TEXT, appliedIds: new Set(),
+    });
+    expect(rows.map(r => r.kind)).toEqual(['grammar', 'style', 'suggestion']);
+    expect(rows.map(r => r.start)).toEqual([0, 21, 58]);
+  });
+
+  it("carries H's evidence verbatim", () => {
+    const rows = reviewRows({ suggestions: [], flagged: [flag()], grammar: [], plainText: TEXT, appliedIds: new Set() });
+    expect(rows[0].evidence).toContain('semicolon');
+    expect(rows[0].evidence).toBe(rows[0].evidence.trim());
+  });
+
+  it('offers accept and reject for a suggestion with replacement text', () => {
+    const rows = reviewRows({ suggestions: [sug()], flagged: [], grammar: [], plainText: TEXT, appliedIds: new Set() });
+    expect(rows[0].actions).toEqual(['accept', 'reject']);
+  });
+
+  it('offers only reject for an advisory suggestion with no replacement', () => {
+    const rows = reviewRows({ suggestions: [sug({ suggestedText: '' })], flagged: [], grammar: [], plainText: TEXT, appliedIds: new Set() });
+    expect(rows[0].actions).toEqual(['reject']);
+  });
+
+  it('disables a row whose span no longer matches the text', () => {
+    // Review Focus 4: an import or an edit moved the text under the offsets.
+    const rows = reviewRows({
+      suggestions: [sug({ originalText: 'text that is no longer there' })],
+      flagged: [], grammar: [], plainText: TEXT, appliedIds: new Set(),
+    });
+    expect(rows[0].canAct).toBe(false);
+  });
+
+  it('disables a style row once a suggestion on the same span is applied', () => {
+    // Review Focus 2: both rows would rewrite the same text; the second must not act on a stale span.
+    const rows = reviewRows({
+      suggestions: [sug({ id: 'applied', startIndex: 21, endIndex: 57, originalText: 'Beta sentence here; with a semicolon.' })],
+      flagged: [flag()], grammar: [], plainText: TEXT, appliedIds: new Set(['applied']),
+    });
+    const style = rows.find(r => r.kind === 'style')!;
+    expect(style.canAct).toBe(false);
+    expect(style.evidence).toContain('already changed');
+  });
+
+  it('returns nothing for an empty document rather than throwing', () => {
+    // Review Focus 3.
+    expect(reviewRows({ suggestions: [], flagged: [], grammar: [], plainText: '', appliedIds: new Set() })).toEqual([]);
+  });
+
+  it('gives every row a stable unique id', () => {
+    const rows = reviewRows({ suggestions: [sug()], flagged: [flag()], grammar: [{ start: 0, end: 20, message: 'x' }], plainText: TEXT, appliedIds: new Set() });
+    expect(new Set(rows.map(r => r.id)).size).toBe(3);
+  });
+
+  it('keeps an advisory flag actionable: it inserts a note rather than replacing text', () => {
+    const rows = reviewRows({ suggestions: [sug({ suggestedText: '', kind: 'advisory' })], flagged: [], grammar: [], plainText: TEXT, appliedIds: new Set() });
+    expect(rows[0].actions).toEqual(['accept', 'reject']);
+    expect(rows[0].advisory).toBe(true);
+  });
+
+  it('finds a suggestion by its text when earlier edits moved its offsets', () => {
+    const moved = 'Inserted. ' + TEXT;
+    const rows = reviewRows({ suggestions: [sug()], flagged: [], grammar: [], plainText: moved, appliedIds: new Set() });
+    expect(rows[0].canAct).toBe(true);
+  });
+
+  it('disables every style row while the audit describes older text, and still lists them', () => {
+    const rows = reviewRows({ suggestions: [], flagged: [flag()], grammar: [], plainText: TEXT, appliedIds: new Set(), styleCurrent: false });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].canAct).toBe(false);
+    expect(rows[0].evidence).toBe('7 words · semicolon');
+  });
+
+  it('disables a style row the editor refuses to rewrite, and says why', () => {
+    const rows = reviewRows({ suggestions: [], flagged: [flag()], grammar: [], plainText: TEXT, appliedIds: new Set(), styleBlocked: new Map([['style:21-57', 'Too long.']]) });
+    expect(rows[0].canAct).toBe(false);
+    expect(rows[0].note).toBe('Too long.');
+  });
+
+  it('uses the same words for a flagged sentence as the style panel', () => {
+    const rows = reviewRows({ suggestions: [], flagged: [flag({ words: 40, tells: [] }), flag({ start: 60, end: 70, words: 12, tells: [] })], grammar: [], plainText: TEXT, appliedIds: new Set() });
+    expect(rows.map(r => r.evidence)).toEqual(['40 words · over 35 words', '12 words · no specific pattern']);
+  });
+
+  it('handles 500 suggestions on a long document without stalling', () => {
+    const text = 'A sentence of ordinary length goes here. '.repeat(1500);
+    const suggestions = Array.from({ length: 500 }, (_, i) => sug({ id: `s${i}`, originalText: i % 2 ? 'A sentence of ordinary length goes here.' : `Gone text number ${i} which is not in the document`, startIndex: i * 3, endIndex: i * 3 + 5 }));
+    const t0 = performance.now();
+    const rows = reviewRows({ suggestions, flagged: [], grammar: [], plainText: text, appliedIds: new Set() });
+    expect(rows).toHaveLength(500);
+    expect(rows.filter(r => r.canAct)).toHaveLength(250);
+    expect(performance.now() - t0).toBeLessThan(3000);
+  });
+});

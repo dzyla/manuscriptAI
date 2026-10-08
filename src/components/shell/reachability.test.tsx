@@ -101,7 +101,7 @@ export const ENTRY_POINTS: EntryPoint[] = [
   row('regenerate a source summary', [C, 'section:library', 'control:regenerate-summary'], 5, [C, 'title:Regenerate AI summary'], ['sources']),
   row('copy a source as BibTeX', [C, 'section:library', 'control:copy-bibtex'], 5, [C, 'title:Copy BibTeX entry to clipboard'], ['sources']),
   row('compare a source with the manuscript', [C, 'section:library', 'control:compare-source'], 5, [C, 'ptext:Compare'], ['sources']),
-  row('chat about one source', [C, 'section:library', 'control:chat-source'], 5, [C, 'ptext:Chat#2'], ['sources']),
+  row('chat about one source', [C, 'section:library', 'control:chat-source'], 5, [C, 'ptext:Chat'], ['sources']),
   row('check a source against the citations', [C, 'section:library', 'control:check-citations'], 5, [C, 'ptext:Check Citations'], ['sources']),
   row('find the published record of a PDF', [C, 'section:library', 'control:match-pdf'], 5, [C, 'ph:Search paper title or keywords…'], ['sources']),
   row('search the literature', [C, 'section:search', 'control:query'], 5, [C, 'ph:Title, keywords, or paste abstract…']),
@@ -115,28 +115,28 @@ export const ENTRY_POINTS: EntryPoint[] = [
   row('insert a citation with @', ['topbar:insert', 'item:citation'], 8, ['key:@', 'text:Insert Citation']),
   // Review
   row('open chat', [R, 'section:chat']),
-  row('send a chat message', [R, 'section:chat', 'control:send'], 4, [R, 'section:chat', 'fill:hello', 'icon:send']),
-  row('switch between Manuscript AI and agents', [R, 'section:chat', 'control:agent-mode'], 4, [R, 'section:chat', 'ptext:Agents']),
-  row('read what each agent does', [R, 'section:chat', 'control:agent-info'], 4, [R, 'section:chat', 'title:Show agent descriptions']),
-  row('attach an image to a chat message', [R, 'section:chat', 'control:attach-image'], 4, [R, 'section:chat', 'title:Attach image (JPEG, PNG, WebP)']),
-  row('choose which sources the chat sees', [R, 'section:chat', 'control:attach-sources'], 4, [R, 'section:chat', 'title:Attach context sources']),
-  row('accept a suggestion', [R, 'row:suggestion', 'control:accept'], 4, [R, 'section:suggestions', 'ptext:Accept'], ['suggestion']),
-  row('reject a suggestion', [R, 'row:suggestion', 'control:reject'], 4, [R, 'section:suggestions', 'ptext:Reject'], ['suggestion']),
-  row('accept every suggestion', [R, 'control:accept-all'], 4, [R, 'section:suggestions', 'ptext:Accept All'], ['suggestion']),
-  row('clear every suggestion', [R, 'control:reject-all'], 4, [R, 'section:suggestions', 'ptext:Clear All'], ['suggestion']),
-  row('disagree with a suggestion and reply', [R, 'row:suggestion', 'control:rebut'], 4, [R, 'section:suggestions', 'ptext:Disagree? Reply to this suggestion...'], ['suggestion']),
-  row('rewrite a flagged sentence', [R, 'row:style', 'control:rewrite'], 4, [F, 'section:style', 'ptext:Rewrite in my voice'], ['style-text']),
-  row('jump to a flagged sentence', [R, 'row:style', 'control:goto'], 4, [F, 'section:style', 'ptext:*words ·*'], ['style-text']),
-  row('read the style comparison', [R, 'section:style'], 4, [F, 'section:style', 'ptext:Highlight flagged sentences in the editor'], ['style-text']),
-  row('add writing samples for the voice profile', [R, 'section:style', 'control:voice-samples'], 4, [F, 'section:style', 'ptext:Add samples']),
-  row('filter suggestions by severity', [R, 'control:filter'], 4, [R, 'section:suggestions', 'icon:funnel', 'ptext:All (*'], ['suggestion']),
-  row('run an analysis', [R, 'control:analyze'], 4, ['htext:Analyze All']),
-  row('stop a running analysis', [R, 'control:stop'], 4, ['title:Stop request'], ['analyzing']),
-  row('run one named agent', [R, 'control:analyze-agent-one'], 4, ['nextto:Analyze All*', 'htext:Language Surgeon']),
+  row('send a chat message', [R, 'section:chat', 'fill:hello', 'control:send']),
+  row('switch between Manuscript AI and agents', [R, 'section:chat', 'control:agent-mode']),
+  row('read what each agent does', [R, 'section:chat', 'control:agent-info']),
+  row('attach an image to a chat message', [R, 'section:chat', 'control:attach-image']),
+  row('choose which sources the chat sees', [R, 'section:chat', 'control:attach-sources']),
+  row('accept a suggestion', [R, 'row:suggestion', 'control:accept'], undefined, undefined, ['suggestion', 'outline']),
+  row('reject a suggestion', [R, 'row:suggestion', 'control:reject'], undefined, undefined, ['suggestion']),
+  row('accept every suggestion', [R, 'control:accept-all'], undefined, undefined, ['suggestion']),
+  row('clear every suggestion', [R, 'control:reject-all'], undefined, undefined, ['suggestion']),
+  row('disagree with a suggestion and reply', [R, 'row:suggestion', 'control:rebut'], undefined, undefined, ['suggestion']),
+  row('rewrite a flagged sentence', [R, 'row:style', 'control:rewrite'], undefined, undefined, ['style-text']),
+  row('jump to a flagged sentence', [R, 'row:style', 'control:goto'], undefined, undefined, ['style-text']),
+  row('read the style comparison', [R, 'section:style']),
+  row('add writing samples for the voice profile', [R, 'section:style', 'control:voice-samples']),
+  row('filter suggestions by severity', [R, 'control:filter'], undefined, undefined, ['suggestion']),
+  row('run an analysis', [R, 'control:analyze']),
+  row('stop a running analysis', [R, 'control:stop'], undefined, undefined, ['analyzing']),
+  row('run one named agent', [R, 'control:analyze-agent', 'control:analyze-agent-one']),
   row('clear the reference search', [C, 'section:references', 'control:clear-reference-filter'], 5, [C, 'typein:Search references…|zz', 'icon:x'], ['sources', 'citations']),
-  row('filter suggestions to one severity', [R, 'control:filter-severity'], 4, [R, 'section:suggestions', 'icon:funnel', 'ptext:Minor (*'], ['suggestion']),
-  row('run a single agent', [R, 'control:analyze-agent'], 4, ['nextto:Analyze All*', 'htext:Run Single Agent']),
-  row('summarize the manuscript and its gaps', [R, 'control:summary'], 4, ['title:Generate a high-level manuscript review*']),
+  row('filter suggestions to one severity', [R, 'control:filter', 'control:filter-severity'], undefined, undefined, ['suggestion']),
+  row('run a single agent', [R, 'control:analyze-agent']),
+  row('summarize the manuscript and its gaps', [R, 'control:summary']),
   // Format
   row('pick a grant template', [F, 'section:template'], 7, ['title:Grant mode*', 'title:Start from an NIH grant template', 'css:[aria-label="Choose grant template"]']),
   row('edit grant instructions', [F, 'section:template', 'control:instructions'], 7, ['title:Grant mode*', 'title:Add funder instructions*', 'css:[aria-label="Grant instructions"]']),
@@ -191,7 +191,7 @@ export const ENTRY_POINTS: EntryPoint[] = [
   row('bold the selection from the selection menu', ['topbar:format', 'control:bold-selection'], 8, ['icon:bold#2'], ['text-selection']),
   row('italicize the selection from the selection menu', ['topbar:format', 'control:italic-selection'], 8, ['icon:italic#2'], ['text-selection']),
   row('underline the selection from the selection menu', ['topbar:format', 'control:underline-selection'], 8, ['icon:underline#2'], ['text-selection']),
-  row('send a custom instruction', ['topbar:ai', 'item:instruct-send'], 8, ['title:Custom instruction for selected text', 'icon:send#2'], ['text-selection']),
+  row('send a custom instruction', ['topbar:ai', 'item:instruct-send'], 8, ['title:Custom instruction for selected text', 'icon:send'], ['text-selection']),
   row('find similar manuscripts', ['topbar:ai', 'item:similar'], 8, ['title:Find similar published manuscripts for this selection'], ['text-selection']),
   // AI and layout on the selected figure
   row('describe a figure', ['figure:selected', 'control:describe'], 8, ['title:Visual description of what is seen in the figure'], ['figure']),
@@ -217,29 +217,33 @@ export const ENTRY_POINTS: EntryPoint[] = [
   row('re-extract a PDF abstract', [C, 'section:library', 'control:reextract-abstract'], 5, [C, 'ptext:abstract#1', 'title:Re-extract abstract'], ['sources']),
   row('drop files on the sources area', [C, 'section:library', 'control:dropzone'], 5, [C, 'dropcss:.border-dashed|notes.txt', 'ptext:notes.txt']),
   // Review (chat and suggestions)
-  row('attach one source to a chat message', [R, 'section:chat', 'control:attach-one-source'], 4, [R, 'section:chat', 'title:Attach context sources', 'ptext:PDF'], ['sources']),
-  row('limit chat to the whole manuscript', [R, 'section:chat', 'control:scope-full'], 4, [R, 'section:chat', 'title:Attach context sources', 'ptext:Full Manuscript#2', 'count:Full Manuscript=1']),
-  row('limit chat to the current section', [R, 'section:chat', 'control:scope-section'], 4, [R, 'section:chat', 'title:Attach context sources', 'ptext:Current Section', 'count:Current Section=2']),
-  row('choose which agent replies', [R, 'section:chat', 'control:agent'], 4, [R, 'section:chat', 'ptext:Agents', 'ptext:Reviewer 2', 'expect:agent:Reviewer 2']),
-  row('send a chat message with Enter', [R, 'section:chat', 'control:send'], 4, [R, 'section:chat', 'fill:hello', 'keyin:Enter', 'expect:message:hello']),
-  row('drop an image into chat', [R, 'section:chat', 'control:attach-image'], 4, [R, 'section:chat', 'dropcss:aside textarea|pic.png', 'title:pic.png']),
-  row('paste an image into chat', [R, 'section:chat', 'control:attach-image'], 4, [R, 'section:chat', 'pastecss:aside textarea|pic.png', 'title:pic.png']),
-  row('dismiss the vision warning', [R, 'section:chat', 'control:vision-warning'], 4, [R, 'section:chat', 'dropcss:aside textarea|pic.png', 'ptext:*may not support vision*', 'css:aside button.ml-auto.shrink-0', 'gone:*may not support vision*'], ['local-model']),
-  row('send a rebuttal to a suggestion', [R, 'row:suggestion', 'control:send-rebuttal'], 4, [R, 'section:suggestions', 'ptext:Disagree? Reply to this suggestion...', 'typein:Explain why you disagree with this suggestion...|because', 'ptext:Send Rebuttal'], ['suggestion']),
-  row('cancel a rebuttal', [R, 'row:suggestion', 'control:cancel-rebuttal'], 4, [R, 'section:suggestions', 'ptext:Disagree? Reply to this suggestion...', 'ptext:Cancel'], ['suggestion']),
-  row('switch back to Manuscript AI chat', [R, 'section:chat', 'control:chat-mode'], 4, [R, 'section:chat', 'ptext:Agents', 'ptext:Manuscript AI']),
-  row('click a suggestion to find it in the text', [R, 'row:suggestion', 'control:locate'], 4, [R, 'section:suggestions', 'ptext:EXPLAIN_ME', 'expect:selection:Alpha'], ['suggestion', 'outline']),
-  row('insert an advisory suggestion as a note', [R, 'row:suggestion', 'control:insert-note'], 4, [R, 'section:suggestions', 'ptext:Insert note'], ['advisory']),
-  row('dismiss an advisory suggestion', [R, 'row:suggestion', 'control:dismiss'], 4, [R, 'section:suggestions', 'ptext:Dismiss'], ['advisory']),
+  row('attach one source to a chat message', [R, 'section:chat', 'control:attach-sources', 'control:attach-one-source'], undefined, undefined, ['sources']),
+  row('limit chat to the whole manuscript', [R, 'section:chat', 'control:attach-sources', 'control:scope-full', 'count:Full Manuscript=1']),
+  row('limit chat to the current section', [R, 'section:chat', 'control:attach-sources', 'control:scope-section', 'count:Current Section=2']),
+  row('choose which agent replies', [R, 'section:chat', 'control:agent-mode', 'ptext:Reviewer 2', 'expect:agent:Reviewer 2']),
+  row('send a chat message with Enter', [R, 'section:chat', 'fill:hello', 'keyin:Enter', 'expect:message:hello']),
+  row('drop an image into chat', [R, 'section:chat', 'dropcss:aside textarea|pic.png', 'title:pic.png']),
+  row('paste an image into chat', [R, 'section:chat', 'pastecss:aside textarea|pic.png', 'title:pic.png']),
+  row('dismiss the vision warning', [R, 'section:chat', 'dropcss:aside textarea|pic.png', 'ptext:*may not support vision*', 'control:vision-warning', 'gone:*may not support vision*'], undefined, undefined, ['local-model']),
+  row('send a rebuttal to a suggestion', [R, 'row:suggestion', 'control:rebut', 'typein:Explain why you disagree with this suggestion...|because', 'control:send-rebuttal'], undefined, undefined, ['suggestion']),
+  row('cancel a rebuttal', [R, 'row:suggestion', 'control:rebut', 'control:cancel-rebuttal'], undefined, undefined, ['suggestion']),
+  row('switch back to Manuscript AI chat', [R, 'section:chat', 'control:agent-mode', 'control:chat-mode']),
+  row('click a suggestion to find it in the text', [R, 'row:suggestion', 'control:locate', 'expect:selection:Alpha'], undefined, undefined, ['suggestion', 'outline']),
+  row('insert an advisory suggestion as a note', [R, 'row:suggestion', 'control:insert-note'], undefined, undefined, ['advisory', 'outline']),
+  row('dismiss an advisory suggestion', [R, 'row:suggestion', 'control:dismiss'], undefined, undefined, ['advisory']),
   row('click an applied change to find it in the text', [W, 'section:history', 'control:locate'], 6, [W, 'section:history', 'ptext:Alpha → beta gamma', 'expect:selection:beta gamma'], ['history', 'outline']),
+  row('run an analysis from the top bar', ['topbar:ai', 'item:analyze'], 8, ['htext:Analyze All']),
+  row('run a single agent from the top bar', ['topbar:ai', 'item:analyze-agent'], 8, ['nextto:Analyze All*', 'htext:Run Single Agent']),
+  row('run one named agent from the top bar', ['topbar:ai', 'item:analyze-agent-one'], 8, ['nextto:Analyze All*', 'htext:Language Surgeon']),
+  row('summarize from the top bar', ['topbar:ai', 'item:summary'], 8, ['title:Generate a high-level manuscript review*']),
   row('stop an analysis from the top bar', ['topbar:ai', 'item:stop'], 8, ['rail:cite', 'htext:Stop'], ['analyzing']),
   row('confirm the export warning and download', ['topbar:file', 'item:export-confirm'], 8, ['text:Export Markdown', 'mtext:I Acknowledge — Download']),
   row('cancel the export warning', ['topbar:file', 'item:export-cancel'], 8, ['text:Export Markdown', 'mtext:Cancel']),
   row('close the shortcuts list', ['topbar:overflow', 'item:shortcuts-close'], 8, ['title:Keyboard Shortcuts', 'mtext:Close']),
-  row('measure my voice from pasted samples', [R, 'section:style', 'control:voice-measure'], 4, [F, 'section:style', 'ptext:Add samples', 'ptext:Measure my voice']),
-  row('cancel adding voice samples', [R, 'section:style', 'control:voice-cancel'], 4, [F, 'section:style', 'ptext:Add samples', 'ptext:Cancel']),
-  row('rebuild the voice profile', [R, 'section:style', 'control:voice-rebuild'], 4, [F, 'section:style', 'ptext:Rebuild'], ['voice-profile']),
-  row('remove the voice profile', [R, 'section:style', 'control:voice-remove'], 4, [F, 'section:style', 'ptext:Remove'], ['voice-profile']),
+  row('measure my voice from pasted samples', [R, 'section:style', 'control:voice-samples', 'control:voice-measure']),
+  row('cancel adding voice samples', [R, 'section:style', 'control:voice-samples', 'control:voice-cancel']),
+  row('rebuild the voice profile', [R, 'section:style', 'control:voice-rebuild'], undefined, undefined, ['voice-profile']),
+  row('remove the voice profile', [R, 'section:style', 'control:voice-remove'], undefined, undefined, ['voice-profile']),
   // Editor internals that stay in the Editor: their rows are settled, so a move must edit the row
   row('click a highlighted passage to open its suggestion', ['rail:cite', 'markclick:', 'ptext:Accept'], undefined, undefined, ['suggestion', 'outline']),
   row('pick a table size', ['title:Insert table', 'css:#table-picker-portal div[style*="cursor"]#9', 'expect:table:2x3']),
@@ -556,8 +560,9 @@ const ICON_ONLY_BUTTONS: Record<string, number> = {
   // Editor 9: mobile toolbar toggle (a phone-width control, `sm:hidden`, not reachable at desktop width by design), bubble Bold/Italic/Underline, synonym chips,
   // custom-instruction send, figure-question send, table menu items and @-picker sources (each has rows).
   'src/components/Editor.tsx': 9,
-  // Sidebar 11: tab bar, severity filter toggle and chips, accept/reject on cards, clear-reference-search, trash, source tabs, PDF tabs, agent chips, vision X, send.
-  'src/components/Sidebar.tsx': 11,
+  // Sidebar 8: tab bar, the inline chat suggestion cards' accept/reject, clear-reference-search, trash, source tabs, PDF tabs, agent chips, vision X, send.
+  // (Task 4 moved the severity filter and the suggestion cards' own buttons to the Review panel, which names its controls with test ids.)
+  'src/components/Sidebar.tsx': 8,
   'src/components/style/StylePanel.tsx': 1, // jump to a flagged sentence
   'src/components/style/VoiceProfileManager.tsx': 0,
 };
@@ -568,20 +573,38 @@ const balanced = (src: string, i: number): string | null => {
   for (let j = i; j < src.length; j++) { if (src[j] === '{') d++; else if (src[j] === '}' && --d === 0) return src.slice(i + 1, j); }
   return null;
 };
+/** The test ids a tag can carry: `data-testid="x"`, or every string in `data-testid={cond ? 'a' : 'b'}`. */
+const testidsIn = (tag: string): string[] => {
+  const out: string[] = [];
+  for (const m of tag.matchAll(/data-testid=(?:"([^"]+)"|\{)/g)) {
+    if (m[1]) out.push(m[1]); else out.push(...literals(balanced(tag, m.index! + m[0].length - 1) ?? ''));
+  }
+  return out;
+};
+/** The opening tag that contains offset `at`. */
+const tagAt = (src: string, at: number): string => {
+  const open = src.lastIndexOf('<', at);
+  let d = 0, j = at;
+  for (; j < src.length; j++) { const c = src[j]; if (c === '{') d++; else if (c === '}') d--; else if (c === '>' && d === 0) break; }
+  return src.slice(open, j);
+};
+/** A control carrying a test id is reached by a row whose path has the matching step: data-testid="control-x" <-> 'control:x'. */
+const reachedByTestid = (ids: string[], steps: string[]) => ids.some(id => steps.includes(id.replace('-', ':')));
 const literals = (expr: string) => [...expr.matchAll(/'((?:\\'|[^'\n])*)'|"((?:\\"|[^"\n])*)"|`((?:\\`|[^`])*)`/g)].map(m => m[1] ?? m[2] ?? m[3] ?? '').filter(Boolean);
 /** Every title the source can produce: `title="x"`, and each string in `title={ternary ? 'a' : 'b'}` or a template, as an exact title or a prefix before the first ${...}. */
-export function titlesIn(src: string): { raw: string; prefix: string | null; exact: string | null }[] {
-  const out: { raw: string; prefix: string | null; exact: string | null }[] = [];
-  for (const m of src.matchAll(/\btitle="([^"]+)"/g)) out.push({ raw: m[1], prefix: null, exact: m[1] });
+export function titlesIn(src: string): { raw: string; prefix: string | null; exact: string | null; testids: string[] }[] {
+  const out: { raw: string; prefix: string | null; exact: string | null; testids: string[] }[] = [];
+  for (const m of src.matchAll(/\btitle="([^"]+)"/g)) out.push({ raw: m[1], prefix: null, exact: m[1], testids: testidsIn(tagAt(src, m.index!)) });
   for (const m of src.matchAll(/\btitle=\{/g)) {
     const expr = balanced(src, m.index! + m[0].length - 1) ?? '';
-    for (const lit of literals(expr.replace(/[=!]==?\s*(['"`])[^'"`]*\1/g, ''))) out.push(lit.includes('${') ? { raw: lit, prefix: lit.slice(0, lit.indexOf('${')), exact: null } : { raw: lit, prefix: null, exact: lit });
+    const testids = testidsIn(tagAt(src, m.index!));
+    for (const lit of literals(expr.replace(/[=!]==?\s*(['"`])[^'"`]*\1/g, ''))) out.push(lit.includes('${') ? { raw: lit, prefix: lit.slice(0, lit.indexOf('${')), exact: null, testids } : { raw: lit, prefix: null, exact: lit, testids });
   }
   return out;
 }
 /** Each <button> with no title/aria-label: its visible words (static text and the strings inside {...}). */
-export function textOnlyButtons(src: string): { words: string[]; line: number }[] {
-  const out: { words: string[]; line: number }[] = [];
+export function textOnlyButtons(src: string): { words: string[]; line: number; testids: string[] }[] {
+  const out: { words: string[]; line: number; testids: string[] }[] = [];
   for (const m of src.matchAll(/<button\b/g)) {
     let j = m.index! + 7, d = 0;
     for (; j < src.length; j++) { const c = src[j]; if (c === '{') d++; else if (c === '}') d--; else if (c === '>' && d === 0) break; }
@@ -595,7 +618,7 @@ export function textOnlyButtons(src: string): { words: string[]; line: number }[
       else if (body[k] === '<') { let dd = 0; k++; for (; k < body.length; k++) { if (body[k] === '{') dd++; else if (body[k] === '}') dd--; else if (body[k] === '>' && dd === 0) break; } k++; }
       else { let e = k; while (e < body.length && body[e] !== '{' && body[e] !== '<') e++; const t = norm(body.slice(k, e)); if (t) words.push(t); k = e; }
     }
-    out.push({ words: words.filter(w => /^[A-Z][A-Za-z0-9 &?!.…,'—()-]*$/.test(w)), line: src.slice(0, m.index!).split('\n').length });
+    out.push({ words: words.filter(w => /^[A-Z][A-Za-z0-9 &?!.…,'—()-]*$/.test(w)), line: src.slice(0, m.index!).split('\n').length, testids: testidsIn(open) });
   }
   return out;
 }
@@ -621,18 +644,21 @@ describe('the list itself', () => {
     const steps = ENTRY_POINTS.flatMap(stepsOf);
     const tabs = new Set([...source('src/components/Sidebar.tsx').matchAll(/activeTab === '([a-z]+)'/g)].map(m => m[1]).filter(t => t !== 'summary'));
     expect([...tabs].sort()).toEqual(['chat', 'history', 'outline', 'sources', 'style', 'suggestions']);
-    for (const t of ['chat', 'history', 'outline', 'style', 'suggestions']) expect(steps, `tab "${t}" has no row`).toContain(`section:${t}`);
+    // chat and suggestions are no longer tabs: the Review panel folds them in (the chat as a collapsible section, the suggestions as rows)
+    for (const t of ['chat', 'history', 'outline', 'style']) expect(steps, `tab "${t}" has no row`).toContain(`section:${t}`);
+    expect(steps, 'the suggestions have no row').toContain('row:suggestion');
     expect(steps, 'the sources tab has no row').toContain('rail:cite');
   });
   it('every title the surfaces can produce (literal, ternary or template) has a row or a reason', () => {
-    const titleSteps = ENTRY_POINTS.flatMap(stepsOf).filter(st => st.startsWith('title:')).map(st => st.slice(6));
+    const allSteps = ENTRY_POINTS.flatMap(stepsOf);
+    const titleSteps = allSteps.filter(st => st.startsWith('title:')).map(st => st.slice(6));
     const uncovered: string[] = [];
     for (const f of [...GUARDED, 'src/components/GrantPanel.tsx', 'src/components/VersionHistoryPopup.tsx']) {
       for (const t of titlesIn(source(f))) {
         if (t.raw.startsWith('Editor width')) continue; // editorWidth is EXCLUDED
         if (t.exact !== null && t.exact in NOT_A_FEATURE) continue;
         if (t.prefix !== null && (t.prefix in NOT_A_FEATURE || t.raw.slice(0, 24) in TEMPLATE_TITLES || Object.keys(TEMPLATE_TITLES).some(k => t.raw.startsWith(k.slice(0, 20))))) continue;
-        const ok = t.exact !== null ? titleSteps.some(v => matches(t.exact!, v)) : t.prefix !== '' && titleSteps.some(v => v.replace(/\*$/, '').startsWith(t.prefix!));
+        const ok = reachedByTestid(t.testids, allSteps) || (t.exact !== null ? titleSteps.some(v => matches(t.exact!, v)) : t.prefix !== '' && titleSteps.some(v => v.replace(/\*$/, '').startsWith(t.prefix!)));
         if (!ok) uncovered.push(`${f}: "${t.raw}"`);
       }
     }
@@ -652,7 +678,7 @@ describe('the list itself', () => {
     for (const f of GUARDED) {
       for (const b of textOnlyButtons(source(f))) {
         if (b.words.length === 0) continue;
-        const named = b.words.some(w => w in NOT_A_FEATURE || steps.some(st => KINDS[f].includes(st.kind) && matches(w, st.v)));
+        const named = reachedByTestid(b.testids, ENTRY_POINTS.flatMap(stepsOf)) || b.words.some(w => w in NOT_A_FEATURE || steps.some(st => KINDS[f].includes(st.kind) && matches(w, st.v)));
         if (!named) uncovered.push(`${f}:${b.line}: ${b.words.join(' | ')}`);
       }
     }
@@ -758,6 +784,7 @@ describe('App wiring (behaviour)', () => {
 
   it('closing the panel keeps what was typed in it', async () => {
     await mount();
+    fireEvent.click(screen.getByTestId('section-chat')); // the chat is folded into the Review panel, collapsed until asked for
     const box = () => [...panel().querySelectorAll('textarea')].find(t => isShown(t)) as HTMLTextAreaElement;
     expect(railBtn('Review').getAttribute('aria-pressed')).toBe('true');
     fireEvent.change(box(), { target: { value: 'half-written question' } });
@@ -773,6 +800,65 @@ describe('App wiring (behaviour)', () => {
 });
 
 // ── An editor unmounted while a scroll or insert is pending must not throw (a real bug these rows exposed: Editor's setTimeout callbacks used a destroyed view) ──
+describe('Review panel (behaviour)', () => {
+  const rowsOf = (kind: string) => screen.queryAllByTestId(`row-${kind}`).filter(isShown);
+  const flaggedSentence = 'Moreover, it is important to note that this result is robust; indeed, it underscores a pivotal role, which matters — greatly.';
+  const many = (n: number) => Array.from({ length: n }, (_, i) => `${flaggedSentence.replace('this', `result ${i}`)}`).join(' ');
+
+  it('a suggestion whose text has gone can be dismissed but not applied', async () => {
+    await resolve([R, 'row:suggestion'], ['suggestion', 'outline']);
+    const accept = () => screen.getByTestId('control-accept') as HTMLButtonElement;
+    expect(accept().disabled).toBe(false);
+    await act(async () => { editor().commands.setContent('<p>Something else entirely, with no trace of the quoted word.</p>'); });
+    await waitFor(() => expect(accept().disabled).toBe(true), { timeout: 4000 });
+    expect((screen.getByTestId('control-reject') as HTMLButtonElement).disabled).toBe(false);
+    expect(norm(screen.getByTestId('row-suggestion').textContent)).toContain('has changed');
+  }, 20000);
+
+  it('accepting a suggestion inside a flagged sentence leaves no style row able to rewrite the old span', async () => {
+    await resolve([R], ['style-text']);
+    await waitStep('style rows', () => rowsOf('style')[0]);
+    const first = flaggedSentence.replace('this', 'result 0');
+    await act(async () => { useAIStore.setState({ suggestions: [{ id: 'inside', originalText: first.slice(0, 40), suggestedText: 'Changed opening', explanation: 'x', agent: 'editor', startIndex: 0, endIndex: 40, severity: 'minor' } as any] }); });
+    const accept = await waitStep('the suggestion row', () => screen.queryByTestId('control-accept')) as HTMLButtonElement;
+    fireEvent.click(accept);
+    // the document just changed under the audit: until it is re-measured no style row may act on its old offsets
+    expect(screen.queryAllByTestId('control-rewrite').length, 'the style rows are still listed (disabled), not silently gone').toBeGreaterThan(0);
+    for (const b of screen.queryAllByTestId('control-rewrite')) expect((b as HTMLButtonElement).disabled, 'a style row would rewrite a stale span').toBe(true);
+  }, 20000);
+
+  it('flagged sentences inside a table cell and a list item are listed and can be rewritten', async () => {
+    await resolve([R], []);
+    await act(async () => { editor().commands.setContent(`<ul><li><p>${many(1)}</p></li></ul><table><tbody><tr><td><p>${many(1).replace('result 0', 'cell')}</p></td></tr></tbody></table>`); });
+    await waitFor(() => expect(rowsOf('style').length).toBeGreaterThanOrEqual(2), { timeout: 6000 });
+    await waitFor(() => { for (const b of screen.queryAllByTestId('control-rewrite')) expect((b as HTMLButtonElement).disabled).toBe(false); expect(screen.queryAllByTestId('control-rewrite').length).toBeGreaterThanOrEqual(2); }, { timeout: 6000 });
+  }, 20000);
+
+  it('500 suggestions: the badge is capped, the count is exact, and only a page of rows is in the DOM', async () => {
+    await resolve([R], []);
+    const sugs = Array.from({ length: 500 }, (_, i) => ({ id: `s${i}`, originalText: `Quoted ${i}`, suggestedText: `Better ${i}`, explanation: `Why ${i}`, agent: 'editor', startIndex: i, endIndex: i + 5, severity: 'minor' }));
+    const t0 = Date.now();
+    await act(async () => { useAIStore.setState({ suggestions: sugs as any }); });
+    expect(screen.getByTestId('badge-review').textContent).toBe('99+');
+    expect(rowsOf('suggestion').length).toBe(100);
+    expect(norm(panelEl()!.textContent)).toContain('500 items');
+    expect(Date.now() - t0, 'rendering 500 rows must not stall').toBeLessThan(5000);
+  }, 20000);
+
+  it('an empty document lists nothing and says so', async () => {
+    await resolve([R], []);
+    expect(rowsOf('suggestion').length + rowsOf('style').length).toBe(0);
+    expect(norm(panelEl()!.textContent)).toMatch(/Nothing flagged/);
+  });
+
+  it('a document replaced wholesale clears the selected row', async () => {
+    await resolve([R, 'markclick:'], ['suggestion', 'outline']);
+    await waitStep('the highlighted row', () => document.querySelector('[data-testid="row-suggestion"].ring-2'));
+    await act(async () => { useDocumentStore.setState({ importId: 'a-new-import' }); });
+    expect(document.querySelector('[data-testid="row-suggestion"].ring-2')).toBeNull();
+  }, 20000);
+});
+
 describe('unmounting with a pending editor timer', () => {
   const unmountWhilePending = async (setup: string[], seed: Seed[], act: string) => {
     await resolve(setup, seed);
@@ -787,6 +873,6 @@ describe('unmounting with a pending editor timer', () => {
     } finally { vi.useRealTimers(); }
   };
   it('after a click on an outline heading', async () => { await unmountWhilePending([W, 'section:outline'], ['outline'], 'ptext:Intro'); }, 20000);
-  it('after a click on a suggestion card', async () => { await unmountWhilePending([R, 'section:suggestions'], ['suggestion', 'outline'], 'ptext:EXPLAIN_ME'); }, 20000);
+  it('after a click on a suggestion card', async () => { await unmountWhilePending([R, 'row:suggestion'], ['suggestion', 'outline'], 'ptext:EXPLAIN_ME'); }, 20000);
   it('after jumping to a citation', async () => { await unmountWhilePending([C], ['sources', 'citations', 'cited-text'], 'title:Jump to citation in document'); }, 20000);
 });

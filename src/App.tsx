@@ -19,7 +19,8 @@ import { analyzeText, chatWithAgent, chatWithManuscript, resolveConflicts, runJu
 import { detectorSuggestions } from './services/detectors';
 import { buildReviewNote } from './utils/reviewNotes';
 import { findTextSpan } from './utils/textMatch';
-import { auditText } from './services/proseAudit/metrics';
+import { auditText, flaggedSentences, MAX_REWRITE_WORDS } from './services/proseAudit/metrics';
+import { reviewRows, styleRowId } from './components/panels/reviewRows';
 import { performStyleRewrite } from './components/style/styleRewrite';
 import { sentencesToDraw, auditMatchesDoc } from './components/style/styleSync';
 import { setDocumentContext, trimSectionToLimit, type AgentTool } from './services/ai';
@@ -111,7 +112,8 @@ export default function App() {
   // Rail and tab move together, one way: the legacy call sites below reveal a tab through openTab, which also
   // opens its rail task. Closing the rail never touches the tab.
   const [railTask, setRailTask] = useState<RailTask | null>(revealTab('chat').task);
-  const openTab = useCallback((tab: SidebarTab) => { const r = revealTab(tab); setSidebarTab(r.tab); setRailTask(r.task); }, []);
+  const [chatRequest, setChatRequest] = useState(0);
+  const openTab = useCallback((tab: SidebarTab) => { const r = revealTab(tab); setSidebarTab(r.tab); setRailTask(r.task); if (tab === 'chat') setChatRequest(n => n + 1); }, []);
   // Style audit (sub-project H). `text` is the exact editor text the metrics were computed from, so
   // sentence offsets are only ever applied to a document that still matches (see styleSentences below).
   const [styleAudit, setStyleAudit] = useState<{ metrics: AuditMetrics; text: string } | null>(null);
@@ -297,7 +299,8 @@ export default function App() {
   // ─── Style audit wiring (sub-project H) ────────────────────────────────────
   // The editor only audits (and reports) while its style plugin is enabled, so the plugin is on whenever
   // the Style tab is open or highlights are shown. Highlights themselves are drawn only when the user opts in.
-  const styleAuditOn = sidebarTab === 'style' || drawStyleHighlights;
+  // The review list shows flagged sentences as rows, so the audit also runs while the Review task is open.
+  const styleAuditOn = sidebarTab === 'style' || drawStyleHighlights || railTask === 'review';
 
   // The plugin reports on edits only; run one audit when metrics are switched on so the panel is
   // populated immediately instead of after the first keystroke.
@@ -1306,6 +1309,58 @@ export default function App() {
     [styleAudit, currentText, voiceProfile],
   );
 
+  // ─── Review panel: one list, in document order ─────────────────────────────
+  // Suggestions and style flags both index the editor's plain text (flattenDoc). Both go stale as the document changes, so the rows
+  // are re-derived against the current text and a row whose anchor is gone has its action disabled rather than aimed at the wrong span.
+  const flagged = useMemo(() => (styleAuditOn && styleAudit ? flaggedSentences(styleAudit.metrics, 12) : []), [styleAuditOn, styleAudit]);
+  const styleCurrent = auditMatchesDoc(styleAudit, currentText);
+  const styleBlocked = useMemo(() => {
+    const blocked = new Map<string, string>();
+    const ed = editorRef.current;
+    if (!ed || !styleCurrent || !currentText) return blocked;
+    for (const f of flagged) {
+      if (f.words > MAX_REWRITE_WORDS) { blocked.set(styleRowId(f), 'Too long to rewrite in one step. Split it by hand first.'); continue; }
+      const r = ed.resolveFlatSentence(f.start, f.end, currentText.slice(f.start, f.end));
+      if (r.ok === false) blocked.set(styleRowId(f), 'This sentence holds something a rewrite would lose (a line break, an empty citation or an inline object). Rewrite it by hand.');
+    }
+    return blocked;
+  }, [flagged, styleCurrent, currentText]);
+  const appliedIds = useMemo(() => new Set(history.map(h => h.suggestionId)), [history]);
+  const deferredText = useDeferredValue(currentText);
+  const rows = useMemo(
+    () => reviewRows({ suggestions, flagged, grammar: [], plainText: deferredText ?? '', appliedIds, styleCurrent: styleCurrent && deferredText === currentText, styleBlocked }),
+    [suggestions, flagged, deferredText, currentText, appliedIds, styleCurrent, styleBlocked],
+  );
+  const reviewAgents = useMemo(
+    () => (Object.entries(AGENT_INFO) as [AgentType, typeof AGENT_INFO[AgentType]][])
+      .filter(([id]) => id !== 'literature-reviewer' && id !== 'manuscript-ai' && id !== 'citation-checker')
+      .map(([id, info]) => ({ id, label: info.label })),
+    [],
+  );
+  const handleReviewAct = (rowId: string, action: 'accept' | 'reject' | 'rewrite') => {
+    const row = rows.find(r => r.id === rowId);
+    if (!row || (action !== 'reject' && !row.canAct)) return;
+    if (row.kind === 'suggestion') {
+      const sug = suggestions.find(x => `suggestion:${x.id}` === rowId);
+      if (!sug) return;
+      if (action === 'accept') handleAcceptSuggestion(sug); else handleRejectSuggestion(sug);
+    } else if (row.kind === 'style' && action === 'rewrite') {
+      const f = flagged.find(x => styleRowId(x) === rowId);
+      if (f) handleStyleRewrite(f);
+    }
+  };
+  const handleReviewLocate = (row: { id: string; kind: string }) => {
+    if (row.kind === 'suggestion') {
+      const sug = suggestions.find(x => `suggestion:${x.id}` === row.id);
+      if (sug) editorRef.current?.scrollToSuggestion(sug.originalText, sug.id);
+    } else if (row.kind === 'style') {
+      const f = flagged.find(x => styleRowId(x) === row.id);
+      if (f) handleStyleJump(f);
+    }
+  };
+  // A DOCX import (or revert) replaces the document wholesale: whatever row was selected pointed into the old text.
+  useEffect(() => { setHighlightedSuggestionId(null); }, [importId]);
+
   const wordCount = stripHtml(content).split(/\s+/).filter(w => w.length > 0).length;
 
   return (
@@ -1668,7 +1723,21 @@ export default function App() {
             highlightedSuggestionId={highlightedSuggestionId}
             analysisProgress={analysisProgress}
             activeTabOverride={sidebarTab}
+            chatRequest={chatRequest}
             onTabChange={openTab}
+            review={{
+              rows,
+              docKey: importId ?? 'none',
+              onAct: handleReviewAct,
+              onGoTo: (start, end) => { editorRef.current?.selectFlatRange(start, end); },
+              onLocate: handleReviewLocate,
+              onAnalyze: (agent) => handleAnalyze(agent),
+              onStop: stopRequest,
+              onSummary: handleManuscriptSummary,
+              agents: reviewAgents,
+              onAcceptAll: handleAcceptAll,
+              onRejectAll: handleRejectAll,
+            }}
             stylePanel={{
               metrics: styleAudit?.metrics ?? null,
               onJumpToSentence: handleStyleJump,

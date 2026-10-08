@@ -1,4 +1,4 @@
-import type { AuditSummary } from '../../types';
+import type { AuditSummary, SentenceAudit } from '../../types';
 import { styleDistance, type MetricDeviation } from '../../services/proseAudit/score';
 import { TELL_PATTERNS } from '../../services/proseAudit/patterns';
 
@@ -66,4 +66,12 @@ export function sectionRows(sections: { title: string; summary: AuditSummary }[]
       const r = styleDistance(sec.summary, voice);
       return { title: sec.title, sentences: sec.summary.sentences, score: r.score, band: r.band };
     });
+}
+
+/**
+ * The line shown for one flagged sentence: its length and the tells that fired, by their display labels. Used by the
+ * style panel and by the review list, so the two can never describe the same sentence differently. Do not reword it.
+ */
+export function sentenceEvidence(s: SentenceAudit): string {
+  return `${s.words} words · ${s.tells.map(t => TELL_PATTERNS[t]?.label ?? t).join(', ') || (s.words > 35 ? 'over 35 words' : 'no specific pattern')}`;
 }
