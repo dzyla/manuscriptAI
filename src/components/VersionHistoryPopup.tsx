@@ -7,7 +7,7 @@ import { Clock, Plus, Trash2, RotateCcw, Eye, X, History } from 'lucide-react';
 interface VersionHistoryPopupProps {
   currentTitle: string;
   currentContent: string;
-  onRestore: (snapshot: VersionSnapshot) => void;
+  onRestore: (snapshot: VersionSnapshot) => void | Promise<void>;
 }
 
 function stripHtml(html: string) {

@@ -23,6 +23,7 @@ import { useAIStore } from './stores/useAIStore';
 import { useSourceStore } from './stores/useSourceStore';
 import { db } from './db/manuscriptDb';
 import { inlineAssetImages, bytesToDataUrl, defaultFetchBytes } from './db/assetStore';
+import { buildWorkspaceJson } from './services/workspaceExport';
 import { migrateLegacyCitations } from './utils/migrateCitations';
 import { prefetchImages, walkNode } from './services/astExport';
 import { DocxRenderer, Packer } from './services/docxExport';
@@ -179,15 +180,21 @@ export default function App() {
     },
   ];
 
-  const handleApplyGrantTemplate = (template: GrantTemplate, html: string) => {
+  const handleApplyGrantTemplate = async (template: GrantTemplate, html: string) => {
     editorRef.current?.setContent(html);
     setContent(html);
     setMode('grant');
     setGrantTemplateId(template.id);
     setShowTemplatePicker(false);
     allowOverwrite(); // explicit user replacement of the document
-    persistDocument();
-    showToast(`${template.mechanism} template applied — fill in each section`, 'success');
+    let saved = false;
+    try {
+      saved = await persistDocument();
+    } catch (err) {
+      console.error('Persisting the applied template failed', err);
+    }
+    if (saved) showToast(`${template.mechanism} template applied — fill in each section`, 'success');
+    else showToast('Template applied, but it could not be saved. Use "Save Workspace" to keep a copy.', 'error');
   };
 
   // Resize handler for Sidebar
@@ -300,9 +307,9 @@ export default function App() {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 's') {
         e.preventDefault();
-        handleDownload('json');
-        setSaveState('Saved');
-        showToast('Workspace saved', 'success');
+        handleDownload('json')
+          .then(ok => { if (ok) showToast('Workspace saved', 'success'); })
+          .catch(err => { console.error(err); showToast('Save Workspace failed', 'error'); });
       }
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'A') {
         e.preventDefault();
@@ -580,6 +587,10 @@ export default function App() {
     const match = dataUrl.match(/^data:(image\/[a-z+.-]+);base64,(.+)$/);
     if (!match) return;
     const rawMime = match[1];
+    if (rawMime === 'image/svg+xml') {
+      showToast('Convert the figure to PNG or JPEG to analyse it', 'error');
+      return;
+    }
     const allowed: AttachedImage['mimeType'][] = ['image/jpeg', 'image/png', 'image/webp'];
     const mimeType: AttachedImage['mimeType'] = allowed.includes(rawMime as AttachedImage['mimeType'])
       ? (rawMime as AttachedImage['mimeType'])
@@ -809,9 +820,12 @@ export default function App() {
       const handledByEditor = editorRef.current?.revertSuggestion(item.originalText, item.suggestedText);
       if (!handledByEditor) {
         // Inline asset images first: an item from an earlier session may reference dead blob: URLs.
-        void inlineAssetImages(item.oldContent).then(html => {
+        inlineAssetImages(item.oldContent).then(html => {
           setContent(html);
           editorRef.current?.setContent(html);
+        }).catch(err => {
+          console.error('Could not restore history content', err);
+          showToast('Could not restore the earlier content', 'error');
         });
       }
       removeHistoryItem(historyId);
@@ -987,7 +1001,7 @@ export default function App() {
     }
   };
 
-  const doDownload = async (format: 'md' | 'docx' | 'json' | 'tex') => {
+  const doDownload = async (format: 'md' | 'docx' | 'json' | 'tex'): Promise<boolean> => {
     const currentContent = editorRef.current?.getHTML() || content;
     if (format === 'md') {
       const turndownService = new TurndownService();
@@ -1028,24 +1042,32 @@ export default function App() {
       // Strip API keys before export — never serialize credentials into a shareable file
       const { geminiApiKey: _g, openaiApiKey: _o, anthropicApiKey: _a, localApiKey: _l, ...safeSettings } = aiSettings;
       // The file must be self-contained: inline asset-backed images (session blob: URLs die with the tab).
-      const exportedContent = await inlineAssetImages(currentContent);
-      const exportedHistory = await Promise.all(history.map(async h => ({
-        ...h,
-        oldContent: await inlineAssetImages(h.oldContent),
-        newContent: await inlineAssetImages(h.newContent),
-      })));
-      const workspace = { title, content: exportedContent, suggestions, history: exportedHistory, messages, aiSettings: safeSettings, sources: exportedSources };
-      saveAs(new Blob([JSON.stringify(workspace, null, 2)], { type: 'application/json' }), 'workspace.json');
-      setSaveState('Saved');
+      try {
+        const exportedContent = await inlineAssetImages(currentContent);
+        // Sequential and size-capped: history items each hold two full document copies.
+        const json = await buildWorkspaceJson(
+          { title, content: exportedContent, suggestions, messages, aiSettings: safeSettings, sources: exportedSources },
+          history,
+          inlineAssetImages,
+        );
+        saveAs(new Blob([json], { type: 'application/json' }), 'workspace.json');
+        setSaveState('Saved');
+        return true;
+      } catch (err) {
+        console.error('Workspace export failed', err);
+        showToast(`Save Workspace failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+        return false;
+      }
     }
+    return true;
   };
 
-  const handleDownload = async (format: 'md' | 'docx' | 'json' | 'tex') => {
+  const handleDownload = async (format: 'md' | 'docx' | 'json' | 'tex'): Promise<boolean> => {
     if (format !== 'json') {
       setPendingDownloadFormat(format);
-      return;
+      return true;
     }
-    await doDownload(format);
+    return doDownload(format);
   };
 
   const handleLoadWorkspace = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -1076,8 +1098,8 @@ export default function App() {
           editorRef.current?.setContent(loadedContent);
           // Persist to Dexie (loading a workspace is an explicit replacement of the document)
           allowOverwrite();
-          await persistDocument();
-          showToast('Workspace loaded', 'success');
+          if (await persistDocument()) showToast('Workspace loaded', 'success');
+          else showToast('Workspace loaded, but it could not be saved to local storage. Use "Save Workspace" to keep a copy.', 'error');
         }
       } catch (err) {
         console.error("Invalid workspace file", err);
@@ -1095,12 +1117,17 @@ export default function App() {
 
   const handleRestoreSnapshot = async (snapshot: VersionSnapshot) => {
     // Snapshots are stored self-contained; older ones may still reference asset ids / blob: URLs.
-    const html = await inlineAssetImages(snapshot.content);
-    setTitle(snapshot.title);
-    setContent(html);
-    editorRef.current?.setContent(html);
-    showToast(`Restored snapshot: "${snapshot.name}"`, 'success');
-    setSidebarTab('chat');
+    try {
+      const html = await inlineAssetImages(snapshot.content);
+      setTitle(snapshot.title);
+      setContent(html);
+      editorRef.current?.setContent(html);
+      showToast(`Restored snapshot: "${snapshot.name}"`, 'success');
+      setSidebarTab('chat');
+    } catch (err) {
+      console.error('Snapshot restore failed', err);
+      showToast('Could not restore this snapshot', 'error');
+    }
   };
 
   const wordCount = stripHtml(content).split(/\s+/).filter(w => w.length > 0).length;
@@ -1145,7 +1172,7 @@ export default function App() {
                 <button onClick={() => handleDownload('md')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>Export Markdown</button>
                 <button onClick={() => handleDownload('docx')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>Export Word</button>
                 <button onClick={() => handleDownload('tex')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>Export to LaTeX (.zip)</button>
-                <button onClick={() => handleDownload('json')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg font-medium" style={{ color: 'var(--text-primary)' }}>Save Workspace</button>
+                <button onClick={() => { handleDownload('json').catch(err => { console.error(err); showToast('Save Workspace failed', 'error'); }); }} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg font-medium" style={{ color: 'var(--text-primary)' }}>Save Workspace</button>
               </div>
               <input type="file" ref={fileInputRef} onChange={handleLoadWorkspace} accept=".json,.docx,.md,.txt" className="hidden" />
             </div>
