@@ -203,7 +203,12 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     blockedByUnreadable: false,
   }),
 
-  allowOverwrite: () => set({ blockedByUnreadable: false }),
+  /**
+   * The user is explicitly supplying the whole document (workspace load, template apply): lifts the
+   * unreadable-document block and also clears a 'failed' load status to 'ready', since there is nothing
+   * left to protect from the defaults. A still-'loading' status is left alone (initialize() owns it).
+   */
+  allowOverwrite: () => set(s => ({ blockedByUnreadable: false, loadStatus: s.loadStatus === 'failed' ? 'ready' : s.loadStatus })),
 
   initialize: async () => {
     let result: Awaited<ReturnType<typeof documentRepository.load>>;

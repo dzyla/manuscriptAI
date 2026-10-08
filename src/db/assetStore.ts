@@ -219,3 +219,21 @@ export async function inlineAssetImages(
   }
   return changed ? parsed.body.innerHTML : html;
 }
+
+/**
+ * Drop the bytes of asset-backed images: `src` is removed from every `<img data-asset-id>` (the id stays,
+ * so the image can be re-resolved while the asset still exists). Images without an asset id keep their
+ * `src` because nothing else can recover them. HTML with nothing to strip is returned unchanged.
+ */
+export function stripAssetImageData(html: string): string {
+  if (!html || !html.includes('data-asset-id')) return html;
+  const parsed = new DOMParser().parseFromString(html, 'text/html');
+  let changed = false;
+  for (const img of Array.from(parsed.querySelectorAll('img[data-asset-id]'))) {
+    if (img.hasAttribute('src')) {
+      img.removeAttribute('src');
+      changed = true;
+    }
+  }
+  return changed ? parsed.body.innerHTML : html;
+}

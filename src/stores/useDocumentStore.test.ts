@@ -136,6 +136,17 @@ describe('useDocumentStore (v3)', () => {
       expect(await useDocumentStore.getState().persist()).toBe(true);
     });
 
+    it('allowOverwrite clears a failed load status so a deliberate replacement is written', async () => {
+      useDocumentStore.setState({ loadStatus: 'failed' });
+      useDocumentStore.getState().setDocJson(htmlToDoc('<p>replacement</p>'));
+      expect(await useDocumentStore.getState().persist()).toBe(false);
+      expect(await db.documents.get('current')).toBeUndefined();
+      useDocumentStore.getState().allowOverwrite();
+      expect(useDocumentStore.getState().loadStatus).toBe('ready');
+      expect(await useDocumentStore.getState().persist()).toBe(true);
+      expect(JSON.stringify((await db.documents.get('current'))?.docJson)).toContain('replacement');
+    });
+
     it('a save requested while a legacy document migrates cannot overwrite it', async () => {
       await db.documents.put({ id: 'current', title: 'Legacy', content: '<p>legacy grant text</p>', saveState: 'Saved', citationRegistry: {}, citationCounter: 0, figureRegistry: {}, figureCounter: 0, updatedAt: 1 });
       const init = useDocumentStore.getState().initialize();

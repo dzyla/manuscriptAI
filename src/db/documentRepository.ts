@@ -143,6 +143,9 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
       // Unchanged document: no backup, no rewrite, so the ring never turns over on idle autosaves.
       if (prev && !pin && rowFingerprint(prev) === fingerprint) {
         written = false;
+        // saveState is excluded from the fingerprint, so keep the badge on disk current: rewrite only that
+        // field of the existing row (same updatedAt, no backup, no GC).
+        if (prev.saveState !== row.saveState) await db.documents.put({ ...prev, saveState: row.saveState });
         return;
       }
       if (prev) {

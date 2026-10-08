@@ -280,6 +280,18 @@ describe('DocumentRepository', () => {
       expect((await db.documents.get('current'))?.updatedAt).toBe(rowBefore?.updatedAt);
     });
 
+    it('an identical save with a changed saveState updates only that field (no backup, same updatedAt)', async () => {
+      await repo.save({ ...baseDoc('same'), saveState: 'Draft' });
+      await repo.save({ ...baseDoc('same'), saveState: 'Draft' });
+      const before = await db.documents.get('current');
+      const backupsBefore = await repo.listBackups();
+      await repo.save({ ...baseDoc('same'), saveState: 'Auto-saved' });
+      const after = await db.documents.get('current');
+      expect(after?.saveState).toBe('Auto-saved');
+      expect(after).toEqual({ ...before, saveState: 'Auto-saved' });
+      expect(await repo.listBackups()).toEqual(backupsBefore);
+    });
+
     it('a document with an image is not rewritten when unchanged', async () => {
       const r = createDexieRepository(db, { htmlToDoc, isValidDoc, resolver: { urlFor: a => `blob:session/${a.id}` } });
       await r.save(withImg('pic'));
