@@ -16,7 +16,18 @@ interface DocumentState {
   docJson: JSONContent | null;
   format: DocFormat;
   comments: CommentThread[];
-  lastLoad: { migrated: boolean; recoveredFromBackup: boolean; unreadableRowPresent: boolean };
+  lastLoad: { migrated: boolean; recoveredFromBackup: boolean; unreadableRowPresent: boolean; quarantined: boolean };
+  /**
+   * 'loading' until initialize() finishes; 'failed' if the repository could not be read.
+   * persist() writes nothing unless 'ready', so defaults can never overwrite a document we did not load.
+   */
+  loadStatus: 'loading' | 'ready' | 'failed';
+  /**
+   * The stored document was unreadable and nothing could be recovered: the editor shows defaults.
+   * persist() refuses until an explicit user action replaces the document (New Manuscript /
+   * resetDocument, loading a workspace or applying a template → allowOverwrite()).
+   */
+  blockedByUnreadable: boolean;
   saveState: 'Draft' | 'Saved' | 'Auto-saved';
   citationRegistry: Record<string, number>;
   citationCounter: number;
@@ -72,15 +83,24 @@ interface DocumentState {
    */
   removeFigure: (figureId: string, orderedFigureIds: string[]) => Record<string, number>;
 
-  /** Reset to blank document state. */
+  /** Reset to blank document state. An explicit user action: lifts blockedByUnreadable. */
   resetDocument: () => void;
+
+  /** The user explicitly replaced the document (workspace load, template): lift blockedByUnreadable. */
+  allowOverwrite: () => void;
 
   /** Load from Dexie, migrating from localforage if needed. */
   initialize: () => Promise<void>;
 
-  /** Persist current state to Dexie. */
-  persist: () => Promise<void>;
+  /**
+   * Persist current state to Dexie. Resolves true when the state is safely stored (written, or identical
+   * to the stored row); false when persistence was refused (not loaded, load failed, or blocked).
+   */
+  persist: () => Promise<boolean>;
 }
+
+/** Save warnings already logged this session (autosave runs every 30 s; log each problem once). */
+const reportedWarnings = new Set<string>();
 
 const DEFAULT_CONTENT = '<p>Start writing your manuscript here, or click "New Manuscript" to begin with an IMRAD template.</p>';
 
@@ -90,7 +110,9 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   docJson: null,
   format: createFormat('nih'),
   comments: [],
-  lastLoad: { migrated: false, recoveredFromBackup: false, unreadableRowPresent: false },
+  lastLoad: { migrated: false, recoveredFromBackup: false, unreadableRowPresent: false, quarantined: false },
+  loadStatus: 'loading',
+  blockedByUnreadable: false,
   saveState: 'Draft',
   citationRegistry: {},
   citationCounter: 0,
@@ -178,11 +200,28 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     mode: 'manuscript',
     grantInstructions: '',
     grantTemplateId: null,
+    blockedByUnreadable: false,
   }),
 
+  allowOverwrite: () => set({ blockedByUnreadable: false }),
+
   initialize: async () => {
+    let result: Awaited<ReturnType<typeof documentRepository.load>>;
     try {
-      const result = await documentRepository.load();
+      result = await documentRepository.load();
+    } catch (err) {
+      // Nothing was loaded: never let autosave write defaults over the stored document.
+      console.error('DocumentStore.initialize failed:', err);
+      set({ loadStatus: 'failed' });
+      return;
+    }
+    const lastLoad = {
+      migrated: result.migrated,
+      recoveredFromBackup: result.recoveredFromBackup,
+      unreadableRowPresent: result.unreadableRowPresent,
+      quarantined: result.quarantined,
+    };
+    try {
       if (result.doc) {
         const d = result.doc;
         set({
@@ -199,21 +238,18 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
           mode: d.mode,
           grantInstructions: d.grantInstructions,
           grantTemplateId: d.grantTemplateId,
-          lastLoad: {
-            migrated: result.migrated,
-            recoveredFromBackup: result.recoveredFromBackup,
-            unreadableRowPresent: result.unreadableRowPresent,
-          },
+          lastLoad,
+          loadStatus: 'ready',
         });
         return;
       }
-      set({
-        lastLoad: {
-          migrated: false,
-          recoveredFromBackup: result.recoveredFromBackup,
-          unreadableRowPresent: result.unreadableRowPresent,
-        },
-      });
+      if (result.unreadableRowPresent) {
+        // Unreadable row, nothing recovered: the editor shows defaults, which must not be autosaved
+        // over the stored row until the user explicitly replaces the document.
+        set({ lastLoad, loadStatus: 'ready', blockedByUnreadable: true });
+        return;
+      }
+      set({ lastLoad, loadStatus: 'ready' });
 
       // Fall back to legacy localforage (pre-Dexie installs)
       const localforage = await import('localforage');
@@ -228,10 +264,8 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
           citationRegistry: registry,
           citationCounter: Object.keys(registry).length,
         });
-        // Migrate to Dexie immediately
-        await get().persist();
-        // Clean up old key
-        await localforage.default.removeItem('manuscript-ai-editor-autosave');
+        // Migrate to Dexie immediately; drop the old key only once the copy is written.
+        if (await get().persist()) await localforage.default.removeItem('manuscript-ai-editor-autosave');
       }
     } catch (err) {
       console.error('DocumentStore.initialize failed:', err);
@@ -240,6 +274,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
 
   persist: async () => {
     const s = get();
+    if (s.loadStatus !== 'ready' || s.blockedByUnreadable) return false;
     const doc: LoadedDocument = {
       title: s.title,
       saveState: s.saveState,
@@ -254,6 +289,12 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       grantInstructions: s.grantInstructions,
       grantTemplateId: s.grantTemplateId,
     };
-    await documentRepository.save(doc);
+    const { warnings } = await documentRepository.save(doc);
+    for (const w of warnings) {
+      if (reportedWarnings.has(w)) continue;
+      reportedWarnings.add(w);
+      console.warn(w);
+    }
+    return true;
   },
 }));
