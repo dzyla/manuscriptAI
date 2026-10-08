@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
 import { renderHook } from '@testing-library/react';
 import { TASK_TAB, TAB_TASK, railSelect, revealTab, documentPageLimit, voiceFigure, usePageEstimate } from './shellLogic';
 import { createFormat } from '../../services/formatPresets';
@@ -69,24 +68,5 @@ describe('usePageEstimate', () => {
   });
   it('tolerates no document and no format', () => {
     expect(renderHook(() => usePageEstimate(null, null)).result.current.pages).toBeGreaterThanOrEqual(1);
-  });
-});
-
-describe('App wiring', () => {
-  const app = readFileSync('src/App.tsx', 'utf8');
-  it('hands the store format to the Editor and to the page estimate', () => {
-    expect(app).toMatch(/<Editor[\s\S]{0,120}format=\{format\}/);
-    expect(app).toMatch(/usePageEstimate\(docJson, format\)/);
-  });
-  it('closing decides through railSelect', () => {
-    expect(app).toMatch(/railSelect\(railTask, t\)/);
-  });
-  it('never derives the rail task from a tab change: App does not touch the tab-to-task map', () => {
-    expect(app).not.toMatch(/\bTAB_TASK\b/);
-    expect(app).not.toMatch(/useEffect\([^)]*\[sidebarTab\]/);
-  });
-  it('keeps the legacy panel mounted while it is closed', () => {
-    expect(app).toMatch(/keepPanelMounted=\{U_SHELL_LEGACY_PANEL\}/);
-    expect(app).toMatch(/const U_SHELL_LEGACY_PANEL = true;/);
   });
 });

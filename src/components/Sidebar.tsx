@@ -629,6 +629,7 @@ export default function Sidebar({
         ]).map(tab => (
           <button
             key={tab.key}
+            data-testid={`section-${tab.key}`}
             onClick={() => setActiveTab(tab.key)}
             className={`flex-1 py-3.5 text-xs font-semibold flex items-center justify-center gap-1.5 transition-all duration-200 ${
               activeTab === tab.key 
