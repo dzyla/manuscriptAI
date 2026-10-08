@@ -163,8 +163,31 @@ export interface StyleDef {
   spaceAfterPt?: number;
   indent?: { leftIn?: number; firstLineIn?: number; hangingIn?: number };
   align?: 'left' | 'center' | 'right' | 'justify';
-  /** Category-2 properties kept verbatim from styles.xml (keepNext, tabs, borders, …) */
-  preserved?: { pPrXml?: string; rPrXml?: string };
+  /**
+   * Category-2 properties kept verbatim from styles.xml (keepNext, tabs, borders, …). `pPrXml`/`rPrXml`
+   * are a w:pPr/w:rPr holding only what StyleDef does not model (plus any modelled element whose
+   * attributes were only partly understood, kept whole). `extraXml` is the w:style element reduced to
+   * its other children (w:link, w:uiPriority, w:tblPr, w:tblStylePr, …) and its attributes.
+   */
+  preserved?: { pPrXml?: string; rPrXml?: string; extraXml?: string };
+  /**
+   * Word's `w:default="1"`: this is the document's default style for its type. WRITER RULE: these two
+   * flags (wordDefault, customStyle) are the source of truth. `preserved.extraXml`'s root element also
+   * carries the w:style attributes verbatim (it is a clone of the original element), so the same fact
+   * exists twice; a writer must set default/customStyle from these fields and ignore the attributes
+   * on the extraXml root, copying only its CHILDREN.
+   */
+  wordDefault?: boolean;
+  /** Word's `w:customStyle="1"`: the author's own style rather than a built-in. Written back as-is. */
+  customStyle?: boolean;
+  /**
+   * Fields on this style whose values were NOT declared by the style but copied in from
+   * w:docDefaults/w:pPrDefault (so the app's resolver agrees with Word). A writer must omit them
+   * when re-emitting the style: they are inherited, not authored. EDIT CONTRACT: any code that sets or
+   * changes one of these fields on a style (a style editor, an AI edit, a format preset) MUST remove
+   * that field from this list, otherwise a writer that omits listed fields silently drops the edit.
+   */
+  derivedFromDefaults?: Array<'spaceBeforePt' | 'spaceAfterPt' | 'lineSpacing' | 'indent' | 'align'>;
 }
 
 export type FormatPreset = 'nih' | 'manuscript' | 'a4' | 'custom';
@@ -213,6 +236,13 @@ export interface DocumentRow {
   grantInstructions?: string;
   /** id of the grant template the document was created from (enables page-budget tracking) */
   grantTemplateId?: string;
+  /**
+   * Identity of the .docx import this document is (still) the editable form of: the same token is on the package and preservation
+   * rows written with it. Block ids are import-local, so provenance cannot say which package a document belongs to; this token can.
+   * Absent on a document that was not imported or that has since been replaced by another (New Manuscript, a workspace file, a
+   * template, a text import clear it, and the package goes with it).
+   */
+  importId?: string;
 }
 
 export interface CommentReply {
@@ -246,8 +276,47 @@ export interface DocxPackageRow {
   documentId: 'current';
   original: ArrayBuffer;
   fileName: string;
-  preservation: PreservationStore;
   importedAt: number;
+  /** See `DocumentRow.importId`: a writer must use this package only for a document whose `importId` equals it. */
+  importId?: string;
+}
+
+/** The mutable preservation map, kept apart from the (large, immutable) original package bytes. */
+export interface PreservationRow {
+  documentId: 'current';
+  store: PreservationStore;
+  updatedAt: number;
+  /** See `DocumentRow.importId`. */
+  importId?: string;
+}
+
+/**
+ * What the import report said when the document was imported, kept so it can be shown again and read by a writer: the open document
+ * may hold review state it does not show (tracked changes, comments, footnote text) and nothing else records that once the dialog
+ * is closed. Small, and apart from the preservation map (megabytes) so reading it is cheap.
+ */
+export interface ImportReportRow {
+  documentId: 'current';
+  /** See `DocumentRow.importId`: this report describes the import with that id. */
+  importId?: string;
+  fileName?: string;
+  report: import('./docx/fidelity').ImportReport;
+  /** The headings that were inferred (not the ones accepted: see `acceptedHeadingIndexes`). */
+  headingCandidates: import('./docx/read').HeadingCandidate[];
+  /** `index` of each inferred heading the author accepted. */
+  acceptedHeadingIndexes: number[];
+  importedAt: number;
+}
+
+/**
+ * The package and preservation map that belonged to a backed-up document, kept apart from the backup row (keyed by its `seq`) so the
+ * save-time scan of the backup ring never reads a megabytes-large package.
+ */
+export interface BackupPartsRow {
+  seq: number;
+  package?: DocxPackageRow;
+  preservation?: PreservationRow;
+  importReport?: ImportReportRow;
 }
 
 export interface BackupRow {
@@ -259,6 +328,11 @@ export interface BackupRow {
   quarantined?: true;
   /** The pre-migration legacy row; never trimmed, but (unlike quarantined) a valid recovery candidate. */
   pinned?: true;
+  /**
+   * Set on the backup taken when a .docx import (or the restore of one) replaced the document. Its package and preservation map, which
+   * that import overwrites (there is one `current` slot for each), are in `importBackupParts` under this backup's `seq`.
+   */
+  replacedByImport?: true;
 }
 
 export interface SourceRow extends ManuscriptSource {

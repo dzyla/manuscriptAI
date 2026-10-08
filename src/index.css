@@ -442,3 +442,13 @@ mark {
   cursor: default;
 }
 .opaque-chip.opaque-block { display: block; margin: 0.25em 0; text-align: center; }
+
+/* Hard page break (w:br w:type="page") imported from DOCX */
+.page-break {
+  display: block;
+  margin: 0.5em 0;
+  border-top: 1px dashed #94a3b8;
+  height: 0;
+  user-select: all;
+  cursor: default;
+}

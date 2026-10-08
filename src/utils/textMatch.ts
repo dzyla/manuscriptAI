@@ -1,4 +1,4 @@
-import { formatCitationGroup } from '../services/citations';
+import { formatCitationGroup } from './citationFormat';
 
 /**
  * Robust text location for AI suggestions.

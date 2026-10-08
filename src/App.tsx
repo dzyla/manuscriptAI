@@ -4,6 +4,10 @@ import Sidebar from './components/Sidebar';
 import SettingsModal from './components/SettingsModal';
 import PostDraftingView from './components/PostDraftingView';
 import VersionHistoryPopup from './components/VersionHistoryPopup';
+import ImportReportDialog, { ImportProgressDialog } from './components/ImportReportDialog';
+import { titleFromFileName } from './services/docxImport';
+import { useDocxImport } from './hooks/useDocxImport';
+import { textToHtml } from './utils/textImport';
 import { AgentType, Message, Suggestion, HistoryItem, AISettings, ManuscriptSource, AttachedImage, VersionSnapshot } from './types';
 import { searchSimilarManuscripts } from './services/manuscriptSearch';
 import { expandCitationNums, formatCitationGroup, mergeAdjacentCitations } from './services/citations';
@@ -18,7 +22,9 @@ import { Sparkles, FileText, Settings, Download, Keyboard, Eye, Moon, Sun, Chevr
 import { saveAs } from 'file-saver';
 import * as mammoth from 'mammoth';
 import TurndownService from 'turndown';
-import { useDocumentStore } from './stores/useDocumentStore';
+import { useDocumentStore, documentRepository } from './stores/useDocumentStore';
+import type { ImportReportRow } from './types';
+import { snapshotBeforeImport, revertLabel, isBlankHtml } from './services/importSafety';
 import { useAIStore } from './stores/useAIStore';
 import { useSourceStore } from './stores/useSourceStore';
 import { db } from './db/manuscriptDb';
@@ -42,8 +48,8 @@ function AgentIcon({ agent, size = 12 }: { agent: AgentType; size?: number }) {
 export default function App() {
   // ─── Zustand stores ────────────────────────────────────────────────────────
   const {
-    title, content, saveState, citationRegistry,
-    setTitle, setContent, setDocJson, setSaveState,
+    title, content, saveState, citationRegistry, pendingDocument,
+    setTitle, setContent, adoptLoadedHtml, clearPendingDocument, setDocJson, setSaveState,
     insertCitation: storeInsertCitation,
     removeCitation: storeRemoveCitation,
     renumberCitations: storeRenumberCitations,
@@ -52,7 +58,7 @@ export default function App() {
     resetDocument, persist: persistDocument, initialize: initDocument,
     mode, grantInstructions, grantTemplateId,
     setMode, setGrantInstructions, setGrantTemplateId,
-    loadStatus, blockedByUnreadable, lastLoad, allowOverwrite,
+    loadStatus, blockedByUnreadable, lastLoad, allowOverwrite, replaceWithHtml, importDocx, revertImport, queueFragmentClone, importId,
   } = useDocumentStore();
 
   const {
@@ -83,7 +89,7 @@ export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isPostDraftingOpen, setIsPostDraftingOpen] = useState(false);
   const [isDistractionFree, setIsDistractionFree] = useState(false);
-  const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error'; action?: { label: string; onClick: () => void } } | null>(null);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
   const [showAnalyzeMenu, setShowAnalyzeMenu] = useState(false);
@@ -246,14 +252,30 @@ export default function App() {
     return estimateTokens(plainText);
   }, [content]);
 
-  const showToast = useCallback((message: string, type: 'success' | 'info' | 'error' = 'info') => {
-    setToast({ message, type });
-    setTimeout(() => setToast(null), 5000);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showToast = useCallback((message: string, type: 'success' | 'info' | 'error' = 'info', action?: { label: string; onClick: () => void }) => {
+    setToast({ message, type, ...(action ? { action } : {}) });
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    // A message with a button stays long enough to be used.
+    toastTimer.current = setTimeout(() => setToast(null), action ? 20000 : 5000);
+  }, []);
+
+  const [loadSettled, setLoadSettled] = useState(false);
+  const handleDocumentReady = useCallback(() => {
+    if (!editorRef.current) return;
+    const orderedFigureIds = editorRef.current.getFigureOrder();
+    if (orderedFigureIds.length > 0) {
+      const newRegistry = storeRenumberFigures(orderedFigureIds);
+      editorRef.current.updateFigures(newRegistry);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Initialize all stores on mount (loads from Dexie, migrating from localforage if needed)
   useEffect(() => {
     Promise.all([initDocument(), initAI(), initSources()]).then(() => {
+      // First, and outside any toast/banner logic, so nothing below can keep onDocumentReady from ever firing.
+      setLoadSettled(true);
       const { lastLoad } = useDocumentStore.getState();
       // Failed loads and unreadable rows get a persistent banner (rendered from store state below).
       if (lastLoad.recoveredFromBackup) {
@@ -261,22 +283,10 @@ export default function App() {
           ? 'Your last save could not be read. Restored the most recent backup; a protected copy of the unreadable save was kept.'
           : 'Your last save could not be read. Restored the most recent backup. The unreadable save could not be protected and may be replaced by later saves.', 'error');
       }
-      // After loading, apply citation migration to content if needed
-      const { content: loadedContent, citationRegistry: reg } = useDocumentStore.getState();
-      if (Object.keys(reg).length > 0 && !loadedContent.includes('data-citation-node')) {
-        const migrated = migrateLegacyCitations(loadedContent, reg);
-        if (migrated !== loadedContent) {
-          useDocumentStore.getState().setContent(migrated);
-          editorRef.current?.setContent(migrated);
-        }
-      }
-      if (editorRef.current) {
-        const orderedFigureIds = editorRef.current.getFigureOrder();
-        if (orderedFigureIds.length > 0) {
-          const newRegistry = storeRenumberFigures(orderedFigureIds);
-          editorRef.current.updateFigures(newRegistry);
-        }
-      }
+      // Nothing here may depend on the editor's content. The loaded document reaches the editor as JSON through the
+      // Editor's `pendingDocument` prop (the Editor owns applying it), legacy citation migration happens in the
+      // repository's legacy-row conversion before the editor sees the document, and editor-dependent post-load work (figure renumbering)
+      // runs from the Editor's onDocumentReady, which fires once after the document is in the editor.
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1070,9 +1080,93 @@ export default function App() {
     return doDownload(format);
   };
 
+  // ─── .docx import ──────────────────────────────────────────────────────────
+  // The file is read in a Worker (the page stays responsive); NOTHING is written until the author confirms the report.
+  // The document "Restore previous document" would bring back (the newest an import replaced), or null. Named on the button.
+  const [revertTarget, setRevertTarget] = useState<{ title: string; savedAt: number } | null>(null);
+  const revertTargetRef = useRef<{ title: string; savedAt: number } | null>(null);
+  // What the open document's import said it kept but does not show; shown again from the File menu (null when it is not an import).
+  const [storedReport, setStoredReport] = useState<ImportReportRow | null>(null);
+  const [showStoredReport, setShowStoredReport] = useState(false);
+  const refreshRevertAvailable = useCallback(async () => {
+    let target: { title: string; savedAt: number } | null = null;
+    try {
+      target = await documentRepository.peekRevert();
+    } catch {
+      target = null;
+    }
+    revertTargetRef.current = target; // read straight away by the message that follows an import, before the next render
+    setRevertTarget(target);
+    try {
+      setStoredReport(await documentRepository.getImportReport() ?? null);
+    } catch {
+      setStoredReport(null);
+    }
+  }, []);
+  // also when the document's tie to an import changes (an import, a restore, New Manuscript, a workspace file ...)
+  useEffect(() => { if (loadSettled) void refreshRevertAvailable(); }, [loadSettled, importId, refreshRevertAvailable]);
+
+  const handleRevertImport = async () => {
+    try {
+      const doc = await revertImport();
+      editorRef.current?.setDocument(doc);
+      useAIStore.getState().setSuggestions([]);
+      useAIStore.getState().setHistory([]); // its entries hold text of the document that was just replaced
+      await refreshRevertAvailable();
+      showToast('Restored the document the import replaced. "Restore previous document" again brings the import back.', 'success');
+    } catch (err) {
+      console.error('Restoring the replaced document failed', err);
+      showToast(`Could not restore the previous document: ${err instanceof Error ? err.message : String(err)}`, 'error');
+    }
+  };
+
+  const docxImport = useDocxImport({
+    commit: async (result, decisions) => {
+      // A Version History snapshot of what is open now (the repository's own backup is the other way back).
+      await snapshotBeforeImport(db, { title, content: useDocumentStore.getState().content, importing: result.fileName ?? 'a Word document' });
+      const doc = await importDocx(result, decisions);
+      await refreshRevertAvailable();
+      return doc;
+    },
+    // setDocument records no undo history: Ctrl+Z cannot bring the replaced document back (the dialog says so).
+    showInEditor: doc => editorRef.current?.setDocument(doc),
+    onImported: () => {
+      // Their text offsets, and the apply-history's old/new text, belong to the replaced document (reverting one would put that
+      // document's text over the import).
+      useAIStore.getState().setSuggestions([]);
+      useAIStore.getState().setHistory([]);
+    },
+    notify: (message, type, action) => showToast(message, type, action),
+    afterImportAction: () => (revertTargetRef.current ? { label: revertLabel(revertTargetRef.current), onClick: () => { void handleRevertImport(); } } : undefined),
+  });
+
+  const handleImportText = async (file: File) => {
+    // Text typed into or after the placeholder is work; only no text, or exactly the placeholder, is an empty document.
+    if (!isBlankHtml(content) && !window.confirm(`Replace the open document with ${file.name}? Any unsaved changes will be lost.`)) return;
+    try {
+      const html = textToHtml(await file.text(), file.name.toLowerCase().endsWith('.md'));
+      setTitle(titleFromFileName(file.name));
+      setContent(html);
+      editorRef.current?.setContent(html);
+      allowOverwrite(); // explicit user replacement of the document
+      if (await persistDocument()) showToast(`Imported ${file.name}`, 'success');
+      else showToast('Imported, but it could not be saved to local storage. Use "Save Workspace" to keep a copy.', 'error');
+    } catch (err) {
+      console.error('Text import failed', err);
+      showToast(`Could not import ${file.name}`, 'error');
+    }
+  };
+
   const handleLoadWorkspace = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
+    // Choosing the same file again must fire onChange again.
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    const lowerName = file.name.toLowerCase();
+    // .docm / .dotm go to the reader too, which refuses them with the reason; the old binary .doc cannot be read at all.
+    if (/\.(docx|docm|dotx|dotm)$/.test(lowerName)) { void docxImport.start(file); return; }
+    if (lowerName.endsWith('.doc')) { showToast('The old Word format (.doc) cannot be imported. In Word, use Save As and choose .docx, then import that.', 'error'); return; }
+    if (lowerName.endsWith('.md') || lowerName.endsWith('.txt')) { void handleImportText(file); return; }
     const reader = new FileReader();
     reader.onload = async (e) => {
       try {
@@ -1119,8 +1213,8 @@ export default function App() {
     // Snapshots are stored self-contained; older ones may still reference asset ids / blob: URLs.
     try {
       const html = await inlineAssetImages(snapshot.content);
-      setTitle(snapshot.title);
-      setContent(html);
+      // Not the open document's own text: ends its tie to a .docx import (and so its package), see replaceWithHtml.
+      replaceWithHtml(snapshot.title, html);
       editorRef.current?.setContent(html);
       showToast(`Restored snapshot: "${snapshot.name}"`, 'success');
       setSidebarTab('chat');
@@ -1169,6 +1263,16 @@ export default function App() {
                 <button onClick={() => fileInputRef.current?.click()} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg font-bold" style={{ color: 'var(--text-primary)', borderBottom: '1px solid var(--border-subtle)', marginBottom: '4px', paddingBottom: '8px' }}>
                   Load Document (.json, .docx, .md, .txt)
                 </button>
+                {storedReport && (
+                  <button onClick={() => setShowStoredReport(true)} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>
+                    Import report (what was kept but is not shown)
+                  </button>
+                )}
+                {revertTarget && (
+                  <button onClick={() => { void handleRevertImport(); }} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }} title={`Saved ${new Date(revertTarget.savedAt).toLocaleString()}`}>
+                    {revertLabel(revertTarget)}
+                  </button>
+                )}
                 <button onClick={() => handleDownload('md')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>Export Markdown</button>
                 <button onClick={() => handleDownload('docx')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>Export Word</button>
                 <button onClick={() => handleDownload('tex')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>Export to LaTeX (.zip)</button>
@@ -1399,6 +1503,12 @@ export default function App() {
             showPageGuides={mode === 'grant'}
             onChange={(html) => setContent(html)}
             onDocChange={setDocJson}
+            pendingDocument={pendingDocument}
+            onDuplicateFragment={queueFragmentClone}
+            onPendingDocumentApplied={clearPendingDocument}
+            loadSettled={loadSettled}
+            onDocumentReady={handleDocumentReady}
+            onContentSynced={adoptLoadedHtml}
             suggestions={suggestions}
             onSuggestionClick={handleSuggestionClick}
             onSelectionQuery={handleSelectionQuery}
@@ -1494,7 +1604,7 @@ export default function App() {
       />
       {showTemplatePicker && (
         <GrantTemplatePicker
-          documentHasContent={stripHtml(content).replace(/Start writing your manuscript here.*$/, '').trim().length > 0}
+          documentHasContent={!isBlankHtml(content)}
           aiSettings={aiSettings}
           onApply={handleApplyGrantTemplate}
           onClose={() => setShowTemplatePicker(false)}
@@ -1519,6 +1629,27 @@ export default function App() {
         aiSettings={aiSettings}
       />
 
+      {showStoredReport && storedReport && (
+        <ImportReportDialog
+          mode="view"
+          result={{ report: storedReport.report, headingCandidates: storedReport.headingCandidates, ...(storedReport.fileName ? { fileName: storedReport.fileName } : {}) }}
+          acceptedIndexes={storedReport.acceptedHeadingIndexes}
+          onConfirm={() => {}}
+          onCancel={() => setShowStoredReport(false)}
+        />
+      )}
+      {docxImport.state?.phase === 'reading' && (
+        <ImportProgressDialog fileName={docxImport.state.fileName} size={docxImport.state.size} stage={docxImport.state.stage} onCancel={docxImport.cancelRead} />
+      )}
+      {docxImport.state?.phase === 'review' && (
+        <ImportReportDialog
+          result={docxImport.state.result}
+          busy={docxImport.state.committing}
+          onCancel={docxImport.cancelReview}
+          onConfirm={({ acceptedHeadings }) => { void docxImport.confirm(acceptedHeadings); }}
+        />
+      )}
+
       {/* Persistent storage warnings (never auto-dismissed) */}
       {(loadStatus === 'failed' || blockedByUnreadable) && (
         <div role="alert" className="fixed top-3 left-1/2 -translate-x-1/2 z-[210] px-4 py-2.5 rounded-xl text-xs font-medium shadow-lg border bg-rose-50 text-rose-700 border-rose-200 max-w-lg">
@@ -1539,6 +1670,16 @@ export default function App() {
           style={toast.type === 'info' ? { background: 'var(--surface-1)', color: 'var(--text-secondary)' } : {}}
           >
             {toast.type === 'success' ? '✓' : toast.type === 'error' ? '✕' : 'ℹ'} {toast.message}
+            {toast.action && (
+              <button
+                type="button"
+                className="ml-2 px-2 py-0.5 rounded-md border font-semibold shrink-0"
+                style={{ borderColor: 'currentColor' }}
+                onClick={() => { const run = toast.action!.onClick; setToast(null); run(); }}
+              >
+                {toast.action.label}
+              </button>
+            )}
           </div>
         </div>
       )}

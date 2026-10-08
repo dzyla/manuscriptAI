@@ -876,6 +876,74 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
+### Task 6b: Infer section headings a Word document never styled
+
+**Files:**
+- Create: `src/docx/read/headings.ts`, `src/docx/read/headings.test.ts`
+- Modify: `src/docx/read/paragraphs.ts` (expose the signals the detector needs), `src/docx/read/private-fixtures.test.ts`
+- Modify: `scripts/fixtures/make-docx-fixtures.ts` (add `unstyled-sections.docx`)
+
+**Why:** measured on the user's two real grants, **0 of 135 and 0 of 156 paragraphs use a Word heading style** — section titles are bold body paragraphs. That is normal in grant writing, but the app's grant page budgets, sub-project H's per-section audit and the section-aware agents all key off H1–H3. Without inference, an imported grant has no structure for any of them.
+
+**Interfaces:**
+- Consumes: the paragraph drafts from Task 6, `readStyles`'s `headingLevelByStyleId`, the `ImportReport` helpers.
+- Produces:
+  - `interface HeadingCandidate { index: number; level: 1 | 2 | 3; text: string; evidence: string[]; confidence: 'name' | 'format' }`
+  - `detectHeadings(paragraphs: ParagraphDraft[], ctx: { hasRealHeadings: boolean }): HeadingCandidate[]` — pure, no LLM call
+  - `applyHeadings(doc: JSONContent, accepted: HeadingCandidate[]): JSONContent`
+  - `KNOWN_SECTIONS` — NIH and manuscript section names (see Step 3)
+
+- [ ] **Step 1: Add the fixture**
+
+`unstyled-sections.docx`: a document with **no** heading styles containing, as plain `Normal` paragraphs — a bold centred title; `Specific Aims` bold on its own line; a long body paragraph; `A. Significance` bold; body; `Approach` bold followed immediately by body text in the *same* paragraph (must NOT be detected); a bold sentence mid-paragraph (must NOT be detected); `Vertebrate Animals` bold; and a bold line of 14 words (must NOT be detected — too long).
+
+- [ ] **Step 2: Write the failing test**
+
+Create `src/docx/read/headings.test.ts` asserting, explicitly (not in a loop):
+- `Specific Aims` → level 1, `confidence: 'name'`, evidence naming the matched section;
+- `A. Significance` → level 1, name-matched after the `A.`/`1.`/`I.` enumerator is stripped;
+- `Vertebrate Animals` → detected (an NIH attachment section);
+- the `Approach` paragraph that continues into body text → **not** detected;
+- the bold mid-paragraph sentence → **not** detected;
+- the 14-word bold line → **not** detected;
+- a document where `hasRealHeadings` is true → returns `[]` (never second-guess a document that styled its own headings);
+- every candidate carries a non-empty `evidence` array;
+- `applyHeadings` converts only the accepted indices and leaves `ooxml` provenance intact on every paragraph it does **not** convert.
+
+- [ ] **Step 3: Implement**
+
+`KNOWN_SECTIONS` must cover at least: Project Summary/Abstract, Project Narrative, Specific Aims, Research Strategy, Significance, Innovation, Approach, Preliminary Studies/Data, Rigor (of the prior research), Timeline, Vertebrate Animals, Human Subjects, Select Agent Research, Resource Sharing Plan, Data Management and Sharing Plan, Authentication of Key Biological and/or Chemical Resources, Multiple PD/PI Leadership Plan, Consortium/Contractual Arrangements, Letters of Support, Facilities, Equipment, Biosketch, Budget Justification, Introduction (to Resubmission/Revision), Candidate's Background, Career Goals and Objectives, Career Development/Training Activities, Training in Responsible Conduct of Research, Sponsor and Co-Sponsor, plus IMRAD (Abstract, Introduction, Methods, Materials and Methods, Results, Discussion, Conclusion, References, Acknowledgements, Author Contributions, Competing Interests, Figure Legends, Supplementary).
+
+Detection rules, in order:
+1. If `ctx.hasRealHeadings`, return `[]`.
+2. A candidate paragraph must be a single short line: ≤ 10 words, no terminal `.`/`!`/`?` (a trailing `:` is allowed), and its whole text must be covered by the paragraph (no body text following in the same paragraph).
+3. Strip a leading enumerator (`A.`, `1.`, `1.1`, `I.`, `(a)`) before matching.
+4. **Name match** → `confidence: 'name'`. Level: a `KNOWN_SECTIONS` top-level name is level 1; a known sub-section (Significance/Innovation/Approach under Research Strategy) is level 2; otherwise level 1.
+5. **Format match** → `confidence: 'format'`, only when the paragraph is entirely bold (or entirely a larger font than the document default), is ≤ 8 words, and is followed by a non-bold paragraph. Level 2 if any name-matched level-1 heading precedes it, else level 1.
+6. Never emit two candidates for the same paragraph index; never emit a candidate for a paragraph holding an opaque atom other than a comment anchor.
+7. `recordFeature` each candidate and `addWarning` once with the total, so the import report says structure was inferred.
+
+`applyHeadings` converts an accepted paragraph to `{ type: 'heading', attrs: { level, styleId: null, ooxml: <unchanged> } }`, preserving the paragraph's provenance and inline content untouched.
+
+- [ ] **Step 4: Run the tests, then both gates**
+
+Run: `npx vitest run src/docx/read/headings.test.ts`, then `npx tsc --noEmit` and the full `npx vitest run` once.
+
+- [ ] **Step 5: Validate against the user's real documents**
+
+Extend `private-fixtures.test.ts` to run `detectHeadings` over both private documents and report **counts only**: how many candidates at each level and each confidence. Then **list each detected heading's text in the report** (section titles are not sensitive content, unlike body text) so the controller can judge precision and recall by eye against a real NIH application. Assert no candidate is a paragraph containing an opaque atom, and that `hasRealHeadings` is false for both.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/docx/read/headings.ts src/docx/read/headings.test.ts src/docx/read/paragraphs.ts src/docx/read/private-fixtures.test.ts scripts/fixtures/make-docx-fixtures.ts src/test/fixtures/docx
+git commit -m "feat(a2): infer section headings a Word document never styled
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
 ### Task 7: Numbered and bulleted lists
 
 **Files:**
@@ -1028,6 +1096,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 | §3 tables (gridSpan, vMerge, tblHeader, tblGrid) | 8 |
 | §3 inline + wrapped images, captions, assets | 9 |
 | §1 fidelity categories, opaque passthrough, import report | 10 |
+| Heading inference for documents that never styled headings (user decision, 2026-10-07) | 6b |
 | §2.6 import transaction boundary; worker; loader dispatch | 11 |
 | Worker-safe conversion; JSON-to-editor load (carried from A1's review) | 1, 2 |
 
