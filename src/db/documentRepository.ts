@@ -109,8 +109,10 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
     // Which referenced assets still have a row? A node whose asset was collected but which still carries
     // live bytes (undo/paste of a session blob: URL) is re-ingested rather than left dangling.
     const referenced = [...collectAssetIds(doc.docJson)];
-    const found = referenced.length ? await db.assets.bulkGet(referenced) : [];
-    const existingAssetIds = new Set(referenced.filter((_, i) => found[i] !== undefined));
+    // Keys only: never pull every image's bytes out of IndexedDB just to check existence.
+    const existingAssetIds = new Set(
+      referenced.length ? ((await db.assets.where(':id').anyOf(referenced).primaryKeys()) as string[]) : [],
+    );
     const { doc: storedJson, assets, warnings } = await prepareAssets(doc.docJson, { fetchBytes: deps.fetchBytes, existingAssetIds });
     const row: DocumentRow = {
       id: 'current',

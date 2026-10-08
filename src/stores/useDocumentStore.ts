@@ -269,6 +269,8 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       }
     } catch (err) {
       console.error('DocumentStore.initialize failed:', err);
+      // Failed before the loaded document reached the store: treat as a failed load.
+      if (get().loadStatus === 'loading') set({ loadStatus: 'failed' });
     }
   },
 

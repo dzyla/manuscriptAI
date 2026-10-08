@@ -99,6 +99,17 @@ describe('useDocumentStore (v3)', () => {
       expect(await db.autosaveBackups.count()).toBe(backupsBefore);
     });
 
+    it('a loaded document that cannot be applied to the store counts as a failed load', async () => {
+      const bad = { title: 'X', saveState: 'Saved' as const, docJson: { type: 'doc', content: [{ type: 'hologram' }] }, format: useDocumentStore.getState().format, comments: [], citationRegistry: {}, citationCounter: 0, figureRegistry: {}, figureCounter: 0, mode: 'grant' as const, grantInstructions: '', grantTemplateId: null };
+      const loadSpy = vi.spyOn(documentRepository, 'load').mockResolvedValueOnce({ doc: bad, migrated: false, recoveredFromBackup: false, unreadableRowPresent: false, quarantined: false });
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      await useDocumentStore.getState().initialize();
+      errSpy.mockRestore();
+      loadSpy.mockRestore();
+      expect(useDocumentStore.getState().loadStatus).toBe('failed');
+      expect(await useDocumentStore.getState().persist()).toBe(false);
+    });
+
     it('an unreadable row with nothing recovered blocks saving until an explicit replace', async () => {
       await unreadableRow();
       await useDocumentStore.getState().initialize();
