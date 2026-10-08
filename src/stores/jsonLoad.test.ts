@@ -52,11 +52,11 @@ describe('loading the document as JSON', () => {
   });
 
   it('hands the loaded JSON to the editor; an attribute with no HTML mapping only survives that path', async () => {
-    // Stand-in for the style ids / run properties later A2a tasks add: no parseHTML/renderHTML.
+    // Stand-in for the style ids / run properties later A2a tasks add: never rendered to HTML, so HTML cannot carry it.
     const HiddenAttr = Extension.create({
       name: 'hiddenAttrForTest',
       addGlobalAttributes() {
-        return [{ types: ['paragraph'], attributes: { styleId: { default: null } } }];
+        return [{ types: ['paragraph'], attributes: { styleId: { default: null, rendered: false } } }];
       },
     });
     const doc = {
@@ -84,13 +84,13 @@ describe('loading the document as JSON', () => {
     expect(useDocumentStore.getState().pendingDocument).toBeNull();
   });
 
-  it('syncDerivedContent updates the HTML without marking the document edited', async () => {
+  it('adoptLoadedHtml updates the HTML without marking the document edited', async () => {
     await db.documents.put({
       id: 'current', title: 'Imported', docJson: docWithHiddenAttr, schemaVersion: 3,
       saveState: 'Saved', citationRegistry: {}, citationCounter: 0, figureRegistry: {}, figureCounter: 0, updatedAt: 1,
     });
     await useDocumentStore.getState().initialize();
-    useDocumentStore.getState().syncDerivedContent('<p>x</p>');
+    useDocumentStore.getState().adoptLoadedHtml('<p>x</p>');
     expect(useDocumentStore.getState().content).toBe('<p>x</p>');
     expect(useDocumentStore.getState().saveState).toBe('Saved');
   });

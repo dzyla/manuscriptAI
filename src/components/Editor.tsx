@@ -173,7 +173,15 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
   useEffect(() => { onChangeRef.current = onChange; }, [onChange]);
   const onContentSyncedRef = useRef(onContentSynced);
   useEffect(() => { onContentSyncedRef.current = onContentSynced; }, [onContentSynced]);
-  const isExternalUpdate = useRef(false);
+  /**
+   * Number of programmatic content applications whose onUpdate echo must not be reported as a user edit.
+   * A counter (not a boolean) so overlapping applies cannot unmask each other: each releases only its own hold.
+   */
+  const externalUpdateHolds = useRef(0);
+  const holdExternalUpdate = () => {
+    externalUpdateHolds.current++;
+    setTimeout(() => { externalUpdateHolds.current--; }, 0);
+  };
   const lastExternalContent = useRef(content);
   const instructionInputRef = useRef<HTMLInputElement>(null);
   const [citationPicker, setCitationPicker] = useState<{ x: number; y: number } | null>(null);
@@ -227,10 +235,10 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
     onCreate: ({ editor }) => { onDocChangeRef.current?.(editor.getJSON()); },
     onUpdate: ({ editor }) => {
       onDocChangeRef.current?.(editor.getJSON());
-      if (isExternalUpdate.current) return;
+      if (externalUpdateHolds.current > 0) return;
       const html = editor.getHTML();
       lastExternalContent.current = html;
-      onChange(html);
+      onChangeRef.current(html);
     },
     onSelectionUpdate: ({ editor }) => {
       const { from, to } = editor.state.selection;
@@ -481,13 +489,12 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
    */
   const applyDocument = useCallback((doc: JSONContent) => {
     if (!editor) return;
-    isExternalUpdate.current = true;
+    holdExternalUpdate();
     editor.commands.setContent(doc);
     const html = editor.getHTML();
     lastExternalContent.current = html;
     onDocChangeRef.current?.(editor.getJSON());
     (onContentSyncedRef.current ?? onChangeRef.current)(html);
-    setTimeout(() => { isExternalUpdate.current = false; }, 0);
   }, [editor]);
 
   // Feed a freshly loaded document as JSON (runs before the content sync below, which stands down meanwhile).
@@ -509,15 +516,17 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
   // Sync content from parent
   useEffect(() => {
     if (!editor) return;
-    if (pendingDocument) return; // the JSON path owns this load
+    // The JSON path owns this load. This effect depends on pendingDocument so that it re-runs when the flag clears:
+    // a content write that arrived meanwhile is then applied (or is a no-op, as applyDocument already made
+    // content === lastExternalContent on the normal path) instead of being dropped.
+    if (pendingDocument) return;
     if (content !== lastExternalContent.current) {
-      isExternalUpdate.current = true;
+      holdExternalUpdate();
       editor.commands.setContent(content);
       onDocChangeRef.current?.(editor.getJSON());
       lastExternalContent.current = content;
-      setTimeout(() => { isExternalUpdate.current = false; }, 0);
     }
-  }, [content, editor]);
+  }, [content, editor, pendingDocument]);
 
   // Apply suggestion highlighting
   useEffect(() => {
@@ -808,11 +817,10 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
     getJSON: () => editor?.getJSON() ?? { type: 'doc', content: [] },
     setContent: (html: string) => {
       if (!editor) return;
-      isExternalUpdate.current = true;
+      holdExternalUpdate();
       editor.commands.setContent(html);
       onDocChangeRef.current?.(editor.getJSON());
       lastExternalContent.current = html;
-      setTimeout(() => { isExternalUpdate.current = false; }, 0);
     },
     setDocument: (doc: JSONContent) => applyDocument(doc),
     getSelectedText,

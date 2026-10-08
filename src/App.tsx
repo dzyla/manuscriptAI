@@ -43,7 +43,7 @@ export default function App() {
   // ─── Zustand stores ────────────────────────────────────────────────────────
   const {
     title, content, saveState, citationRegistry, pendingDocument,
-    setTitle, setContent, syncDerivedContent, clearPendingDocument, setDocJson, setSaveState,
+    setTitle, setContent, adoptLoadedHtml, clearPendingDocument, setDocJson, setSaveState,
     insertCitation: storeInsertCitation,
     removeCitation: storeRemoveCitation,
     renumberCitations: storeRenumberCitations,
@@ -261,13 +261,9 @@ export default function App() {
           ? 'Your last save could not be read. Restored the most recent backup; a protected copy of the unreadable save was kept.'
           : 'Your last save could not be read. Restored the most recent backup. The unreadable save could not be protected and may be replaced by later saves.', 'error');
       }
-      // Feed the loaded document to the editor as JSON (no HTML round trip). The Editor also does this from its
-      // pendingDocument prop as soon as it is ready; whichever runs first clears the flag, so it applies once.
-      const pending = useDocumentStore.getState().pendingDocument;
-      if (pending && editorRef.current) {
-        editorRef.current.setDocument(pending);
-        useDocumentStore.getState().clearPendingDocument();
-      }
+      // The loaded document reaches the editor as JSON via the Editor's `pendingDocument` prop; the Editor owns
+      // applying it. Do not also apply it here: this .then (a microtask) can run before or after the Editor's
+      // effect, and a second apply would revert the legacy-citation migration below and clobber early typing.
       // After loading, apply citation migration to content if needed
       const { content: loadedContent, citationRegistry: reg } = useDocumentStore.getState();
       if (Object.keys(reg).length > 0 && !loadedContent.includes('data-citation-node')) {
@@ -1408,7 +1404,7 @@ export default function App() {
             onDocChange={setDocJson}
             pendingDocument={pendingDocument}
             onPendingDocumentApplied={clearPendingDocument}
-            onContentSynced={syncDerivedContent}
+            onContentSynced={adoptLoadedHtml}
             suggestions={suggestions}
             onSuggestionClick={handleSuggestionClick}
             onSelectionQuery={handleSelectionQuery}

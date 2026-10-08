@@ -1,4 +1,6 @@
-// A2 smoke: a stored document loads into the editor as JSON (one apply, no loop), provenance survives an edit + reload.
+// A2 smoke: a stored document loads into the editor as JSON (exactly one apply, no loop), and an attribute with NO
+// HTML mapping (`styleId`, injected into the schema via a route override: the production schema has none yet) survives
+// load, edit, autosave and reload. On the old docJson -> docToHtml -> editor path this script fails.
 // Usage: npm run dev (port 3000) in another terminal, then:
 //   npm i --no-save playwright && npx playwright install chromium && node scripts/smoke/a2-json-load.mjs
 import { chromium } from 'playwright';
@@ -8,6 +10,7 @@ const OOXML = { blockId: 'b1', sourceHash: 'deadbeef' };
 const browser = await chromium.launch();
 const page = await browser.newPage();
 const fail = (msg) => { console.error('FAIL:', msg); process.exitCode = 1; };
+const STYLE_ID = 'SmokeStyle1';
 const errors = [];
 page.on('pageerror', (e) => errors.push(String(e)));
 page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
@@ -21,10 +24,24 @@ const readRow = () => page.evaluate(() => new Promise((resolve) => {
   };
 }));
 
+// Add an unmapped paragraph attribute to the app's real schema (no parseHTML/renderHTML), so HTML cannot carry it.
+await page.route('**/src/extensions/schema.ts*', async (route) => {
+  const res = await route.fetch();
+  let body = await res.text();
+  const core = body.match(/from "(\/node_modules\/\.vite\/deps\/@tiptap_core\.js[^"]*)"/)?.[1];
+  if (!core || !body.includes('export function getSchemaExtensions(')) throw new Error('cannot patch schema module');
+  body = body.replace('export function getSchemaExtensions(', 'function __baseSchemaExtensions(') + `
+import { Extension as __SmokeExt } from "${core}";
+const __SmokeStyleId = __SmokeExt.create({ name: 'smokeStyleId', addGlobalAttributes() { return [{ types: ['paragraph'], attributes: { styleId: { default: null, rendered: false } } }]; } });
+export function getSchemaExtensions() { return [...__baseSchemaExtensions(), __SmokeStyleId]; }
+`;
+  await route.fulfill({ response: res, body });
+});
+
 // First visit creates the database; then seed a v3 JSON row carrying provenance.
 await page.goto(URL);
 await page.waitForSelector('.ProseMirror');
-await idb(async (ooxml) => {
+await idb(async ({ ooxml, styleId }) => {
   await new Promise((resolve, reject) => {
     const req = indexedDB.open('ManuscriptAIEditor');
     req.onsuccess = () => {
@@ -33,7 +50,7 @@ await idb(async (ooxml) => {
         id: 'current', title: 'Smoke', schemaVersion: 3, saveState: 'Saved',
         docJson: { type: 'doc', content: [
           { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Aims' }] },
-          { type: 'paragraph', attrs: { ooxml }, content: [{ type: 'text', text: 'imported json text' }] },
+          { type: 'paragraph', attrs: { ooxml, styleId }, content: [{ type: 'text', text: 'imported json text' }] },
         ] },
         citationRegistry: {}, citationCounter: 0, figureRegistry: {}, figureCounter: 0, updatedAt: 1,
       });
@@ -42,26 +59,41 @@ await idb(async (ooxml) => {
     };
     req.onerror = () => reject(req.error);
   });
-}, OOXML);
+}, { ooxml: OOXML, styleId: STYLE_ID });
 
-// Count document-changing transactions from the moment the editor exists.
+// Count document-changing transactions on every editor from the moment it is created. TipTap assigns
+// `view.dom.editor = this` synchronously inside the Editor constructor, before any content can be applied, so a
+// setter on HTMLElement.prototype sees the editor first and cannot under-count.
 await page.addInitScript(() => {
   window.__docChanges = 0;
   window.__txLog = [];
-  const t = setInterval(() => {
-    const ed = document.querySelector('.ProseMirror')?.editor;
-    if (ed) { clearInterval(t); ed.on('transaction', ({ transaction }) => { if (transaction.docChanged) { window.__docChanges++; window.__txLog.push({ text: transaction.doc.textContent.slice(0, 40), meta: Object.keys(transaction.meta), stack: new Error().stack.split('\n').slice(2, 14).map((l) => l.trim().replace(/http:\/\/[^/]+\//, '')).join(' | ') }); } }); }
-  }, 1);
+  window.__editorsSeen = 0;
+  Object.defineProperty(HTMLElement.prototype, 'editor', {
+    configurable: true,
+    set(ed) {
+      Object.defineProperty(this, 'editor', { value: ed, configurable: true, writable: true });
+      window.__editorsSeen++;
+      ed.on('transaction', ({ transaction }) => {
+        if (!transaction.docChanged) return;
+        window.__docChanges++;
+        window.__txLog.push({ text: transaction.doc.textContent.slice(0, 40), stack: new Error().stack.split('\n').slice(2, 14).map((l) => l.trim().replace(/http:\/\/[^/]+\//, '')).join(' | ') });
+      });
+    },
+  });
 });
 await page.reload();
 await page.waitForFunction(() => document.querySelector('.ProseMirror')?.textContent.includes('imported json text'));
 await page.waitForTimeout(1500);
 const changes = await page.evaluate(() => window.__docChanges);
 console.log('doc-changing transactions during load:', changes);
-if (changes > 1) console.log(JSON.stringify(await page.evaluate(() => window.__txLog), null, 1));
-if (changes > 1) fail(`loading applied the document ${changes} times (expected at most 1)`);
+const editorsSeen = await page.evaluate(() => window.__editorsSeen);
+console.log('editors created:', editorsSeen);
+if (changes !== 1) console.log(JSON.stringify(await page.evaluate(() => window.__txLog), null, 1));
+if (changes !== 1) fail(`loading changed the document ${changes} times (expected exactly 1)`);
 const attrOnLoad = await page.evaluate(() => document.querySelector('.ProseMirror').editor.getJSON().content[1].attrs.ooxml);
 if (JSON.stringify(attrOnLoad) !== JSON.stringify(OOXML)) fail('provenance not in the editor after load: ' + JSON.stringify(attrOnLoad));
+const styleOnLoad = await page.evaluate(() => document.querySelector('.ProseMirror').editor.getJSON().content[1].attrs.styleId);
+if (styleOnLoad !== STYLE_ID) fail('unmapped attribute lost on load: ' + JSON.stringify(styleOnLoad));
 const stateAfterLoad = await page.evaluate(() => document.querySelector('.ProseMirror').editor.getHTML());
 console.log('editor html after load:', stateAfterLoad);
 
@@ -74,9 +106,13 @@ const row = await readRow();
 if (!JSON.stringify(row.docJson).includes('plus an edit')) fail('edit not persisted in docJson');
 if (JSON.stringify(row.docJson.content[1].attrs.ooxml) !== JSON.stringify(OOXML)) fail('provenance lost in saved row: ' + JSON.stringify(row.docJson.content[1].attrs));
 
+if (row.docJson.content[1].attrs.styleId !== STYLE_ID) fail('unmapped attribute lost in saved row: ' + JSON.stringify(row.docJson.content[1].attrs));
+
 await page.reload();
 await page.waitForSelector('.ProseMirror');
 await page.waitForFunction(() => document.querySelector('.ProseMirror')?.textContent.includes('plus an edit'));
+const styleAfterReload = await page.evaluate(() => document.querySelector('.ProseMirror').editor.getJSON().content[1].attrs.styleId);
+if (styleAfterReload !== STYLE_ID) fail('unmapped attribute lost after reload: ' + JSON.stringify(styleAfterReload));
 const attrAfterReload = await page.evaluate(() => document.querySelector('.ProseMirror').editor.getJSON().content[1].attrs.ooxml);
 if (JSON.stringify(attrAfterReload) !== JSON.stringify(OOXML)) fail('provenance lost after reload');
 const loopErrors = errors.filter((e) => /Maximum update depth|Too many re-renders/.test(e));

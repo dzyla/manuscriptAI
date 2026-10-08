@@ -47,8 +47,12 @@ interface DocumentState {
   setFormat: (format: DocFormat) => void;
   setComments: (comments: CommentThread[]) => void;
   setContent: (content: string) => void;
-  /** Update the derived HTML to match what the editor now shows, without marking the document as edited. */
-  syncDerivedContent: (content: string) => void;
+  /**
+   * LOAD-ONLY: record the HTML the editor produced from a document it was just given as JSON, without marking the
+   * document as edited. Never use this for a user edit or any content change: it deliberately leaves saveState alone,
+   * so an edit routed here would silently stay 'Saved'. Edits go through setContent.
+   */
+  adoptLoadedHtml: (content: string) => void;
   clearPendingDocument: () => void;
   setSaveState: (s: DocumentState['saveState']) => void;
   setCitationRegistry: (reg: Record<string, number>) => void;
@@ -136,7 +140,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   setComments: (comments) => set({ comments, saveState: 'Draft' }),
   setTitle: (title) => set({ title, saveState: 'Draft' }),
   setContent: (content) => set({ content, saveState: 'Draft' }),
-  syncDerivedContent: (content) => set({ content }),
+  adoptLoadedHtml: (content) => set({ content }),
   clearPendingDocument: () => set({ pendingDocument: null }),
   setSaveState: (saveState) => set({ saveState }),
   setCitationRegistry: (citationRegistry) => set({ citationRegistry }),
