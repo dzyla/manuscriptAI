@@ -7,6 +7,11 @@ import { TableKit } from '@tiptap/extension-table';
 import { ResizableImageSpec } from './specs/resizableImage';
 import { CitationSpec } from './specs/citation';
 import { FigureLabelSpec } from './specs/figureLabel';
+import { PageBreakSpec } from './specs/pageBreak';
+import { ParagraphFormat } from './specs/paragraphFormat';
+import {
+  FontFamilyMark, FontSizeMark, TextColorMark, SuperscriptMark, SubscriptMark, CharacterStyleMark,
+} from './specs/runMarks';
 import { OpaqueInline, OpaqueBlock } from './preserve/OpaqueNodes';
 import { OoxmlProvenance } from './preserve/OoxmlProvenance';
 
@@ -23,6 +28,14 @@ export function getSpecExtensions(): Extensions {
     ResizableImageSpec,
     CitationSpec,
     FigureLabelSpec,
+    PageBreakSpec,
+    ParagraphFormat,
+    FontFamilyMark,
+    FontSizeMark,
+    TextColorMark,
+    SuperscriptMark,
+    SubscriptMark,
+    CharacterStyleMark,
     OpaqueInline,
     OpaqueBlock,
     OoxmlProvenance,
@@ -36,10 +49,15 @@ export function getSpecSchema(): Schema {
   return schemaCache;
 }
 
-export function specNormalizeDoc(doc: JSONContent): JSONContent {
-  const node = getSpecSchema().nodeFromJSON(doc);
+/** Round-trip any node (not just a doc) through the schema: fills attribute defaults, merges adjacent text, orders marks. Throws if invalid. */
+export function specNormalizeNode(json: JSONContent): JSONContent {
+  const node = getSpecSchema().nodeFromJSON(json);
   node.check();
   return node.toJSON() as JSONContent;
+}
+
+export function specNormalizeDoc(doc: JSONContent): JSONContent {
+  return specNormalizeNode(doc);
 }
 
 /** Needs a DOM (jsdom in tests); the worker path builds JSON directly instead. */

@@ -157,10 +157,19 @@ export function captureFragment(el: Element): Fragment {
  * the app does not model, verbatim.
  */
 export function captureChildren(container: Element, keep: Element[]): string {
+  return captureShell(container, keep).xml;
+}
+
+/**
+ * captureChildren as a Fragment: `container` (attributes included) holding only the `keep` elements,
+ * with the relationship ids they use. Lets an opaque child of a w:r travel with the run's w:rPr
+ * (a footnote reference without its superscript style would export as a plain digit).
+ */
+export function captureShell(container: Element, keep: Element[]): Fragment {
   const shell = container.cloneNode(false) as Element;
   for (const k of keep) shell.appendChild(k.cloneNode(true));
-  declareUsedNamespaces(shell, container);
-  return serializeXml(shell);
+  const nsDecls = declareUsedNamespaces(shell, container);
+  return { xml: serializeXml(shell), relIds: collectRelIds(shell), nsDecls };
 }
 
 export function remapRelIds(fragment: Fragment, mapping: Record<string, string>): Fragment {

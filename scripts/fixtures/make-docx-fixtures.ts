@@ -38,6 +38,11 @@
  *                   no styleId, a root paragraph style, a table style, and ~15 unused namespaces on the root
  *   no-styles.docx  minimal with no word/styles.xml part (the relationship to it dangles)
  *   bad-styles.docx minimal whose word/styles.xml is not well-formed XML
+ *   body-basics.docx  paragraph/run/hyperlink coverage: Heading1/2, Caption, bold/italic/underline/strike, font+size+colour,
+ *                   super/subscript, a character style, page breaks (alone and inside text), http/mailto/file/javascript/anchor
+ *                   hyperlinks, justify+spacing+indent, hanging indent, outlineLvl heading, keepNext+tabs, a smartTag wrapper,
+ *                   an equation, a footnote reference inside a formatted run, a tracked insertion, a non-Google content control
+ *   google-export.docx  Google Docs shape: goog_rdk_* w:sdt wrappers (one nested two deep) around runs, plus word/fonts/ font
  */
 process.env.TZ = 'UTC'; // must precede any Date use so zip timestamps are reproducible
 
@@ -112,13 +117,64 @@ const STYLES_LOCALISED = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?
 const A4_DOCUMENT = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="${W}" xmlns:r="${R}"><w:body><w:p><w:pPr><w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:pPr><w:r><w:t>First section.</w:t></w:r></w:p><w:p><w:r><w:t>Second section.</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134" w:header="709" w:footer="709" w:gutter="0"/></w:sectPr></w:body></w:document>`;
 
-function basePackage(opts: { main?: string; documentXml?: string; stylesXml?: string | null } = {}): JSZip {
+const STYLES_BODY = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="${W}"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial"/><w:sz w:val="22"/></w:rPr></w:rPrDefault></w:docDefaults>
+<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>
+<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:pPr><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:pPr><w:outlineLvl w:val="1"/></w:pPr><w:rPr><w:b/><w:sz w:val="26"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Caption"><w:name w:val="caption"/><w:basedOn w:val="Normal"/><w:rPr><w:i/><w:sz w:val="18"/></w:rPr></w:style>
+<w:style w:type="character" w:styleId="Emphasis"><w:name w:val="Emphasis"/><w:rPr><w:i/></w:rPr></w:style>
+</w:styles>`;
+
+const BODY_RELS = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="${PKG_REL}"><Relationship Id="rId1" Type="${R}/styles" Target="styles.xml"/><Relationship Id="rId10" Type="${R}/hyperlink" Target="https://example.org/paper" TargetMode="External"/><Relationship Id="rId11" Type="${R}/hyperlink" Target="mailto:author@example.org" TargetMode="External"/><Relationship Id="rId12" Type="${R}/hyperlink" Target="file:///etc/passwd" TargetMode="External"/><Relationship Id="rId13" Type="${R}/hyperlink" Target="javascript:alert(1)" TargetMode="External"/><Relationship Id="rId14" Type="${R}/hyperlink" Target="media/note.txt"/></Relationships>`;
+
+const run = (text: string, rPr = '') => `<w:r>${rPr ? `<w:rPr>${rPr}</w:rPr>` : ''}<w:t xml:space="preserve">${text}</w:t></w:r>`;
+
+const BODY_BASICS = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="${W}" xmlns:r="${R}" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><w:body>
+<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr>${run('Aims Overview')}</w:p>
+<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr>${run('Background Section')}</w:p>
+<w:p><w:pPr><w:pStyle w:val="Normal"/></w:pPr>${run('Plain ')}${run('boldword', '<w:b/>')}${run(' ')}${run('italicword', '<w:i/>')}${run(' ')}${run('underlineword', '<w:u w:val="single"/>')}${run(' ')}${run('strikeword', '<w:strike/>')}${run(' ')}${run('notbold', '<w:b w:val="0"/><w:u w:val="none"/>')}</w:p>
+<w:p>${run('styledword', '<w:rFonts w:ascii="Georgia" w:hAnsi="Georgia"/><w:sz w:val="28"/><w:color w:val="FF0000"/>')}${run(' H')}${run('2', '<w:vertAlign w:val="subscript"/>')}${run('O and x')}${run('2', '<w:vertAlign w:val="superscript"/>')}</w:p>
+<w:p>${run('emphaticword', '<w:rStyle w:val="Emphasis"/>')}${run(' and ')}${run('markedword', '<w:highlight w:val="yellow"/>')}</w:p>
+<w:p><w:pPr><w:pStyle w:val="Caption"/></w:pPr>${run('Figure 1. A caption.')}</w:p>
+<w:p><w:r><w:br w:type="page"/></w:r></w:p>
+<w:p>${run('Before break ')}<w:r><w:br w:type="page"/></w:r>${run('After break')}</w:p>
+<w:p>${run('Visit ')}<w:hyperlink r:id="rId10">${run('webcitation', '<w:b/>')}</w:hyperlink>${run(' or ')}<w:hyperlink r:id="rId11">${run('mailtolink')}</w:hyperlink>${run(' or ')}<w:hyperlink r:id="rId12">${run('filelink')}</w:hyperlink>${run(' or ')}<w:hyperlink r:id="rId13">${run('scriptlink')}</w:hyperlink>${run(' or ')}<w:hyperlink w:anchor="_Toc1">${run('anchorlink')}</w:hyperlink>${run(' or ')}<w:hyperlink r:id="rId14">${run('internallink')}</w:hyperlink>${run(' or ')}<w:hyperlink r:id="rId99">${run('danglinglink')}</w:hyperlink></w:p>
+<w:p><w:pPr><w:jc w:val="both"/><w:spacing w:before="240" w:after="120" w:line="360" w:lineRule="auto"/><w:ind w:left="720" w:firstLine="360"/></w:pPr>${run('justified paragraph')}</w:p>
+<w:p><w:pPr><w:spacing w:line="280" w:lineRule="exact"/><w:ind w:left="720" w:hanging="360"/></w:pPr>${run('hanging paragraph')}</w:p>
+<w:p><w:pPr><w:outlineLvl w:val="1"/></w:pPr>${run('outline heading')}</w:p>
+<w:p><w:pPr><w:keepNext/><w:tabs><w:tab w:val="left" w:pos="720"/></w:tabs></w:pPr>${run('keep with next')}</w:p>
+<w:p><w:smartTag w:uri="urn:schemas-microsoft-com:office:smarttags" w:element="place">${run('Denver')}</w:smartTag>${run(' is high.')}</w:p>
+<w:p>${run('lead ')}<w:r><w:t>a</w:t><w:tab/><w:t>b</w:t><w:br/><w:t xml:space="preserve"> c </w:t><w:noBreakHyphen/><w:t>d</w:t></w:r><w:r><w:t>   trimmed   </w:t></w:r></w:p>
+<w:p>${run('Equation: ')}<m:oMath><m:r><m:t>x+1</m:t></m:r></m:oMath>${run(' after.')}</w:p>
+<w:p>${run('See note')}<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:footnoteReference w:id="2"/></w:r>${run(' end.')}</w:p>
+<w:p>${run('Revised ')}<w:ins w:id="7" w:author="Reviewer" w:date="2026-01-01T00:00:00Z"><w:r><w:t>insertedword</w:t></w:r></w:ins>${run(' text.')}</w:p>
+<w:p>${run('Control: ')}<w:sdt><w:sdtPr><w:tag w:val="my_control"/></w:sdtPr><w:sdtContent>${run('controlled')}</w:sdtContent></w:sdt></w:p>
+<w:p/>
+<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:body></w:document>`;
+
+const goog = (n: number, inner: string) =>
+  `<w:sdt><w:sdtPr><w:tag w:val="goog_rdk_${n}"/></w:sdtPr><w:sdtContent>${inner}</w:sdtContent></w:sdt>`;
+
+const GOOGLE_EXPORT = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="${W}" xmlns:r="${R}"><w:body>
+<w:p>${goog(0, run('wrappedonce'))}</w:p>
+<w:p>${goog(1, run('outer ') + goog(2, run('wrappedtwice', '<w:b/>')))}</w:p>
+<w:p>${run('Plain tail.')}</w:p>
+<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:body></w:document>`;
+
+function basePackage(
+  opts: { main?: string; documentXml?: string; stylesXml?: string | null; relsXml?: string; extra?: Record<string, string | Uint8Array>; contentTypesXml?: string } = {},
+): JSZip {
   const zip = new JSZip();
   const add = (name: string, body: string | Uint8Array) => zip.file(name, body, FILE_OPTS);
-  add('[Content_Types].xml', contentTypes(opts.main ?? CT_MAIN));
+  add('[Content_Types].xml', opts.contentTypesXml ?? contentTypes(opts.main ?? CT_MAIN));
   add('_rels/.rels', ROOT_RELS);
   add('word/document.xml', opts.documentXml ?? DOCUMENT);
-  add('word/_rels/document.xml.rels', DOC_RELS);
+  add('word/_rels/document.xml.rels', opts.relsXml ?? DOC_RELS);
+  for (const [name, body] of Object.entries(opts.extra ?? {})) add(name, body);
   if (opts.stylesXml !== null) add('word/styles.xml', opts.stylesXml ?? STYLES);
   return zip;
 }
@@ -280,6 +336,22 @@ const fixtures: Record<string, () => Promise<Uint8Array>> = {
   'no-styles.docx': () => build(basePackage({ stylesXml: null })),
 
   'bad-styles.docx': () => build(basePackage({ stylesXml: STYLES.slice(0, STYLES.indexOf('<w:name') + 8) })),
+
+  'body-basics.docx': () =>
+    build(basePackage({ documentXml: BODY_BASICS, stylesXml: STYLES_BODY, relsXml: BODY_RELS })),
+
+  'google-export.docx': () =>
+    build(
+      basePackage({
+        documentXml: GOOGLE_EXPORT,
+        contentTypesXml: contentTypes(CT_MAIN).replace(
+          '<Override',
+          '<Default Extension="odttf" ContentType="application/vnd.openxmlformats-officedocument.obfuscatedFont"/><Override',
+        ),
+        // Not a real font: only the part's presence under word/fonts/ matters to the reader.
+        extra: { 'word/fonts/font1.odttf': new Uint8Array(64).fill(0x4f) },
+      }),
+    ),
 
   'truncated.docx': () =>
     build(basePackage({ documentXml: DOCUMENT.slice(0, DOCUMENT.indexOf('<w:t>Second') + '<w:t>Sec'.length) })),

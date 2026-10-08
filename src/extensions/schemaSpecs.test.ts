@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { getSpecSchema, getSpecExtensions } from './schemaSpecs';
 import { getDocSchema } from './schema';
 
@@ -35,11 +35,33 @@ describe('worker-safe schema specs', () => {
     expect(src).not.toMatch(/\.tsx'/);
   });
 
-  it('src/docx stays free of React and of the editor schema', () => {
-    for (const f of ['../docx/preserve/refs.ts', '../docx/preserve/xml.ts']) {
+  it('keeps every spec and preserve module free of React, node views and .tsx imports', () => {
+    const files = ['./specs/', './preserve/'].flatMap(dir =>
+      readdirSync(new URL(dir, import.meta.url))
+        .filter(f => /\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f))
+        .map(f => dir + f),
+    );
+    // guard against a vacuous scan: the directories really do hold the modules this protects
+    expect(files).toEqual(expect.arrayContaining(['./specs/citation.ts', './specs/pageBreak.ts', './specs/runMarks.ts', './preserve/OpaqueNodes.ts']));
+    for (const f of files) {
+      const src = read(f);
+      expect(src, f).not.toMatch(/@tiptap\/react|ReactNodeViewRenderer|from 'react'|addNodeView/);
+      expect(src, f).not.toMatch(/\.tsx'/);
+    }
+  });
+
+  it('src/docx stays free of React, DOM globals and the editor schema (it must run in a worker)', () => {
+    const walk = (dir: string): string[] =>
+      readdirSync(new URL(dir, import.meta.url), { withFileTypes: true }).flatMap(e =>
+        e.isDirectory() ? walk(`${dir}${e.name}/`) : /\.tsx?$/.test(e.name) && !/\.test\.tsx?$/.test(e.name) ? [`${dir}${e.name}`] : [],
+      );
+    const files = walk('../docx/');
+    expect(files).toEqual(expect.arrayContaining(['../docx/preserve/refs.ts', '../docx/preserve/xml.ts', '../docx/read/runs.ts', '../docx/read/paragraphs.ts']));
+    for (const f of files) {
       const src = read(f);
       expect(src, f).not.toMatch(/@tiptap\/react|from 'react'/);
       expect(src, f).not.toMatch(/extensions\/schema'/);
+      expect(src, f).not.toMatch(/\bwindow\.|\bdocument\.(create|get|query)|new Blob\(|localStorage/);
     }
   });
 

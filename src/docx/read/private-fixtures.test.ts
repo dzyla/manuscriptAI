@@ -11,6 +11,15 @@ import { readStyles } from './styles';
 import { readPageSetup } from './pageSetup';
 import { mainDocumentPart } from './opc';
 import { createReport } from '../fidelity';
+import type { JSONContent } from '@tiptap/core';
+import { emptyPreservationStore } from '../preserve/types';
+import { isBlockUntouched } from '../preserve/hash';
+import { parseXml } from '../preserve/xml';
+import { getSpecSchema } from '../../extensions/schemaSpecs';
+import { W_NS, isW } from './ooxml';
+import { blockChildren, readParagraph } from './paragraphs';
+import { isGoogleSdt } from './sdt';
+import type { ReadContext } from './context';
 
 const dir = new URL('../../../fixtures/private/', import.meta.url);
 const docs = existsSync(dir) ? readdirSync(dir).filter(f => f.toLowerCase().endsWith('.docx')) : [];
@@ -71,6 +80,94 @@ describe.skipIf(docs.length === 0)('private real-world documents', () => {
         `${[...headingLevelByStyleId.values()].filter(l => l === 1).length}/${[...headingLevelByStyleId.values()].filter(l => l === 2).length}/${[...headingLevelByStyleId.values()].filter(l => l === 3).length} heading styles L1/L2/L3, ` +
         `${kept} carry preserved XML, defaults ${format.defaults.fontSizePt}pt, page ${page.size} margins in T${page.marginsIn.top.toFixed(2)} R${page.marginsIn.right.toFixed(2)} B${page.marginsIn.bottom.toFixed(2)} L${page.marginsIn.left.toFixed(2)}, ` +
         `${extraSections} extra sections, ${report.warnings.length} warnings`,
+    );
+  });
+
+  it.each(docs)('%s: body paragraphs read sanely, nothing dropped, provenance holds', async name => {
+    const b = readFileSync(new URL(name, dir));
+    const pkg = await openPackage(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer);
+    const report = createReport();
+    let n = 0;
+    const ctx: ReadContext = {
+      pkg,
+      styles: readStyles(pkg, report),
+      report,
+      preservation: emptyPreservationStore(),
+      assets: [],
+      nextId: () => `b${++n}`,
+    };
+    const body = pkg.xml(mainDocumentPart(pkg))!.getElementsByTagNameNS(W_NS, 'body')[0];
+    const children = blockChildren(body, ctx);
+    const blockLevelWrappers = report.counts.googleWrapper ?? 0;
+    const sources = children.filter(el => isW(el, 'p'));
+    const otherBlocks = children.length - sources.length;
+    const blocks = sources.flatMap(p => [readParagraph(p, ctx)].flat());
+    const doc: JSONContent = { type: 'doc', content: blocks };
+
+    // counts only: no document text is ever printed
+    const count = (n: JSONContent, pred: (n: JSONContent) => boolean): number =>
+      (pred(n) ? 1 : 0) + (n.content ?? []).reduce((a, c) => a + count(c, pred), 0);
+    const headings = count(doc, x => x.type === 'heading');
+    const paragraphs = count(doc, x => x.type === 'paragraph');
+    const atoms = count(doc, x => x.type === 'opaqueInline');
+    const pageBreaks = count(doc, x => x.type === 'pageBreak');
+    const links = count(doc, x => !!x.marks?.some(m => m.type === 'link'));
+
+    // 1. one node per source paragraph, every one with provenance that holds
+    expect(blocks).toHaveLength(sources.length);
+    expect(sources.length).toBeGreaterThan(0);
+    expect(headings + paragraphs).toBe(blocks.length);
+    // Headings are counted independently from the DOM: a Heading-styled paragraph or a direct outline level 1-3.
+    // (Both real documents use direct formatting for their section titles, so 0 is the honest answer.)
+    const expectedHeadings = sources.filter(p => {
+      const pPr = Array.from(p.childNodes).find(c => c.nodeType === 1 && isW(c as Element, 'pPr')) as Element | undefined;
+      const style = pPr?.getElementsByTagNameNS(W_NS, 'pStyle')[0]?.getAttributeNS(W_NS, 'val') ?? '';
+      const outline = pPr?.getElementsByTagNameNS(W_NS, 'outlineLvl')[0]?.getAttributeNS(W_NS, 'val');
+      return ctx.styles.headingLevelByStyleId.has(ctx.styles.styleIdByWordId.get(style) ?? '') || (outline !== undefined && Number(outline) <= 2);
+    }).length;
+    expect(headings).toBe(expectedHeadings);
+    expect(blocks.filter(x => !isBlockUntouched(x))).toHaveLength(0);
+    expect(Object.keys(ctx.preservation.blocks)).toHaveLength(blocks.length);
+
+    // 2. the assembled document is a valid document, and provenance survives schema normalization
+    const node = getSpecSchema().nodeFromJSON(doc);
+    expect(() => node.check()).not.toThrow();
+    const normalized = node.toJSON() as JSONContent;
+    expect(normalized.content!.filter(x => !isBlockUntouched(x))).toHaveLength(0);
+
+    // 3. every Google Docs wrapper the reader can reach was unwrapped. Wrappers inside a table (Task 8) or inside
+    //    an element kept whole as an opaque atom (a tracked insertion, a drawing) stay in that element's fragment.
+    const KEPT_WHOLE = ['tbl', 'ins', 'del', 'moveFrom', 'moveTo', 'drawing', 'pict', 'object'];
+    const keptWhole = (el: Element): boolean => {
+      for (let p = el.parentNode; p; p = p.parentNode) {
+        if (p.nodeType === 1 && (p as Element).namespaceURI === W_NS && KEPT_WHOLE.includes((p as Element).localName)) return true;
+      }
+      return false;
+    };
+    const allSdts = Array.from(body.getElementsByTagNameNS(W_NS, 'sdt'));
+    const googleExpected = allSdts.filter(e => isGoogleSdt(e) && !keptWhole(e)).length;
+    expect(report.counts.googleWrapper ?? 0).toBe(googleExpected);
+    const googleInsideFragments = allSdts.filter(e => isGoogleSdt(e) && keptWhole(e)).length;
+    expect(report.byCategory[3]).toBe(atoms);
+
+    // 4. no text dropped: every non-blank w:t character is in the document text or in a preserved fragment
+    const strip = (s: string) => s.replace(/\s+/g, '');
+    const docText = (x: JSONContent): string => (x.type === 'text' ? x.text ?? '' : (x.content ?? []).map(docText).join(''));
+    const wText = (root: Element): string =>
+      Array.from(root.getElementsByTagNameNS(W_NS, 't')).map(t => t.textContent ?? '').join('');
+    const sourceChars = strip(sources.map(wText).join('')).length;
+    const noBreakHyphens = sources.reduce((a, p) => a + p.getElementsByTagNameNS(W_NS, 'noBreakHyphen').length, 0);
+    const fragmentChars = strip(
+      Object.values(ctx.preservation.fragments).map(f => wText(parseXml(f.xml).documentElement)).join(''),
+    ).length;
+    const docChars = strip(docText(doc)).length;
+    expect(docChars + fragmentChars).toBe(sourceChars + noBreakHyphens);
+
+    console.log(
+      `body: ${sources.length} paragraphs read (${headings} headings, ${paragraphs} body), ${otherBlocks} non-paragraph body blocks left to later tasks, ` +
+        `${report.counts.googleWrapper ?? 0} Google wrappers unwrapped (${blockLevelWrappers} at block level, ${googleInsideFragments} more kept inside preserved fragments), ${atoms} opaque atoms ` +
+        `(${Object.values(ctx.preservation.fragments).length} fragments), ${pageBreaks} page breaks, ${links} linked runs, ` +
+        `${Object.keys(ctx.preservation.blocks).length} block fragments, ${report.warnings.length} warnings, text chars conserved ${docChars}+${fragmentChars}=${sourceChars + noBreakHyphens}`,
     );
   });
 });

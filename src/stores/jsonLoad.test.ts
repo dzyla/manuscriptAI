@@ -52,16 +52,16 @@ describe('loading the document as JSON', () => {
   });
 
   it('hands the loaded JSON to the editor; an attribute with no HTML mapping only survives that path', async () => {
-    // Stand-in for the style ids / run properties later A2a tasks add: never rendered to HTML, so HTML cannot carry it.
+    // Stand-in for any attribute that has no HTML mapping (the real styleId and run marks now have one): HTML cannot carry it.
     const HiddenAttr = Extension.create({
       name: 'hiddenAttrForTest',
       addGlobalAttributes() {
-        return [{ types: ['paragraph'], attributes: { styleId: { default: null, rendered: false } } }];
+        return [{ types: ['paragraph'], attributes: { hiddenForTest: { default: null, rendered: false } } }];
       },
     });
     const doc = {
       type: 'doc',
-      content: [{ type: 'paragraph', attrs: { styleId: 'Heading1Like' }, content: [{ type: 'text', text: 'Imported paragraph.' }] }],
+      content: [{ type: 'paragraph', attrs: { hiddenForTest: 'Heading1Like' }, content: [{ type: 'text', text: 'Imported paragraph.' }] }],
     };
     await db.documents.put({
       id: 'current', title: 'Imported', docJson: doc, schemaVersion: 3,
@@ -73,11 +73,11 @@ describe('loading the document as JSON', () => {
 
     // The pre-fix path: feeding the derived HTML drops the attribute.
     const viaHtml = new Editor({ extensions: [...getSchemaExtensions(), HiddenAttr], content });
-    expect(viaHtml.getJSON().content?.[0].attrs?.styleId).toBeNull();
+    expect(viaHtml.getJSON().content?.[0].attrs?.hiddenForTest).toBeNull();
     viaHtml.destroy();
     // The fixed path: feeding the pending JSON keeps it.
     const viaJson = new Editor({ extensions: [...getSchemaExtensions(), HiddenAttr], content: pendingDocument! });
-    expect(viaJson.getJSON().content?.[0].attrs?.styleId).toBe('Heading1Like');
+    expect(viaJson.getJSON().content?.[0].attrs?.hiddenForTest).toBe('Heading1Like');
     viaJson.destroy();
 
     useDocumentStore.getState().clearPendingDocument();
