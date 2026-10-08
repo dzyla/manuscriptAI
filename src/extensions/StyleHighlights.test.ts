@@ -260,6 +260,23 @@ describe('replaceRangeWithText preserves the surrounding block and marks', () =>
     }
   });
 
+  it('rejects a doc-level range and a range between list siblings, leaving the document byte-identical', () => {
+    for (const text of ['Z Q', 'Z\nQ']) {
+      const e = mk('<p>abc def</p>');
+      const before = JSON.stringify(e.getJSON());
+      expect(replaceRangeWithText(e, 0, 9, text)).toBe(false);
+      expect(JSON.stringify(e.getJSON())).toBe(before);
+      e.destroy();
+
+      const l = mk('<ul><li><p>one</p></li><li><p>two</p></li></ul>');
+      const lbefore = JSON.stringify(l.getJSON());
+      // 1 = before first <li>, 11 = after second <li>: both endpoints sit between siblings in the bulletList
+      expect(replaceRangeWithText(l, 1, l.state.doc.content.size - 1, text)).toBe(false);
+      expect(JSON.stringify(l.getJSON())).toBe(lbefore);
+      l.destroy();
+    }
+  });
+
   it('rejects multi-line text in a code block but allows single-line text there', () => {
     const e = mk('<pre><code>abc def ghi</code></pre>');
     const before = JSON.stringify(e.getJSON());
@@ -341,10 +358,13 @@ describe('StyleHighlights audit gating', () => {
 
       throwOnReport = true;
       const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-      editor.commands.insertContentAt(1, 'C ');
-      expect(() => vi.advanceTimersByTime(60)).not.toThrow();
-      expect(errSpy).toHaveBeenCalledTimes(1);
-      errSpy.mockRestore();
+      try {
+        editor.commands.insertContentAt(1, 'C ');
+        expect(() => vi.advanceTimersByTime(60)).not.toThrow();
+        expect(errSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        errSpy.mockRestore();
+      }
       editor.destroy();
     } finally {
       vi.useRealTimers();

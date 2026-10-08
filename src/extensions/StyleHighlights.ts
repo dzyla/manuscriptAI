@@ -161,7 +161,8 @@ export const StyleHighlights = Extension.create<StyleHighlightsOptions, { enable
  * - The inserted text carries the marks of the replaced range: `marksAcross` takes the
  *   marks of the first run in the range (bold-then-italic yields bold), matching TipTap's
  *   own `insertText`.
- * - The range must lie inside ONE block (same parent at both ends); a range crossing a block
+ * - The range must lie inside the inline content of ONE block (same parent at both ends, and
+ *   that parent holds inline content, so doc-level / between-sibling ranges are rejected); a range crossing a block
  *   boundary (e.g. stale offsets) is rejected rather than merging blocks.
  * - Multi-line text is rejected when the target block cannot hold a hardBreak (e.g. a code
  *   block); single-line text is still allowed there.
@@ -182,7 +183,7 @@ export function replaceRangeWithText(editor: Editor, from: number, to: number, t
   const schema = doc0.type.schema;
   const $from0 = doc0.resolve(from);
   const $to0 = doc0.resolve(to);
-  if (!$from0.sameParent($to0)) return false;
+  if (!$from0.sameParent($to0) || !$from0.parent.inlineContent) return false;
   if (lines.length > 1 && !$from0.parent.canReplaceWith($from0.index(), $to0.index(), schema.nodes.hardBreak)) return false;
   return editor.commands.command(({ tr, dispatch }) => {
     const { doc } = tr;
