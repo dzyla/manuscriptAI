@@ -224,13 +224,6 @@ describe('openPackage: alias entries (JSZip collapses ., empty and .. segments)'
       await expect(openPackage(buf), name).rejects.toMatchObject({ code: 'bad-path' });
     }
   });
-
-  it('still rejects collapsed aliases when the name check alone would let them through', async () => {
-    // Guard (b): the record count from the raw central directory must equal what JSZip ends up with.
-    // alias.docx has 6 records but JSZip keeps 5; this is the check that notices, independent of names.
-    const probe = await JSZip.loadAsync(load('alias.docx'));
-    expect(Object.keys(probe.files)).toHaveLength(5);
-  });
 });
 
 describe('openPackage: part names are case-insensitive', () => {
@@ -258,26 +251,31 @@ describe('openPackage: eager budget and deferred parts', () => {
     expect(pkg.deferred()).toEqual([]);
   });
 
-  it('defers non-XML parts: absent from sync accessors, readable asynchronously', async () => {
+  it('defers non-XML parts: sync accessors throw, async accessors read them', async () => {
     const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
     const buf = await minimalWith(zip => zip.file('word/media/image1.png', png, { createFolders: false }));
     const pkg = await openPackage(buf);
     expect(pkg.names()).toContain('word/media/image1.png');
     expect(pkg.deferred()).toEqual(['word/media/image1.png']);
-    expect(pkg.bytes('word/media/image1.png')).toBeUndefined();
+    expect(() => pkg.bytes('word/media/image1.png')).toThrowError(expect.objectContaining({ code: 'too-large' }));
     expect(Array.from((await pkg.bytesAsync('WORD/media/image1.png'))!)).toEqual(Array.from(png));
     expect(await pkg.bytesAsync('word/media/missing.png')).toBeUndefined();
   });
 
-  it('defers an XML part that does not fit the eager budget, but still serves it via the async accessors', async () => {
+  it('defers an XML part that does not fit the eager budget: sync accessors THROW (never read as absent), async accessors serve it', async () => {
     const pkg = await openPackage(load('minimal.docx'), { maxEagerBytes: 700 });
     const deferred = pkg.deferred();
     expect(deferred.length).toBeGreaterThan(0);
     const name = deferred[0];
-    expect(pkg.xml(name)).toBeUndefined();
-    expect(pkg.entry(name)).toBeUndefined();
+    const tooLarge = expect.objectContaining({ code: 'too-large' });
+    expect(() => pkg.xml(name)).toThrowError(tooLarge);
+    expect(() => pkg.entry(name)).toThrowError(tooLarge);
+    expect(() => pkg.bytes(name)).toThrowError(tooLarge);
+    expect(pkg.xml('word/not-a-part.xml')).toBeUndefined(); // genuinely absent still reads as absent
     expect((await pkg.entryAsync(name))!.length).toBeGreaterThan(0);
-    expect(await pkg.xmlAsync(name)).toBeDefined();
+    const doc = await pkg.xmlAsync(name);
+    expect(doc).toBeDefined();
+    expect(await pkg.xmlAsync(name)).toBe(doc); // cached, not re-inflated and re-parsed
     expect(pkg.names()).toContain(name);
   });
 
@@ -303,8 +301,21 @@ describe('openPackage: eager budget and deferred parts', () => {
     });
     expect(calls).not.toContain('word/media/x.bin');
     expect(pkg!.deferred()).toEqual(['word/media/x.bin']);
-    // Asking for it is where the lie is caught: the real stream is far shorter than declared.
-    await expect(pkg!.bytesAsync('word/media/x.bin')).rejects.toMatchObject({ code: expect.stringMatching(/corrupt|bomb/) });
+    // Asking for it is refused up front by maxPartBytes: no 299 MB buffer is ever allocated.
+    const asyncCalls = await spyInflations(ab, () =>
+      expect(pkg!.bytesAsync('word/media/x.bin')).rejects.toMatchObject({ code: 'too-large' }),
+    );
+    expect(asyncCalls).toEqual([]);
+  });
+
+  it('bounds an on-demand read by maxPartBytes before allocating, and the cap is overridable', async () => {
+    const png = new Uint8Array(5000).map((_, i) => (i * 31) & 255);
+    const buf = await minimalWith(zip => zip.file('word/media/m.png', png, { createFolders: false }));
+    const small = await openPackage(buf, { maxPartBytes: 1000 });
+    await expect(small.bytesAsync('word/media/m.png')).rejects.toMatchObject({ code: 'too-large' });
+    await expect(small.entryAsync('word/media/m.png')).rejects.toMatchObject({ code: 'too-large' });
+    const roomy = await openPackage(buf, { maxPartBytes: 10_000 });
+    expect((await roomy.bytesAsync('word/media/m.png'))!.length).toBe(5000);
   });
 });
 
@@ -322,5 +333,26 @@ describe('openPackage: API contracts', () => {
     const pkg = await openPackage(empty);
     expect(() => pkg.rels('word/document.xml')).toThrowError(expect.objectContaining({ code: 'corrupt' }));
     expect((await openPackage(load('minimal.docx'))).rels('word/styles.xml').size).toBe(0);
+  });
+});
+
+describe('openPackage: local-header name divergence (JSZip trusts the local header)', () => {
+  it('refuses a case-variant alias whose local-header name differs from its central name', async () => {
+    // Central name zzzz/document.xml, local name word/DOCUMENT.xml. Previously opened, and
+    // entry("WORD/Document.xml") returned the attacker's part.
+    await expect(openPackage(load('local-name-case-alias.docx'))).rejects.toMatchObject({ code: 'corrupt' });
+  });
+
+  it('refuses a [Content_Types].xml decoy that would hide a macro-enabled real one', async () => {
+    // Previously opened with the benign decoy's content types, bypassing the macro refusal. It is now
+    // refused at the name check, before anything is inflated (so the code is corrupt, not macro).
+    const calls = await spyInflations(load('content-types-decoy.docx'), () =>
+      expect(openPackage(load('content-types-decoy.docx'))).rejects.toMatchObject({ code: 'corrupt' }),
+    );
+    expect(calls).toEqual([]);
+  });
+
+  it('still refuses the same macro-enabled content type as macro when there is no decoy', async () => {
+    await expect(openPackage(load('macro-content-type.docx'))).rejects.toMatchObject({ code: 'macro' });
   });
 });

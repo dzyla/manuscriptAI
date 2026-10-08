@@ -20,6 +20,12 @@
  *   duplicate.docx minimal + two central-directory entries with the same name
  *   alias.docx     minimal + "./word/document.xml" appended: JSZip collapses it onto the real part
  *   alias-empty-segment.docx  same, with "word//document.xml"
+ *   local-name-case-alias.docx  minimal + an entry whose CENTRAL name is zzzz/document.xml but whose
+ *                   LOCAL-header name is word/DOCUMENT.xml (JSZip trusts the local header)
+ *   content-types-decoy.docx  the real [Content_Types].xml declares a macro-enabled main part; a decoy
+ *                   benign one, listed first, has central name [Content_Types].xmz / local name
+ *                   [Content_Types].XML so a first-match, case-insensitive lookup would pick it
+ *   macro-content-type.docx  macro-enabled main content type but no vbaProject part (the content-type check alone)
  *   truncated.docx  valid zip whose word/document.xml is cut mid-element
  */
 process.env.TZ = 'UTC'; // must precede any Date use so zip timestamps are reproducible
@@ -82,6 +88,19 @@ function find(buf: Uint8Array, sig: number, from = 0): number {
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   for (let i = from; i + 4 <= buf.length; i++) if (dv.getUint32(i, true) === sig) return i;
   return -1;
+}
+
+/** Overwrite the first occurrence of `from` (the local header, which precedes the central directory) with `to`. */
+function patchFirst(buf: Uint8Array, from: string, to: string): void {
+  if (from.length !== to.length) throw new Error('patchFirst needs equal-length names');
+  const f = new TextEncoder().encode(from);
+  for (let i = 0; i + f.length <= buf.length; i++) {
+    if (f.every((b, k) => buf[i + k] === b)) {
+      buf.set(new TextEncoder().encode(to), i);
+      return;
+    }
+  }
+  throw new Error(`patchFirst: ${from} not found`);
 }
 
 const fixtures: Record<string, () => Promise<Uint8Array>> = {
@@ -160,6 +179,29 @@ const fixtures: Record<string, () => Promise<Uint8Array>> = {
     zip.file('word//document.xml', '<w:document xmlns:w="urn:x"><w:body>ALIAS</w:body></w:document>', FILE_OPTS);
     return build(zip);
   },
+
+  'local-name-case-alias.docx': async () => {
+    const zip = basePackage();
+    zip.file('zzzz/document.xml', '<pwn>PWNED</pwn>', FILE_OPTS);
+    const buf = await build(zip);
+    patchFirst(buf, 'zzzz/document.xml', 'word/DOCUMENT.xml'); // local header only; central keeps zzzz/
+    return buf;
+  },
+
+  'content-types-decoy.docx': async () => {
+    const zip = new JSZip();
+    // Decoy first, so a first-match search finds it before the real part.
+    zip.file('[Content_Types].xmz', contentTypes(CT_MAIN), FILE_OPTS);
+    zip.file('[Content_Types].xml', contentTypes(CT_MACRO), FILE_OPTS);
+    zip.file('_rels/.rels', ROOT_RELS, FILE_OPTS);
+    zip.file('word/document.xml', DOCUMENT, FILE_OPTS);
+    zip.file('word/styles.xml', STYLES, FILE_OPTS);
+    const buf = await build(zip);
+    patchFirst(buf, '[Content_Types].xmz', '[Content_Types].XML'); // local header only
+    return buf;
+  },
+
+  'macro-content-type.docx': () => build(basePackage({ main: CT_MACRO })),
 
   'truncated.docx': () =>
     build(basePackage({ documentXml: DOCUMENT.slice(0, DOCUMENT.indexOf('<w:t>Second') + '<w:t>Sec'.length) })),

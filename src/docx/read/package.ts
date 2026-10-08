@@ -12,11 +12,13 @@
  * 300 MB uncompressed ceiling into memory, only parts that [Content_Types].xml identifies as XML
  * are eager, and only while their total stays within a 64 MB budget (`maxEagerBytes`). Everything
  * else (media, fonts, unknown binaries, and any XML part that did not fit the budget) is
- * "deferred": the sync accessors return `undefined` for it exactly as for an absent part, and it
- * is reachable only through `bytesAsync` / `entryAsync` / `xmlAsync`. `deferred()` lists them, so
- * a caller that must distinguish "absent" from "deferred" can. Deferred parts are inflated on
- * demand, bounded by their declared size, and not cached. Ordinary documents (a few MB in total)
- * are entirely on the sync path for their XML; images always need `bytesAsync`.
+ * "deferred": the sync accessors THROW DocxOpenError('too-large') for it (never `undefined`, which
+ * means "part absent / feature not present" to every consumer, so a document whose XML overflowed
+ * the budget cannot silently read as empty). A deferred part is reachable only through
+ * `bytesAsync` / `entryAsync` / `xmlAsync`; `deferred()` lists them. On-demand reads are bounded
+ * by the declared size and by `maxPartBytes` (32 MB) BEFORE anything is allocated. Deferred XML
+ * parsed via `xmlAsync` is cached; raw deferred bytes are not. Ordinary documents (a few MB in
+ * total) are entirely on the sync path for their XML; media always needs `bytesAsync`.
  */
 import JSZip from 'jszip';
 import { parseXmlStrict } from '../preserve/xml';
@@ -40,9 +42,14 @@ export const DEFAULT_LIMITS: Readonly<PackageLimits> = Object.freeze({
 /** Total uncompressed bytes of XML parts that openPackage inflates eagerly for the sync accessors. */
 export const DEFAULT_EAGER_BYTES = 64e6;
 
+/** Largest single part the async accessors will inflate on demand (they allocate its declared size up front). */
+export const DEFAULT_MAX_PART_BYTES = 32e6;
+
 export interface OpenOptions extends Partial<PackageLimits> {
   /** Eager (sync-path) inflation budget; see the header comment. Default 64 MB. */
   maxEagerBytes?: number;
+  /** Per-part cap for on-demand async reads of deferred parts. Default 32 MB. */
+  maxPartBytes?: number;
 }
 
 export type DocxOpenErrorCode =
@@ -64,11 +71,11 @@ export class DocxOpenError extends Error {
 }
 
 export interface DocxPackage {
-  /** Part as UTF-8 text; undefined when absent OR deferred (see `deferred()`). */
+  /** Part as UTF-8 text; undefined when absent; throws DocxOpenError('too-large') when the part is deferred (use `entryAsync`). */
   entry(path: string): string | undefined;
-  /** Raw part bytes (shared, do not mutate); undefined when absent OR deferred. */
+  /** Raw part bytes (shared, do not mutate); undefined when absent; throws DocxOpenError('too-large') when deferred (use `bytesAsync`). */
   bytes(path: string): Uint8Array | undefined;
-  /** Part parsed as XML (cached, treat as read-only); undefined when absent OR deferred; throws DocxOpenError('corrupt') when malformed. */
+  /** Part parsed as XML (cached, treat as read-only); undefined when absent; throws DocxOpenError('corrupt') when malformed and DocxOpenError('too-large') when deferred (use `xmlAsync`). */
   xml(path: string): Document | undefined;
   /**
    * Relationships of a part (`''` for the package itself), keyed by Id; an empty map when the part has no
@@ -81,7 +88,7 @@ export interface DocxPackage {
   names(): string[];
   /** Parts that exist but are only readable through the async accessors. */
   deferred(): string[];
-  /** Async counterparts that also serve deferred parts (inflated on demand, bounded, not cached). */
+  /** Async counterparts that also serve deferred parts (inflated on demand; throw 'too-large' above maxPartBytes). */
   bytesAsync(path: string): Promise<Uint8Array | undefined>;
   entryAsync(path: string): Promise<string | undefined>;
   xmlAsync(path: string): Promise<Document | undefined>;
@@ -118,9 +125,10 @@ function checkEntryName(raw: string): void {
 /**
  * Walk the raw central directory (names and counts only) before JSZip builds an object per
  * record, so a file claiming a million empty entries is rejected without allocating them.
- * Returns the number of records so the caller can detect JSZip collapsing aliased names.
+ * Returns the vetted central-directory names so the caller can require that JSZip (which takes
+ * the authoritative name from the LOCAL header) ends up with exactly the same set.
  */
-function scanCentralDirectory(data: ArrayBuffer, limits: PackageLimits): number {
+function scanCentralDirectory(data: ArrayBuffer, limits: PackageLimits): string[] {
   const u8 = new Uint8Array(data);
   const dv = new DataView(data);
   if (u8.length < 22) throw new DocxOpenError('not-docx', 'not a zip archive');
@@ -148,10 +156,10 @@ function scanCentralDirectory(data: ArrayBuffer, limits: PackageLimits): number 
 
   const seen = new Set<string>();
   const decoder = new TextDecoder('utf-8');
-  let count = 0;
+  const names: string[] = [];
   while (at(pos)) {
     // Count by walking records, not by the (forgeable) header total.
-    if (++count > limits.maxEntries) {
+    if (names.length + 1 > limits.maxEntries) {
       throw new DocxOpenError('too-many-entries', `package has more than ${limits.maxEntries} entries`);
     }
     const nameLen = dv.getUint16(pos + 28, true);
@@ -163,9 +171,10 @@ function scanCentralDirectory(data: ArrayBuffer, limits: PackageLimits): number 
     const key = name.replace(/\\/g, '/').toLowerCase(); // OPC part names are case-insensitive
     if (seen.has(key)) throw new DocxOpenError('corrupt', `duplicate entry name: ${JSON.stringify(name.slice(0, 120))}`);
     seen.add(key);
+    names.push(name);
     pos += 46 + nameLen + extraLen + commentLen;
   }
-  return count;
+  return names;
 }
 
 interface SizeInfo {
@@ -310,6 +319,10 @@ function isXmlPart(types: ContentTypes, path: string): boolean {
 class Package implements DocxPackage {
   /** lowercased part name -> real name (OPC part names are case-insensitive); covers deferred parts too. */
   private readonly index = new Map<string, string>();
+  /**
+   * Parsed-DOM cache. UNBOUNDED: up to 64 MB of eager XML can become several hundred MB of parsed
+   * DOM once every part is parsed (Task 5 must bound or release what it no longer needs).
+   */
   private readonly docs = new Map<string, Document>();
   private readonly relCache = new Map<string, Map<string, PackageRel>>();
 
@@ -319,6 +332,7 @@ class Package implements DocxPackage {
     private readonly sizes: Map<string, number>,
     private readonly types: ContentTypes,
     readonly original: ArrayBuffer,
+    private readonly maxPartBytes: number,
   ) {
     for (const name of files.keys()) this.index.set(name.toLowerCase(), name);
   }
@@ -327,6 +341,15 @@ class Package implements DocxPackage {
     const p = path.replace(/^\/+/, '');
     if (this.files.has(p)) return p;
     return this.index.get(p.toLowerCase());
+  }
+
+  /** Resolve for a sync read: undefined if absent, throws if the part exists but was deferred. */
+  private resolveEager(path: string): string | undefined {
+    const name = this.resolve(path);
+    if (name !== undefined && !this.parts.has(name)) {
+      throw new DocxOpenError('too-large', `${name} is not available synchronously (deferred); use the async accessors`);
+    }
+    return name;
   }
 
   names(): string[] {
@@ -338,7 +361,7 @@ class Package implements DocxPackage {
   }
 
   bytes(path: string): Uint8Array | undefined {
-    const name = this.resolve(path);
+    const name = this.resolveEager(path);
     return name === undefined ? undefined : this.parts.get(name);
   }
 
@@ -348,13 +371,11 @@ class Package implements DocxPackage {
   }
 
   xml(path: string): Document | undefined {
-    const name = this.resolve(path);
+    const name = this.resolveEager(path);
     if (name === undefined) return undefined;
     const cached = this.docs.get(name);
     if (cached) return cached;
-    const bytes = this.parts.get(name);
-    if (!bytes) return undefined;
-    const doc = parseDoc(name, bytes);
+    const doc = parseDoc(name, this.parts.get(name)!);
     this.docs.set(name, doc);
     return doc;
   }
@@ -362,7 +383,14 @@ class Package implements DocxPackage {
   async bytesAsync(path: string): Promise<Uint8Array | undefined> {
     const name = this.resolve(path);
     if (name === undefined) return undefined;
-    return this.parts.get(name) ?? inflateEntry(this.files.get(name)!, name, this.sizes.get(name)!);
+    const hit = this.parts.get(name);
+    if (hit) return hit;
+    // Check the cap BEFORE allocating: inflateEntry preallocates the declared size.
+    const size = this.sizes.get(name)!;
+    if (size > this.maxPartBytes) {
+      throw new DocxOpenError('too-large', `${name} declares ${size} bytes (on-demand read limit ${this.maxPartBytes})`);
+    }
+    return inflateEntry(this.files.get(name)!, name, size);
   }
 
   async entryAsync(path: string): Promise<string | undefined> {
@@ -373,8 +401,11 @@ class Package implements DocxPackage {
   async xmlAsync(path: string): Promise<Document | undefined> {
     const name = this.resolve(path);
     if (name === undefined) return undefined;
-    if (this.parts.has(name)) return this.xml(name);
-    return parseDoc(name, (await this.bytesAsync(name))!);
+    const cached = this.docs.get(name);
+    if (cached) return cached;
+    const doc = parseDoc(name, (await this.bytesAsync(name))!);
+    this.docs.set(name, doc);
+    return doc;
   }
 
   rels(partPath: string): Map<string, PackageRel> {
@@ -411,7 +442,7 @@ class Package implements DocxPackage {
 }
 
 export async function openPackage(data: ArrayBuffer, options: OpenOptions = {}): Promise<DocxPackage> {
-  const { maxEagerBytes = DEFAULT_EAGER_BYTES, ...limitOverrides } = options;
+  const { maxEagerBytes = DEFAULT_EAGER_BYTES, maxPartBytes = DEFAULT_MAX_PART_BYTES, ...limitOverrides } = options;
   const lim: PackageLimits = { ...DEFAULT_LIMITS, ...limitOverrides };
 
   // 1. Cheap checks on the raw bytes: no zip object has been built yet.
@@ -419,7 +450,7 @@ export async function openPackage(data: ArrayBuffer, options: OpenOptions = {}):
   if (data.byteLength > lim.maxCompressedBytes) {
     throw new DocxOpenError('too-large', `file is ${data.byteLength} bytes (limit ${lim.maxCompressedBytes})`);
   }
-  const recordCount = scanCentralDirectory(data, lim);
+  const scanned = scanCentralDirectory(data, lim);
 
   // 2. Read the directory only. loadAsync parses headers; it does not inflate entry data.
   let zip: JSZip;
@@ -432,16 +463,26 @@ export async function openPackage(data: ArrayBuffer, options: OpenOptions = {}):
   if (files.length > lim.maxEntries) {
     throw new DocxOpenError('too-many-entries', `package has ${files.length} entries (limit ${lim.maxEntries})`);
   }
-  // The raw scan saw `recordCount` distinct, vetted names. If JSZip ends up with fewer, it collapsed
-  // aliases (e.g. "./word/document.xml" over "word/document.xml") and a later record would silently
-  // replace an earlier one.
-  if (files.length !== recordCount) {
-    throw new DocxOpenError('bad-path', 'entry names collapse to the same part (alias entries)');
+  // JSZip takes each entry's authoritative name from the LOCAL header (or a 0x7075 Unicode-path extra
+  // field), which the raw central-directory scan never sees. Require the names JSZip ended up with
+  // to equal, as a multiset (case- and slash-normalised), the names we vetted. This closes every
+  // route by which a record could be renamed, collapsed or shadowed (aliases, case variants, header
+  // divergence) in one check, and fails before anything is inflated.
+  const norm = (n: string) => n.replace(/\\/g, '/').toLowerCase();
+  const expected = scanned.map(norm).sort();
+  const actual = files.map(f => norm(f.name)).sort();
+  if (expected.length !== actual.length || expected.some((n, i) => n !== actual[i])) {
+    throw new DocxOpenError('corrupt', 'zip entry names disagree between the central directory and the local headers');
   }
   // JSZip normalises names (e.g. "../x" -> "x") and keeps the original; vet both.
   for (const f of files) {
     checkEntryName(f.name);
-    if (f.unsafeOriginalName !== undefined) checkEntryName(f.unsafeOriginalName);
+    if (f.unsafeOriginalName !== undefined) {
+      checkEntryName(f.unsafeOriginalName);
+      if (norm(f.unsafeOriginalName) !== norm(f.name)) {
+        throw new DocxOpenError('corrupt', 'zip entry name was rewritten while loading');
+      }
+    }
     if (MACRO_NAME.test(f.name.replace(/\\/g, '/'))) throw new DocxOpenError('macro', 'macro-enabled documents are not supported');
   }
 
@@ -485,5 +526,5 @@ export async function openPackage(data: ArrayBuffer, options: OpenOptions = {}):
     eager += size;
   }
 
-  return new Package(parts, new Map(real.map(f => [f.name, f])), sizes, types, data);
+  return new Package(parts, new Map(real.map(f => [f.name, f])), sizes, types, data, maxPartBytes);
 }
