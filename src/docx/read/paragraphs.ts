@@ -13,7 +13,7 @@ import { captureFragment } from '../preserve/xml';
 import { specNormalizeNode } from '../../extensions/schemaSpecs';
 import { warnOnce, type ReadContext } from './context';
 import { childElements, firstW, int, isW, round4, wAttr } from './ooxml';
-import { readRuns } from './runs';
+import { readRuns, recordFormatChange } from './runs';
 import { isGoogleSdt, unwrapGoogleSdt } from './sdt';
 import { twipsToIn } from './units';
 
@@ -86,6 +86,8 @@ function readProps(p: Element, ctx: ReadContext): ParagraphProps {
         recordFeature(ctx.report, 'keepRules');
       } else if (isW(el, 'tabs')) {
         recordFeature(ctx.report, 'tabStops');
+      } else if (isW(el, 'pPrChange')) {
+        recordFormatChange(ctx);
       }
     }
   }
@@ -102,6 +104,8 @@ function readProps(p: Element, ctx: ReadContext): ParagraphProps {
 export function readParagraph(p: Element, ctx: ReadContext): JSONContent | JSONContent[] {
   recordFeature(ctx.report, 'paragraph');
   const { attrs, headingLevel } = readProps(p, ctx);
+  const fragmentsBefore = new Set(Object.keys(ctx.preservation.fragments));
+  const featuresBefore = { counts: { ...ctx.report.counts }, byCategory: { ...ctx.report.byCategory } };
   const content = readRuns(p, ctx);
   if (headingLevel) recordFeature(ctx.report, 'heading');
   if (attrs.styleId === 'caption') recordFeature(ctx.report, 'caption');
@@ -116,8 +120,18 @@ export function readParagraph(p: Element, ctx: ReadContext): JSONContent | JSONC
   } catch {
     // Cannot happen for nodes this reader builds. If it ever does, keep the text, but stamp NOTHING:
     // a degraded node must never read as "untouched", or its degraded content would become the export
-    // basis after the first edit. Without provenance the exporter regenerates it and the report says so.
-    warnOnce(ctx.report, 'part', 'A paragraph could not be represented exactly; only its plain text was kept and its original formatting will not be reused.', 2);
+    // basis after the first edit. Without provenance the exporter regenerates it.
+    // The atoms are dropped from this paragraph, so their fragments and report counts are withdrawn too:
+    // nothing may reference (or be counted for) content that is no longer in the document.
+    for (const id of Object.keys(ctx.preservation.fragments)) if (!fragmentsBefore.has(id)) delete ctx.preservation.fragments[id];
+    ctx.report.counts = featuresBefore.counts;
+    ctx.report.byCategory = featuresBefore.byCategory;
+    warnOnce(
+      ctx.report,
+      'part',
+      'A paragraph could not be represented exactly; only its plain text was kept. Tracked changes, comments and other preserved content in it were not carried over, and its original formatting will not be reused.',
+      2,
+    );
     const text = content.map(c => c.text ?? '').join('');
     return specNormalizeNode({ type: 'paragraph', attrs: { styleId: null }, ...(text ? { content: [{ type: 'text', text }] } : {}) });
   }

@@ -508,4 +508,68 @@ describe('review material and fields are reported by what they are', async () =>
     expect(out).toHaveLength(1);
     expect(report.counts.externalCitation).toBe(1);
   });
+
+  const pieces = (...instr: string[]) =>
+    `<w:r><w:fldChar w:fldCharType="begin"/></w:r>${instr.map(i => `<w:r><w:instrText xml:space="preserve">${i}</w:instrText></w:r>`).join('')}` +
+    `<w:r><w:fldChar w:fldCharType="separate"/></w:r>${t('shown')}<w:r><w:fldChar w:fldCharType="end"/></w:r>`;
+
+  it('recognises a citation field whose instruction is split BEFORE the manager token', async () => {
+    const { out, report } = await read(pieces(' ADDIN ', 'ZOTERO_ITEM CSL_CITATION {"a":1}'));
+    expect(report.counts.externalCitation).toBe(1);
+    expect(report.counts.externalBibliography).toBeUndefined();
+    expect(report.warnings.filter(w => w.feature === 'externalCitation')).toHaveLength(1);
+    // both code pieces are named for what they are, the separator is not called a result
+    expect(out.filter(n => n.attrs?.label === 'citation field code')).toHaveLength(2);
+    expect(out.map(n => n.attrs?.label ?? 'text')).toEqual(['field start', 'citation field code', 'citation field code', 'field separator', 'text', 'field end']);
+  });
+
+  it('treats any ADDIN field as third-party and names the other managers', async () => {
+    const { report } = await read(
+      pieces('ADDIN EN.CITE <EndNote>') + pieces('ADDIN RW.CITE{x}') + pieces('ADDIN REFMGR.CITE x') + pieces('ADDIN CITAVI.PLACEHOLDER x') + pieces('ADDIN paperpile_citation x'),
+    );
+    expect(report.counts.externalCitation).toBe(5);
+  });
+
+  it('records bibliography fields as bibliographies, not citations', async () => {
+    const { report } = await read(
+      pieces('ADDIN ZOTERO_BIBL {} CSL_BIBLIOGRAPHY') + pieces('ADDIN EN.REFLIST') + pieces('ADDIN Mendeley Bibliography CSL_BIBLIOGRAPHY') + pieces('BIBLIOGRAPHY \\l 1033'),
+    );
+    expect(report.counts.externalBibliography).toBe(4);
+    expect(report.counts.externalCitation).toBeUndefined();
+    expect(report.warnings.filter(w => w.feature === 'externalBibliography')).toHaveLength(1);
+  });
+
+  it("records Word's own CITATION field as a citation and leaves REF alone", async () => {
+    const { report } = await read(pieces(' CITATION Smith2020 \\l 1033 ') + pieces(' REF _Ref1 \\h '));
+    expect(report.counts.externalCitation).toBe(1);
+  });
+
+  it('classifies a field with no separator from its instruction', async () => {
+    const { report } = await read(
+      `<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText>ADDIN ZOTERO_ITEM x</w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r>`,
+    );
+    expect(report.counts.externalCitation).toBe(1);
+  });
+
+  it('words the field warning so it is true for a simple field as well as a split one', async () => {
+    const { report } = await read(`<w:fldSimple w:instr="ADDIN ZOTERO_ITEM x">${t('[1]')}</w:fldSimple>`);
+    const msg = report.warnings.find(w => w.feature === 'externalCitation')!.message;
+    expect(msg).toContain('Where a field is split');
+    expect(msg).not.toContain('with their displayed text');
+  });
+
+  it('records a formatting-change revision on a run and on a paragraph, but not inside a tracked change', async () => {
+    const r = await readBody('body-basics.docx');
+    const report = createReport();
+    const ctx = { ...r.ctx, report };
+    const p = parseXml(
+      `<w:p ${W}><w:pPr><w:pPrChange w:id="1" w:author="a"><w:pPr/></w:pPrChange></w:pPr>` +
+        `<w:r><w:rPr><w:b/><w:rPrChange w:id="2" w:author="a"><w:rPr/></w:rPrChange></w:rPr><w:t>x</w:t></w:r>` +
+        `<w:ins w:id="3" w:author="a"><w:r><w:rPr><w:rPrChange w:id="4" w:author="a"><w:rPr/></w:rPrChange></w:rPr><w:t>y</w:t></w:r></w:ins></w:p>`,
+    ).documentElement;
+    readParagraph(p, ctx);
+    expect(report.counts.formatChange).toBe(2);
+    expect(report.counts.trackedChange).toBe(1);
+    expect(summarizeReport(report)).toMatch(/3 tracked changes/);
+  });
 });

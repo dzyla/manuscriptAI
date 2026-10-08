@@ -9,8 +9,33 @@ import { captureFragment, captureShell } from '../preserve/xml';
 import { warnOnce, type ReadContext } from './context';
 import { M_NS, W_NS, firstW, wAttr } from './ooxml';
 
-/** Instructions written by reference managers (Zotero, Mendeley, EndNote, Paperpile, ...) and Word's own citation fields. */
-const CITATION_FIELD = /^\s*(ADDIN\s+(ZOTERO|CSL_CITATION|EN\.CITE|MENDELEY|PAPERPILE|F1000|PAPERS|READCUBE)|CITATION\b|BIBLIOGRAPHY\b)/i;
+/**
+ * Classify a complex field by its WHOLE instruction (every w:instrText between `begin` and
+ * `separate`, concatenated: Word and the managers split an instruction across runs at arbitrary
+ * points, so the manager token can land in a later piece than `ADDIN`). Any ADDIN field belongs to
+ * a third-party add-in (Zotero, Mendeley, EndNote, Paperpile, ...) and is treated as a citation, or
+ * as a bibliography when it names one. Word's own CITATION / BIBLIOGRAPHY fields are the same two kinds.
+ */
+export function classifyField(instruction: string): 'externalCitation' | 'externalBibliography' | null {
+  const instr = instruction.trim();
+  if (/^ADDIN\b/i.test(instr)) {
+    return /BIBL|REFLIST|ZOTERO_BIBL/i.test(instr) ? 'externalBibliography' : 'externalCitation';
+  }
+  if (/^BIBLIOGRAPHY\b/i.test(instr)) return 'externalBibliography';
+  if (/^CITATION\b/i.test(instr)) return 'externalCitation';
+  return null;
+}
+
+const FIELD_WARNING =
+  'Reference-manager fields (Zotero, Mendeley, EndNote, Paperpile, ...) are kept as read-only pieces. Where a field is split, the text it displays is ordinary editable text between those pieces, so editing a paragraph that holds one can break the field. Change citations and bibliographies in the reference manager instead.';
+
+/** Record a classified field and make it visible: report count, one warning, and a chip label that names it. */
+export function recordField(key: 'externalCitation' | 'externalBibliography', ctx: ReadContext, codeAtoms: JSONContent[]): void {
+  recordFeature(ctx.report, key);
+  warnOnce(ctx.report, key, FIELD_WARNING, 2);
+  const label = key === 'externalCitation' ? 'citation field code' : 'bibliography field code';
+  for (const a of codeAtoms) if (a.attrs) a.attrs.label = label;
+}
 
 /** Comment ids already counted, so one comment (start, end and reference) is one `comment`. */
 const seenComments = new WeakMap<ImportReport, Set<string>>();
@@ -62,14 +87,7 @@ function recordSemantic(el: Element, c: OpaqueClass, ctx: ReadContext): void {
     if (id) seen.add(id);
   }
   recordFeature(ctx.report, c.semantic);
-  if (c.semantic === 'externalCitation') {
-    warnOnce(
-      ctx.report,
-      'externalCitation',
-      'Citation-manager fields (Zotero, Mendeley, EndNote, ...) are kept as read-only pieces with their displayed text between them. Do not edit the text of a paragraph that holds one; change citations in the reference manager instead.',
-      2,
-    );
-  } else if (c.semantic === 'trackedChange') {
+  if (c.semantic === 'trackedChange') {
     warnOnce(
       ctx.report,
       'trackedChange',
@@ -93,17 +111,11 @@ export function classifyOpaque(el: Element): OpaqueClass {
       case 'bookmarkEnd': return { kind: 'bookmark', label: 'bookmark' };
       case 'fldChar': {
         const t = wAttr(el, 'fldCharType');
-        return { kind: 'unknownField', label: t === 'begin' ? 'field start' : t === 'separate' ? 'field result' : t === 'end' ? 'field end' : 'field' };
+        return { kind: 'unknownField', label: t === 'begin' ? 'field start' : t === 'separate' ? 'field separator' : t === 'end' ? 'field end' : 'field' };
       }
       case 'instrText':
-      case 'delInstrText': {
-        const citation = CITATION_FIELD.test(el.textContent ?? '');
-        return { kind: 'unknownField', label: citation ? 'citation field code' : 'field code', ...(citation ? { semantic: 'externalCitation' as const } : {}) };
-      }
-      case 'fldSimple': {
-        const citation = CITATION_FIELD.test(wAttr(el, 'instr') ?? '');
-        return { kind: 'unknownField', label: citation ? 'citation field' : 'field', ...(citation ? { semantic: 'externalCitation' as const } : {}) };
-      }
+      case 'delInstrText': return { kind: 'unknownField', label: 'field code' };
+      case 'fldSimple': return { kind: 'unknownField', label: 'field' };
       case 'object':
       case 'control': return { kind: 'oleObject', label: 'embedded object' };
       case 'ins':

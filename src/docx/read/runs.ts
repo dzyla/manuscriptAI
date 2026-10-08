@@ -12,7 +12,7 @@ import { recordFeature } from '../fidelity';
 import { stableStringify } from '../preserve/hash';
 import { REL_NS, type PackageRel } from '../preserve/types';
 import { warnOnce, type ReadContext } from './context';
-import { classifyOpaque, readOpaque } from './opaque';
+import { classifyField, classifyOpaque, readOpaque, recordField } from './opaque';
 import { mainDocumentPart } from './opc';
 import { W_NS, XML_NS, childElements, firstW, int, onOff, wAttr } from './ooxml';
 import { halfPointsToPt } from './units';
@@ -36,8 +36,58 @@ const ALLOWED_LINK_SCHEMES = new Set(['http:', 'https:', 'mailto:']);
 
 export function readRuns(container: Element, ctx: ReadContext): JSONContent[] {
   const out: JSONContent[] = [];
-  walk(childElements(container), ctx, [], out);
+  const outer = fields;
+  fields = [];
+  try {
+    walk(childElements(container), ctx, [], out);
+    // A field that never reached its separator or end in this paragraph is classified from what was seen.
+    for (const f of fields.splice(0)) finishField(f, ctx);
+  } finally {
+    fields = outer;
+  }
   return mergeAdjacentText(out);
+}
+
+// ─── complex fields ──────────────────────────────────────────────────────────
+
+interface OpenField {
+  instruction: string;
+  codeAtoms: JSONContent[];
+  done: boolean;
+}
+/** Fields begun and not yet ended in the paragraph being read (readRuns is synchronous and not re-entered). */
+let fields: OpenField[] = [];
+
+function finishField(f: OpenField, ctx: ReadContext): void {
+  if (f.done) return;
+  f.done = true;
+  const key = classifyField(f.instruction);
+  if (key) recordField(key, ctx, f.codeAtoms);
+}
+
+/** Track begin / instrText / separate / end so the classification sees the whole, possibly split, instruction. */
+function fieldEvent(el: Element, atom: JSONContent, ctx: ReadContext): void {
+  if (el.localName === 'fldChar') {
+    const t = wAttr(el, 'fldCharType');
+    if (t === 'begin') fields.push({ instruction: '', codeAtoms: [], done: false });
+    else if (t === 'separate') {
+      const f = fields[fields.length - 1];
+      if (f) finishField(f, ctx);
+    } else if (t === 'end') {
+      const f = fields.pop();
+      if (f) finishField(f, ctx);
+    }
+  } else if (el.localName === 'instrText') {
+    const f = fields[fields.length - 1];
+    if (f && !f.done) {
+      f.instruction += el.textContent ?? '';
+      f.codeAtoms.push(atom);
+    } else if (!f) {
+      // The field began in an earlier paragraph: all that is known is this piece.
+      const key = classifyField(el.textContent ?? '');
+      if (key) recordField(key, ctx, [atom]);
+    }
+  }
 }
 
 /**
@@ -77,6 +127,11 @@ function walk(children: Element[], ctx: ReadContext, marks: MarkJson[], out: JSO
         2,
       );
       walk(childElements(el), ctx, marks, out);
+    } else if (name === 'fldSimple') {
+      const atom = readOpaque(el, ctx, ...kindOf(el));
+      const key = classifyField(wAttr(el, 'instr') ?? '');
+      if (key) recordField(key, ctx, [atom]);
+      out.push(atom);
     } else out.push(readOpaque(el, ctx, ...kindOf(el)));
   }
 }
@@ -108,7 +163,7 @@ function readRun(run: Element, ctx: ReadContext, inherited: MarkJson[], out: JSO
     if (name === 't') text += runText(el);
     else if (name === 'tab') text += '\t';
     else if (name === 'noBreakHyphen') text += '-';
-    else if (name === 'softHyphen') text += '­';
+    else if (name === 'softHyphen') text += '\u00ad';
     else if (name === 'cr') {
       flush();
       out.push({ type: 'hardBreak' });
@@ -127,7 +182,9 @@ function readRun(run: Element, ctx: ReadContext, inherited: MarkJson[], out: JSO
       }
     } else {
       flush();
-      out.push(readOpaque(el, ctx, ...kindOf(el), { within: run }));
+      const atom = readOpaque(el, ctx, ...kindOf(el), { within: run });
+      out.push(atom);
+      fieldEvent(el, atom, ctx);
     }
   }
   flush();
@@ -144,6 +201,17 @@ function mergeMarks(base: MarkJson[], own: MarkJson[]): MarkJson[] {
   if (own.length === 0) return base;
   const ownTypes = new Set(own.map(m => m.type));
   return [...base.filter(m => !ownTypes.has(m.type)), ...own];
+}
+
+/** A formatting-change revision (w:rPrChange / w:pPrChange): shown with its new formatting; the record of the old one is not carried. */
+export function recordFormatChange(ctx: ReadContext): void {
+  recordFeature(ctx.report, 'formatChange');
+  warnOnce(
+    ctx.report,
+    'formatChange',
+    'Formatting-change revisions are shown with their new formatting; the record of the old formatting is kept only while the paragraph is unedited.',
+    2,
+  );
 }
 
 export function marksFromRPr(rPr: Element, ctx: ReadContext): MarkJson[] {
@@ -196,6 +264,7 @@ export function marksFromRPr(rPr: Element, ctx: ReadContext): MarkJson[] {
         else if (v === 'subscript' && !has('subscript')) marks.push({ type: 'subscript' });
         break;
       }
+      case 'rPrChange': recordFormatChange(ctx); break;
       case 'rStyle': {
         const id = ctx.styles.styleIdByWordId.get(wAttr(el, 'val') ?? '');
         if (id && !has('characterStyle')) {

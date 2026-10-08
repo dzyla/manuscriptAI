@@ -41,4 +41,27 @@ describe('a paragraph that cannot be normalized', () => {
     expect(Object.keys(preservation.blocks)).toEqual([]);
     expect(report.warnings.some(w => /could not be represented/.test(w.message))).toBe(true);
   });
+
+  it('withdraws the fragments and counts of the atoms it discards, so nothing is orphaned or over-counted', async () => {
+    const b = readFileSync(new URL('../../test/fixtures/docx/minimal.docx', import.meta.url));
+    const pkg = await openPackage(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer);
+    const report = createReport();
+    const preservation = emptyPreservationStore();
+    let n = 0;
+    const ctx = { pkg, styles: readStyles(pkg, report), report, preservation, assets: [], nextId: () => `id${++n}` };
+    const keep = parseXml(`<w:p xmlns:w="${W_NS}"><w:r><w:t>fine</w:t></w:r><w:ins w:id="1"><w:r><w:t>kept</w:t></w:r></w:ins></w:p>`).documentElement;
+    const lose = parseXml(
+      `<w:p xmlns:w="${W_NS}"><w:r><w:t>lost atoms</w:t></w:r><w:ins w:id="2"><w:r><w:t>x</w:t></w:r></w:ins><w:commentRangeStart w:id="9"/></w:p>`,
+    ).documentElement;
+    readParagraph(keep, ctx);
+    const keptFragments = Object.keys(preservation.fragments);
+    failNext = 1;
+    const node = readParagraph(lose, ctx) as { content: { type: string; text?: string }[] };
+    expect(node.content).toEqual([{ type: 'text', text: 'lost atoms' }]);
+    expect(Object.keys(preservation.fragments)).toEqual(keptFragments);
+    expect(report.counts.trackedChange).toBe(1);
+    expect(report.counts.comment).toBeUndefined();
+    expect(report.byCategory[3]).toBe(1);
+    expect(report.warnings.find(w => /could not be represented/.test(w.message))!.message).toMatch(/Tracked changes, comments/);
+  });
 });
