@@ -2,7 +2,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Editor, type JSONContent } from '@tiptap/core';
 import { getSchemaExtensions, getDocSchema, htmlToDoc, docToHtml, normalizeDoc } from '../schema';
-import { stampProvenance } from '../../docx/preserve/hash';
+import { stampProvenance, isBlockUntouched } from '../../docx/preserve/hash';
 import { OpaqueFragmentGuard, findDuplicateFragmentIds, findDuplicateBlockIds } from './OpaqueNodes';
 
 const chip = (id: string) => ({ type: 'opaqueInline', attrs: { kind: 'equation', label: 'equation', fragmentId: id } });
@@ -102,6 +102,37 @@ describe('provenance stays on the untouched copy', () => {
     const empty = paras.find(p => p.text === '');
     expect(withText?.blockId).toBe('b1');
     expect(empty?.blockId).toBeNull();
+
+    // Undoing the split joins the halves back together: the restored paragraph must still be the original.
+    expect(editor.commands.undo()).toBe(true);
+    expect(editor.state.doc.childCount).toBe(1);
+    const restored = editor.state.doc.child(0);
+    expect(restored.textContent).toBe('Untouched imported text.');
+    expect((restored.attrs.ooxml as { blockId?: string } | null)?.blockId).toBe('b1');
+    expect(isBlockUntouched(restored.toJSON())).toBe(true);
+    editor.destroy();
+  });
+
+  it('undo/redo of a split and of a paste keep blockIds unique and the original untouched', () => {
+    const para = stampedParagraph('Round trip text.', 'b3');
+    const editor = new Editor({
+      extensions: [...getSchemaExtensions(), OpaqueFragmentGuard],
+      content: { type: 'doc', content: [para] },
+    });
+    editor.commands.setTextSelection(1);
+    editor.commands.splitBlock();
+    editor.commands.undo();
+    editor.commands.redo();
+    expect(editor.state.doc.childCount).toBe(2);
+    expect(blockIds(editor)).toEqual([null, 'b3']);
+    editor.commands.undo();
+    expect(blockIds(editor)).toEqual(['b3']);
+    editor.commands.insertContentAt(editor.state.doc.content.size, para);
+    expect(blockIds(editor)).toEqual(['b3', null]);
+    editor.commands.undo();
+    expect(editor.state.doc.childCount).toBe(1);
+    expect(blockIds(editor)).toEqual(['b3']);
+    expect(isBlockUntouched(editor.state.doc.child(0).toJSON())).toBe(true);
     editor.destroy();
   });
 

@@ -135,7 +135,9 @@ export const OpaqueFragmentGuard = Extension.create<OpaqueFragmentGuardOptions>(
             if (!node) continue;
             tr.setNodeMarkup(pos, undefined, { ...node.attrs, ooxml: null });
           }
-          tr.setMeta('addToHistory', false);
+          // Deliberately NOT excluded from history: prosemirror-history folds an appended transaction into the
+          // event that triggered it (and skips it when the trigger itself is excluded). Undoing a split then
+          // reverts the provenance clear together with the split, so the joined paragraph gets its blockId back.
           return tr;
         },
       }),
