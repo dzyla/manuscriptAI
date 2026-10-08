@@ -148,6 +148,8 @@ const MAX_WORDS_LONG = 30;
 const SIBLING_REACH = 12;
 /** An aim title must be followed by a paragraph at least this long; a contents list is a run of short lines. */
 const MIN_BODY_WORDS = 8;
+/** A gap fill is also admitted if the gap it fills is at most this many paragraphs per step of the numbering across it. */
+const SIBLING_GAP_SPAN = 100;
 
 /**
  * "Aim 1", "AIM 2.", "Aim III:" (after any enumerator): a specific-aim title. After the number there must be a separator
@@ -157,11 +159,16 @@ const MIN_BODY_WORDS = 8;
 const AIM = /^([Aa][Ii][Mm]\s+(?:\d+|[IVXL]+))(?:\s*[:.)\u2013\u2014-]|\s+(?=[A-Z])|$)/;
 /** Words that, straight after the aim number, make it a sentence about an aim even when capitalised or after a separator. */
 const AIM_SENTENCE_WORD = new Set([
-  'of', 'is', 'are', 'was', 'were', 'will', 'would', 'can', 'could', 'should', 'may', 'might', 'must', 'has', 'have', 'had', 'and', 'or', 'to',
+  'of', 'is', 'are', 'was', 'were', 'will', 'would', 'can', 'could', 'should', 'may', 'might', 'must', 'has', 'have', 'had', 'and', 'or',
   'builds', 'tests', 'aims', 'addresses', 'examines', 'uses', 'seeks', 'proposes', 'focuses', 'investigates', 'determines', 'explores', 'describes',
   'evaluates', 'assesses', 'extends', 'complements', 'follows', 'relies', 'depends', 'requires', 'includes',
-  'we', 'this', 'our', 'in', 'here',
 ]);
+/**
+ * Words that start a sentence about an aim only when NO separator follows the number ("Aim 1 This aim tests ...", "Aim 2 In this
+ * aim we test F"). After a separator they are ordinary title words: "AIM 2: In vivo validation", "Aim 1: To define", "Aim 3: This
+ * approach tests ...".
+ */
+const AIM_PROSE_WORD = new Set(['to', 'in', 'this', 'we', 'our', 'here']);
 
 /** Dot leaders or an ellipsis: a table-of-contents line ("Aim 1 ........ 4"), not a title. */
 const LEADERS = /\.{3,}|\u2026|(?:\.\s){3,}/;
@@ -172,9 +179,9 @@ function aimToken(rest: string): string | null {
   if (!m) return null;
   const next = rest.slice(m[1].length).replace(/^[\s:.)\u2013\u2014-]+/, '').split(/\s+/, 1)[0] ?? '';
   const word = next.replace(/[^A-Za-z]/g, '');
-  // "Aim 1: To define ..." is a normal title; "Aim 2 to ..." with no separator is a sentence
   const hasSeparator = /^\s*[:.)\u2013\u2014-]/.test(rest.slice(m[1].length));
-  if (AIM_SENTENCE_WORD.has(word.toLowerCase()) && !(hasSeparator && word.toLowerCase() === 'to')) return null;
+  const lower = word.toLowerCase();
+  if (AIM_SENTENCE_WORD.has(lower) || (!hasSeparator && AIM_PROSE_WORD.has(lower))) return null;
   return m[1];
 }
 
@@ -424,7 +431,20 @@ function completeNumberedRuns(drafts: ParagraphDraft[], out: HeadingCandidate[],
       const reach = Math.max(SIBLING_REACH, 2 * Math.max(0, ...adjacent));
       const nearestN = ns.reduce((a, b) => (Math.abs(run.get(a)!.index - d.index) <= Math.abs(run.get(b)!.index - d.index) ? a : b));
       const distance = Math.abs(run.get(nearestN)!.index - d.index);
-      if (distance > reach) continue;
+      // A gap fill is admitted on the strength of the sequence it completes: either it is near a bounding member, or the gap as a
+      // whole is no wider than SIBLING_GAP_SPAN per step of the numbering. The second route keeps a heading from being dropped just
+      // because the section before it grew (the reach depends on spacing elsewhere in the run, not on that section's length).
+      let proximity: string | null = distance <= reach ? `${plural(distance, 'paragraph')} from that member (at most ${reach} allowed)` : null;
+      if (!proximity && gapFill) {
+        const lowerN = Math.max(...ns.filter(n => n < k.n));
+        const upperN = Math.min(...ns.filter(n => n > k.n));
+        const span = run.get(upperN)!.index - run.get(lowerN)!.index;
+        const allowed = SIBLING_GAP_SPAN * (upperN - lowerN);
+        if (span <= allowed) {
+          proximity = `it lies in a gap of ${plural(span, 'paragraph')} between ${k.prefix}.${lowerN} and ${k.prefix}.${upperN} (at most ${allowed} allowed for a gap of ${plural(upperN - lowerN, 'step')} in the numbering), though ${plural(distance, 'paragraph')} from the nearest member`;
+        }
+      }
+      if (!proximity) continue;
       // Emphasis: the sibling and its nearest member are both bold (or larger).
       const nearest = byIndex.get(run.get(nearestN)!.index)!;
       if (!emphatic(d, ctx) || !emphatic(nearest, ctx)) continue;
@@ -446,7 +466,7 @@ function completeNumberedRuns(drafts: ParagraphDraft[], out: HeadingCandidate[],
             : `single line of ${plural(d.words, 'word')} (limit ${MAX_WORDS_LONG} words), no terminal period, question or exclamation mark`,
           'starts with a capital letter',
           `${d.allBold ? 'bold' : 'larger than the body text'}, like the nearest member of the run (${k.prefix}.${nearestN}, ${nearest.allBold ? 'bold' : 'larger than the body text'})`,
-          `${plural(distance, 'paragraph')} from that member (at most ${reach} allowed)`,
+          proximity,
           'followed by a body paragraph that is not bold or larger',
         ],
       });

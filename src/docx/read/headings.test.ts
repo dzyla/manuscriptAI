@@ -554,6 +554,19 @@ describe('aim titles (R1)', () => {
     expect(one('Aim 1: Characterize the response')[0].evidence.join(' | ')).toMatch(/followed by a body paragraph of \d+ words/);
   });
 
+  it('keeps "In vivo ..." and "This approach ..." titles after a separator, and still refuses the prose forms without one', () => {
+    for (const t of ['AIM 2: In vivo validation of the model', 'AIM 2: This approach tests the model', 'Aim 1: In vitro characterization', 'Aim 3. Our data-driven model', 'Aim 2: We define the lineage', 'Aim 1: Here we test F']) {
+      const got = one(t);
+      expect(got, t).toHaveLength(1);
+      expect(got[0].confidence, t).toBe('aim');
+    }
+    for (const t of ['Aim 1 This aim tests the model', 'Aim 2 We will determine the structure', 'Aim 2 In this aim we test F', 'Aim 1 Our data suggest a mechanism', 'Aim 1 Here we test F']) {
+      expect(one(t), t).toHaveLength(0);
+    }
+    // words that mean a sentence whatever follows the number
+    expect(one('Aim 1: will determine the structure')).toHaveLength(0);
+  });
+
   it('accepts the capital-initial form without a separator, and "Aim 1: To ..." with one', () => {
     expect(one('Aim 1 Characterize the response')[0]).toMatchObject({ confidence: 'aim' });
     expect(one('Aim 2 Map the T cell response')[0]).toMatchObject({ confidence: 'aim' });
@@ -719,6 +732,22 @@ describe('numbered-sibling completion (R2)', () => {
       expect(has([...head, ...filler(150), ...long('2.3'), ...filler(150), ...tail], '2.3')).toBe(false);
       // control: the same gap fill close to its neighbour is a sibling
       expect(has([...head, ...filler(4), ...long('2.3'), ...filler(4), ...tail], '2.3')).toBe(true);
+    });
+
+    it('lengthening the section before a gap fill does not drop it: it is admitted on the gap it completes, and says so', () => {
+      const filler = (n: number) => Array.from({ length: n }, body);
+      const doc = (before: number, after = 40) => [...section('2.1 One'), para('2.2 Two', true), ...filler(before), ...long('2.3'), ...filler(after), ...section('2.4 Four'), ...section('2.5 Five')];
+      for (const before of [4, 12, 16, 19, 40, 80]) {
+        const got = detect(doc(before)).find(c => c.text.startsWith('2.3'));
+        expect(got?.confidence, `${before} paragraphs after 2.2`).toBe('sibling');
+      }
+      // near enough: reported as a distance; far: reported as the gap it completes
+      expect(detect(doc(4)).find(c => c.text.startsWith('2.3'))!.evidence.join(' | ')).toMatch(/\d+ paragraphs? from that member \(at most \d+ allowed\)/);
+      const far = detect(doc(80, 80)).find(c => c.text.startsWith('2.3'))!.evidence.join(' | ');
+      expect(far).toMatch(/lies in a gap of \d+ paragraphs between 2\.2 and 2\.4 \(at most 200 allowed for a gap of 2 steps in the numbering\)/);
+      expect(far).not.toMatch(/from that member \(at most/);
+      // but a wide enough gap is still refused (the 300-paragraph test above), and an extension never gets this route
+      expect(detect(doc(150, 150)).some(c => c.text.startsWith('2.3'))).toBe(false);
     });
 
     it('a missing member does not inflate the reach of an extension', () => {
