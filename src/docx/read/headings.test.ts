@@ -462,6 +462,45 @@ describe('applyHeadings', async () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+describe('evidence describes only the checks that fired', () => {
+  const para = (text: string, bold = false): JSONContent => ({
+    type: 'paragraph', attrs: { styleId: null }, content: [{ type: 'text', text, ...(bold ? { marks: [{ type: 'bold' }] } : {}) }],
+  });
+  const body = () => para('Plain body text that goes on for a while and ends properly.');
+
+  it('a name match ending in a colon does not claim "no terminal punctuation", and does not claim a follower was checked', () => {
+    const ev = detect([para('Specific Aims:', true), body()])[0].evidence.join(' | ');
+    expect(ev).not.toMatch(/no terminal punctuation/);
+    expect(ev).toMatch(/no terminal period, question or exclamation mark/);
+    expect(ev).not.toMatch(/followed by/);
+    expect(ev).not.toMatch(/emphasis/);
+  });
+
+  it('a plain name match says it is not bold, and a bold one says it is', () => {
+    expect(detect([para('Introduction'), body()])[0].evidence.join(' | ')).toContain('not bold');
+    expect(detect([para('Introduction', true), body()])[0].evidence.join(' | ')).toContain('entire paragraph is bold');
+  });
+
+  it('a format match claims only what it checked', () => {
+    const ev = detect([para('A short bold title', true), body()])[0].evidence.join(' | ');
+    expect(ev).toContain('entire paragraph is bold');
+    expect(ev).toContain('followed by a body paragraph that is not bold or larger');
+    expect(ev).not.toMatch(/larger font|enumerator|nearest member|sentences/);
+  });
+
+  it('a sibling is described as bold or as larger, matching how it qualified', () => {
+    const run = [para('2.1 One', true), body(), para('2.2 Two', true), body()];
+    const long = 'A title that is long enough to fail the eight word format limit';
+    const bold = detect([...run, para(`2.3 ${long}`, true), body()]).find(c => c.confidence === 'sibling')!;
+    expect(bold.evidence.join(' | ')).toContain('bold, like the nearest member of the run (2.2, bold)');
+    const big: JSONContent = { type: 'paragraph', attrs: { styleId: null }, content: [{ type: 'text', text: `2.3 ${long}`, marks: [{ type: 'fontSize', attrs: { sizePt: 16 } }] }] };
+    const bigHead = (t: string): JSONContent => ({ type: 'paragraph', attrs: { styleId: null }, content: [{ type: 'text', text: t, marks: [{ type: 'fontSize', attrs: { sizePt: 16 } }] }] });
+    const bigRun = [bigHead('2.1 One'), body(), bigHead('2.2 Two'), body()];
+    const larger = detectHeadings(paragraphDrafts([...bigRun, big, body()]), { hasRealHeadings: false, bodyFontSizePt: 11 }).find(c => c.confidence === 'sibling')!;
+    expect(larger.evidence.join(' | ')).toContain('larger than the body text, like the nearest member of the run (2.2, larger than the body text)');
+  });
+});
+
 describe('aim titles (R1)', () => {
   const para = (text: string, bold = false): JSONContent => ({
     type: 'paragraph', attrs: { styleId: null }, content: [{ type: 'text', text, ...(bold ? { marks: [{ type: 'bold' }] } : {}) }],
@@ -494,7 +533,25 @@ describe('aim titles (R1)', () => {
       'Aim 1: will determine the structure',
       'Aim 2 differs from the first in scope',
       'Aim 1 here is a short summary of the work',
+      'Aim 3 deals with the remaining gap',
+      'Aim 1 This aim tests the model',
+      'Aim 2 We will determine the structure',
+      'Aim 2 In this aim we test F',
+      'Aim 1 Our data suggest a mechanism',
     ]) expect(one(t), t).toHaveLength(0);
+  });
+
+  it('is not proposed for a table-of-contents line: dot leaders, or followed by more short lines instead of body text', () => {
+    const toc = (...lines: string[]) => detect([...lines.map(t => para(t)), body()]);
+    expect(toc('Aim 1 ........ 4', 'Aim 2 ........ 9')).toHaveLength(0);
+    expect(toc('Aim 2: Characterize the response ..... 9')).toHaveLength(0);
+    expect(detect([para('Aim 1: Characterize the response 4'), para('Aim 2: Map the T cell response 9')])).toHaveLength(0);
+    // and a title with nothing after it, or with a bold title after it
+    expect(detect([para('Aim 1: Characterize the response')])).toHaveLength(0);
+    expect(detect([para('Aim 1: Characterize the response'), para('Rationale', true), body()]).filter(c => c.confidence === 'aim')).toHaveLength(0);
+    // control
+    expect(one('Aim 1: Characterize the response')).toHaveLength(1);
+    expect(one('Aim 1: Characterize the response')[0].evidence.join(' | ')).toMatch(/followed by a body paragraph of \d+ words/);
   });
 
   it('accepts the capital-initial form without a separator, and "Aim 1: To ..." with one', () => {
@@ -633,7 +690,43 @@ describe('numbered-sibling completion (R2)', () => {
 
     it('its evidence reports the distance and the conditions it met', () => {
       const got = detect([...run.slice(0, 4), ...long('2.3'), ...run.slice(4)]).find(c => c.text.startsWith('2.3'))!;
-      expect(got.evidence.join(' | ')).toMatch(/paragraphs from the nearest member of the run \(reach \d+\); same emphasis as the run; followed by a body paragraph/);
+      const ev = got.evidence.join(' | ');
+      expect(ev).toMatch(/\d+ paragraphs? from that member \(at most \d+ allowed\)/);
+      expect(ev).toContain('bold, like the nearest member of the run (2.2, bold)');
+      expect(ev).toContain('starts with a capital letter');
+      expect(ev).toContain('followed by a body paragraph that is not bold or larger');
+      expect(ev).not.toContain('same emphasis as the run');
+    });
+
+    it('a plain numbered list under PLAIN name-matched headings does not chain in either', () => {
+      const blocks = [para('2.1 Introduction', false), body(), para('2.2 Methods', false), body(), para('2.3 Collect samples at day 0, 7, and 14', false), para('2.4 Process the samples', false), body()];
+      expect(detect(blocks).map(c => [c.text.slice(0, 3), c.confidence])).toEqual([['2.1', 'name'], ['2.2', 'name']]);
+    });
+
+    it('a mixed run (bold, then plain) does not admit a plain line, and a plain nearest member does not vouch for a bold one', () => {
+      const mixed = [para('2.1 One', true), body(), para('2.2 Methods', false), body()];
+      expect(has([...mixed, para('2.3 Order the reagents from the supplier', false), body()], '2.3')).toBe(false);
+      // bold candidate, but its nearest member (2.2) is plain
+      expect(has([...mixed, ...long('2.3')], '2.3')).toBe(false);
+      // control: with a bold nearest member the same bold line joins
+      expect(has([para('2.1 Methods', false), body(), para('2.2 One', true), body(), ...long('2.3')], '2.3')).toBe(true);
+    });
+
+    it('the reach binds a gap fill too: a line in the middle of a 300-paragraph gap is not a sibling', () => {
+      const filler = (n: number) => Array.from({ length: n }, body);
+      const head = [...section('2.1 One'), ...section('2.2 Two')];
+      const tail = [...section('2.4 Four'), ...section('2.5 Five')];
+      expect(has([...head, ...filler(150), ...long('2.3'), ...filler(150), ...tail], '2.3')).toBe(false);
+      // control: the same gap fill close to its neighbour is a sibling
+      expect(has([...head, ...filler(4), ...long('2.3'), ...filler(4), ...tail], '2.3')).toBe(true);
+    });
+
+    it('a missing member does not inflate the reach of an extension', () => {
+      const filler = (n: number) => Array.from({ length: n }, body);
+      // 2.1/2.2 are close; 2.4 is 300 paragraphs on. The hole spans 300, but that is not evidence of how far apart sections are.
+      const base = [...section('2.1 One'), ...section('2.2 Two'), ...filler(300), ...section('2.4 Four')];
+      expect(has([...base, ...filler(250), ...long('2.5')], '2.5')).toBe(false);
+      expect(has([...base, ...filler(4), ...long('2.5')], '2.5')).toBe(true);
     });
   });
 

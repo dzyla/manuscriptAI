@@ -146,6 +146,8 @@ const MAX_WORDS_FORMAT = 8;
 const MAX_WORDS_LONG = 30;
 /** A numbered sibling must lie within this many paragraphs of the run, or twice the widest spacing the run already shows, whichever is more. */
 const SIBLING_REACH = 12;
+/** An aim title must be followed by a paragraph at least this long; a contents list is a run of short lines. */
+const MIN_BODY_WORDS = 8;
 
 /**
  * "Aim 1", "AIM 2.", "Aim III:" (after any enumerator): a specific-aim title. After the number there must be a separator
@@ -158,7 +160,11 @@ const AIM_SENTENCE_WORD = new Set([
   'of', 'is', 'are', 'was', 'were', 'will', 'would', 'can', 'could', 'should', 'may', 'might', 'must', 'has', 'have', 'had', 'and', 'or', 'to',
   'builds', 'tests', 'aims', 'addresses', 'examines', 'uses', 'seeks', 'proposes', 'focuses', 'investigates', 'determines', 'explores', 'describes',
   'evaluates', 'assesses', 'extends', 'complements', 'follows', 'relies', 'depends', 'requires', 'includes',
+  'we', 'this', 'our', 'in', 'here',
 ]);
+
+/** Dot leaders or an ellipsis: a table-of-contents line ("Aim 1 ........ 4"), not a title. */
+const LEADERS = /\.{3,}|\u2026|(?:\.\s){3,}/;
 
 /** The "Aim 1" token of an aim title, or null (including for a sentence that merely starts with one). */
 function aimToken(rest: string): string | null {
@@ -266,6 +272,16 @@ function numbered(text: string): { prefix: string; depth: number; n: number } | 
   return { prefix: parts.slice(0, -1).join('.').toLowerCase(), depth: parts.length, n: Number(last) };
 }
 
+/** Bold, or set in a larger font than the body: the two looks that can make a short line read as a title. */
+function emphatic(d: ParagraphDraft, ctx: DetectContext): boolean {
+  return d.allBold || (ctx.bodyFontSizePt !== undefined && d.minFontSizePt !== null && d.minFontSizePt > ctx.bodyFontSizePt);
+}
+
+/** Real body text for a title to be followed by: not emphatic, and long enough not to be another contents or list line. */
+function isBodyParagraph(d: ParagraphDraft | null, ctx: DetectContext): d is ParagraphDraft {
+  return !!d && !emphatic(d, ctx) && d.words >= MIN_BODY_WORDS && aimToken(split(d.text).rest) === null;
+}
+
 function detect(drafts: ParagraphDraft[], ctx: DetectContext): HeadingCandidate[] {
   const out: HeadingCandidate[] = [];
   let lastLevel1: HeadingCandidate | null = null; // nearest name-matched level-1 heading so far
@@ -306,7 +322,7 @@ function detect(drafts: ParagraphDraft[], ctx: DetectContext): HeadingCandidate[
       );
       if (base.note) bits.push(base.note);
       bits.push(d.allBold ? 'entire paragraph is bold' : 'not bold');
-      bits.push(TERMINAL_PERIOD.test(d.text) ? `${shape}, trailing period ignored for a known section name` : `${shape}, no terminal punctuation`);
+      bits.push(TERMINAL_PERIOD.test(d.text) ? `${shape}, trailing period ignored for a known section name` : `${shape}, no terminal period, question or exclamation mark`);
       const c: HeadingCandidate = { index: d.index, level: base.level, text: d.text, evidence: bits, confidence: 'name' };
       out.push(c);
       if (base.level === 1) lastLevel1 = section.endsBody ? null : c;
@@ -317,6 +333,9 @@ function detect(drafts: ParagraphDraft[], ctx: DetectContext): HeadingCandidate[
 
     // Aim title: an "Aim 1" / "AIM 2." line. Bold is not required and a period is tolerated, because the pattern is specific.
     if (isAim) {
+      if (LEADERS.test(d.text)) return;
+      const next = followingParagraph(drafts, i);
+      if (!isBodyParagraph(next, ctx)) return;
       const sentences = rest.slice(aim!.length).replace(/^[\s.:)]+|\.$/g, '').split(/[.!?]\s+(?=[A-Z])/).length;
       const bits = [
         `begins with "${aim}", a specific-aim title`,
@@ -324,6 +343,7 @@ function detect(drafts: ParagraphDraft[], ctx: DetectContext): HeadingCandidate[
         lastLevel1 ? `placed below the level-1 heading "${lastLevel1.text}", so level 2` : 'no section heading precedes it, so level 2',
         d.allBold ? 'entire paragraph is bold' : 'not bold (not required for an aim title)',
         TERMINAL_PERIOD.test(d.text) ? `${shape} (limit ${MAX_WORDS_LONG} words), trailing period ignored` : `${shape} (limit ${MAX_WORDS_LONG} words)`,
+        `followed by a body paragraph of ${plural(next.words, 'word')} that is not bold or larger, and no contents-list dot leaders`,
       ];
       out.push({ index: d.index, level: 2, text: d.text, evidence: bits, confidence: 'aim' });
       return;
@@ -341,7 +361,7 @@ function detect(drafts: ParagraphDraft[], ctx: DetectContext): HeadingCandidate[
     const bits: string[] = [];
     if (d.allBold) bits.push('entire paragraph is bold');
     if (bigger) bits.push(`entire paragraph is in a larger font (${d.minFontSizePt} pt) than the ${ctx.bodyFontSizePt} pt body text`);
-    bits.push(`${shape}, no terminal punctuation`);
+    bits.push(`${shape}, no terminal period, question or exclamation mark`);
     bits.push('followed by a body paragraph that is not bold or larger');
     const base = depth(lastLevel1 ? 2 : 1);
     bits.push(lastLevel1 ? `follows the level-1 heading "${lastLevel1.text}", so level 2` : 'no section heading precedes it, so level 1');
@@ -356,16 +376,20 @@ function detect(drafts: ParagraphDraft[], ctx: DetectContext): HeadingCandidate[
 /**
  * A hole in a numbered sequence is evidence: when two or more candidates share a multi-part enumerator prefix, a line that
  * fills a gap in the run, or extends it by one, at the same depth and in the right place in the document, joins it at the
- * run's level - even if its own length, line count or punctuation would not qualify. It must still start with a capital letter,
- * be as emphatic (bold or larger) as the run, be followed by body text and lie close to the run. A bold paragraph of two lines (title, then a sub-title) joins too;
- * body text never does. Repeats until nothing more joins. Depth 1 ("1.", "2.") is left out:
- * numbered lists and reference lists share that shape, so the sequence alone would not be evidence there.
+ * run's level - even if its own length, line count or punctuation would not qualify. Every sibling must also:
+ *  - start with a capital letter ("2.3 mM Tris" is a quantity);
+ *  - itself be bold or larger, AND have a bold or larger nearest run member, so a plain numbered list (or a table of contents)
+ *    never joins, whether the run is bold, plain or mixed;
+ *  - lie within `reach` paragraphs of its nearest run member, for a gap fill as for an extension. `reach` is the larger of
+ *    SIBLING_REACH and twice the widest spacing between members whose numbers are consecutive; the span across a missing
+ *    number is not evidence of how far apart sections are, so it never widens the reach;
+ *  - be followed by a body paragraph, not another title.
+ * A bold paragraph of two lines (title, then a sub-title) joins too; body text never does. Repeats until nothing more joins.
+ * Depth 1 ("1.", "2.") is left out: numbered lists and reference lists share that shape, so the sequence alone is no evidence.
  */
 function completeNumberedRuns(drafts: ParagraphDraft[], out: HeadingCandidate[], ctx: DetectContext): void {
   const taken = new Set(out.map(c => c.index));
   const byIndex = new Map(drafts.map(d => [d.index, d]));
-  const emphatic = (d: ParagraphDraft): boolean =>
-    d.allBold || (ctx.bodyFontSizePt !== undefined && d.minFontSizePt !== null && d.minFontSizePt > ctx.bodyFontSizePt);
   for (let added = true; added; ) {
     added = false;
     const runs = new Map<string, Map<number, HeadingCandidate>>();
@@ -381,13 +405,13 @@ function completeNumberedRuns(drafts: ParagraphDraft[], out: HeadingCandidate[],
       const k = numbered(d.text);
       const run = k && runs.get(`${k.prefix}|${k.depth}`);
       if (!k || !run || run.size < 2 || run.has(k.n)) continue;
-      // A title starts like one: "2.3 mM Tris buffer" is a concentration, not a heading.
       if (!/^\p{Lu}/u.test(split(d.text).rest)) continue;
       const ns = [...run.keys()].sort((a, b) => a - b);
       const min = ns[0];
       const max = ns[ns.length - 1];
+      const gapFill = k.n > min && k.n < max;
       let fits: boolean;
-      if (k.n > min && k.n < max) {
+      if (gapFill) {
         const lower = run.get(Math.max(...ns.filter(n => n < k.n)))!;
         const upper = run.get(Math.min(...ns.filter(n => n > k.n)))!;
         fits = d.index > lower.index && d.index < upper.index;
@@ -395,17 +419,18 @@ function completeNumberedRuns(drafts: ParagraphDraft[], out: HeadingCandidate[],
       else if (k.n === min - 1 && k.n >= 1) fits = d.index < run.get(min)!.index;
       else fits = false;
       if (!fits) continue;
-      // Proximity: within SIBLING_REACH paragraphs of the nearest member, or twice the widest spacing the run already shows.
-      const spacing = Math.max(...ns.slice(1).map((n, j) => run.get(n)!.index - run.get(ns[j])!.index));
-      const reach = Math.max(SIBLING_REACH, 2 * spacing);
-      const nearest = Math.min(...ns.map(n => Math.abs(run.get(n)!.index - d.index)));
-      if (nearest > reach) continue;
-      // Formatting parity: if every member is bold (or larger), so is a sibling. A numbered list item, a table-of-contents
-      // line or a method detail under bold headings is plain and does not join.
-      if (ns.every(n => emphatic(byIndex.get(run.get(n)!.index)!)) && !emphatic(d)) continue;
+      // Proximity, measured to the nearest member for gap fills and extensions alike.
+      const adjacent = ns.slice(1).flatMap((n, j) => (n === ns[j] + 1 ? [run.get(n)!.index - run.get(ns[j])!.index] : []));
+      const reach = Math.max(SIBLING_REACH, 2 * Math.max(0, ...adjacent));
+      const nearestN = ns.reduce((a, b) => (Math.abs(run.get(a)!.index - d.index) <= Math.abs(run.get(b)!.index - d.index) ? a : b));
+      const distance = Math.abs(run.get(nearestN)!.index - d.index);
+      if (distance > reach) continue;
+      // Emphasis: the sibling and its nearest member are both bold (or larger).
+      const nearest = byIndex.get(run.get(nearestN)!.index)!;
+      if (!emphatic(d, ctx) || !emphatic(nearest, ctx)) continue;
       // And, like any format match, it must be followed by body text rather than another title or a bare list.
       const next = followingParagraph(drafts, di);
-      if (!next || emphatic(next)) continue;
+      if (!next || emphatic(next, ctx)) continue;
       const level = run.get(max)!.level;
       const members = ns.map(n => `${k.prefix}.${n}`).join(', ');
       out.push({
@@ -414,12 +439,15 @@ function completeNumberedRuns(drafts: ParagraphDraft[], out: HeadingCandidate[],
         text: d.text,
         confidence: 'sibling',
         evidence: [
-          `its enumerator "${split(d.text).enumerator}" ${k.n > min && k.n < max ? 'fills a gap in' : 'extends'} the numbered run ${members} (${plural(run.size, 'heading')} already found at depth ${k.depth})`,
+          `its enumerator "${split(d.text).enumerator}" ${gapFill ? 'fills a gap in' : 'extends'} the numbered run ${members} (${plural(run.size, 'heading')} already found at depth ${k.depth})`,
           `joins that run at level ${level}`,
           d.multiline
-            ? `two bold lines in one paragraph (a title and a sub-title, no body text), ${plural(d.words, 'word')} (limit ${MAX_WORDS_LONG}), no terminal punctuation`
-            : `single line of ${plural(d.words, 'word')} (limit ${MAX_WORDS_LONG} words), no terminal punctuation`,
-          `${Math.abs(run.get(ns.reduce((a, b) => (Math.abs(run.get(a)!.index - d.index) <= Math.abs(run.get(b)!.index - d.index) ? a : b)))!.index - d.index)} paragraphs from the nearest member of the run (reach ${reach}); same emphasis as the run; followed by a body paragraph`,
+            ? `two bold lines in one paragraph (a title and a sub-title, no body text), ${plural(d.words, 'word')} (limit ${MAX_WORDS_LONG}), no terminal period, question or exclamation mark`
+            : `single line of ${plural(d.words, 'word')} (limit ${MAX_WORDS_LONG} words), no terminal period, question or exclamation mark`,
+          'starts with a capital letter',
+          `${d.allBold ? 'bold' : 'larger than the body text'}, like the nearest member of the run (${k.prefix}.${nearestN}, ${nearest.allBold ? 'bold' : 'larger than the body text'})`,
+          `${plural(distance, 'paragraph')} from that member (at most ${reach} allowed)`,
+          'followed by a body paragraph that is not bold or larger',
         ],
       });
       taken.add(d.index);
