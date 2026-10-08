@@ -51,6 +51,9 @@
  *                   plain paragraph and resumed on the same numId, list-style (no direct numPr) items, a numbered Heading1, a missing numId,
  *                   numId 0, a bold list item that would read as a section title, items holding a page break / an equation, a skipped
  *                   level and a list that starts below its first level
+ *   tables.docx     one 4-column table (grid 1800/2700/3600/1440 twips, distinct) with w:tblBorders and a Table Grid style: a tblHeader row, a
+ *                   gridSpan=2 cell, a vMerge restart (row 1, column 1) with its continuation in row 2, a two-paragraph cell, a cell holding a
+ *                   nested 2x2 table, an empty cell; one paragraph before and one after the table
  *   google-export.docx  Google Docs shape: goog_rdk_* w:sdt wrappers (one nested two deep) around runs, plus word/fonts/ font
  */
 process.env.TZ = 'UTC'; // must precede any Date use so zip timestamps are reproducible
@@ -299,6 +302,34 @@ const LISTS_RELS = BODY_RELS.replace(
   `<Relationship Id="rId20" Type="${R}/numbering" Target="numbering.xml"/></Relationships>`,
 );
 
+// ─── tables.docx ─────────────────────────────────────────────────────────────
+
+const STYLES_TABLES = STYLES_BODY.replace(
+  '</w:styles>',
+  `<w:style w:type="table" w:styleId="TableGrid"><w:name w:val="Table Grid"/><w:tblPr><w:tblInd w:w="0" w:type="dxa"/></w:tblPr></w:style>
+</w:styles>`,
+);
+
+const BORDER = (side: string) => `<w:${side} w:val="single" w:sz="4" w:space="0" w:color="000000"/>`;
+/** A cell: text paragraphs, optionally spanning grid columns and carrying a w:vMerge ('restart' | 'continue'). */
+const tc = (w: number, inner: string, extra = '') => `<w:tc><w:tcPr><w:tcW w:w="${w}" w:type="dxa"/>${extra}</w:tcPr>${inner}</w:tc>`;
+const NESTED_TABLE = `<w:tbl><w:tblPr><w:tblW w:w="1800" w:type="dxa"/></w:tblPr><w:tblGrid><w:gridCol w:w="900"/><w:gridCol w:w="900"/></w:tblGrid>
+<w:tr>${tc(900, plain('nested 1'))}${tc(900, plain('nested 2'))}</w:tr>
+<w:tr>${tc(900, plain('nested 3'))}${tc(900, plain('nested 4'))}</w:tr></w:tbl>`;
+
+const TABLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="${W}" xmlns:r="${R}"><w:body>
+${plain('Before the table.')}
+<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="9540" w:type="dxa"/><w:tblBorders>${['top', 'left', 'bottom', 'right', 'insideH', 'insideV'].map(BORDER).join('')}</w:tblBorders><w:tblLook w:val="04A0"/></w:tblPr>
+<w:tblGrid><w:gridCol w:w="1800"/><w:gridCol w:w="2700"/><w:gridCol w:w="3600"/><w:gridCol w:w="1440"/></w:tblGrid>
+<w:tr><w:trPr><w:tblHeader/></w:trPr>${tc(1800, plain('Head A'))}${tc(2700, plain('Head B'))}${tc(3600, plain('Head C'))}${tc(1440, plain('Head D'))}</w:tr>
+<w:tr>${tc(1800, plain('Tall cell'), '<w:vMerge w:val="restart"/>')}${tc(6300, plain('Wide cell'), '<w:gridSpan w:val="2"/>')}${tc(1440, plain('r1 c4'))}</w:tr>
+<w:tr>${tc(1800, '<w:p/>', '<w:vMerge/>')}${tc(2700, plain('r2 c2 first paragraph') + plain('r2 c2 second paragraph'))}${tc(3600, plain('r2 c3'))}${tc(1440, plain('r2 c4'))}</w:tr>
+<w:tr>${tc(1800, plain('r3 c1'))}${tc(2700, NESTED_TABLE + '<w:p/>')}${tc(3600, '<w:p/>')}${tc(1440, plain('r3 c4'))}</w:tr>
+</w:tbl>
+${plain('After the table.')}
+<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:body></w:document>`;
+
 function basePackage(
   opts: { main?: string; documentXml?: string; stylesXml?: string | null; relsXml?: string; extra?: Record<string, string | Uint8Array>; contentTypesXml?: string } = {},
 ): JSZip {
@@ -503,6 +534,8 @@ const fixtures: Record<string, () => Promise<Uint8Array>> = {
         extra: { 'word/numbering.xml': NUMBERING_LISTS },
       }),
     ),
+
+  'tables.docx': () => build(basePackage({ documentXml: TABLES, stylesXml: STYLES_TABLES, relsXml: BODY_RELS })),
 
   'truncated.docx': () =>
     build(basePackage({ documentXml: DOCUMENT.slice(0, DOCUMENT.indexOf('<w:t>Second') + '<w:t>Sec'.length) })),

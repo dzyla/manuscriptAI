@@ -18,13 +18,53 @@ import { parseXml } from '../preserve/xml';
 import { getSpecSchema } from '../../extensions/schemaSpecs';
 import { W_NS, isW } from './ooxml';
 import { blockChildren, readParagraph, paragraphDrafts } from './paragraphs';
-import { bodyFontSize, detectHeadings, hasHeadings, inferHeadings } from './headings';
+import { applyHeadings, bodyFontSize, detectHeadings, hasHeadings, inferHeadings } from './headings';
 import { isGoogleSdt } from './sdt';
 import { groupListParagraphs, readNumbering } from './numbering';
+import { readTable } from './tables';
 import type { ReadContext } from './context';
 
 const dir = new URL('../../../fixtures/private/', import.meta.url);
 const docs = existsSync(dir) ? readdirSync(dir).filter(f => f.toLowerCase().endsWith('.docx')) : [];
+
+/**
+ * The block stream a body reader builds: paragraphs, tables and lists grouped per container, in document order. Counts only are
+ * ever derived from it in these tests; no document text is printed.
+ */
+async function readBlocks(name: string) {
+  const b = readFileSync(new URL(name, dir));
+  const pkg = await openPackage(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer);
+  const report = createReport();
+  let n = 0;
+  const ctx: ReadContext = {
+    pkg,
+    styles: readStyles(pkg, report),
+    report,
+    preservation: emptyPreservationStore(),
+    assets: [],
+    nextId: () => `b${++n}`,
+  };
+  ctx.numbering = readNumbering(pkg, report);
+  const body = pkg.xml(mainDocumentPart(pkg))!.getElementsByTagNameNS(W_NS, 'body')[0];
+  const sources = blockChildren(body, ctx).filter(el => isW(el, 'p') || isW(el, 'tbl'));
+  const flat = sources.flatMap((el): JSONContent[] => (isW(el, 'p') ? [readParagraph(el, ctx)].flat() : [readTable(el, ctx)]));
+  const blocks = groupListParagraphs(flat.map(node => ({ node })), ctx.numbering, ctx);
+  return { pkg, ctx, report, body, sources, flat, blocks, doc: { type: 'doc', content: blocks } as JSONContent };
+}
+
+const textOf = (n: JSONContent): string => (n.type === 'text' ? n.text ?? '' : (n.content ?? []).map(textOf).join(''));
+
+const childrenW = (el: Element, local: string): Element[] =>
+  Array.from(el.childNodes).filter((c): c is Element => c.nodeType === 1 && isW(c as Element, local));
+const all = (blocks: JSONContent[], pred: (n: JSONContent) => boolean): JSONContent[] => {
+  const out: JSONContent[] = [];
+  const walk = (n: JSONContent): void => {
+    if (pred(n)) out.push(n);
+    (n.content ?? []).forEach(walk);
+  };
+  blocks.forEach(walk);
+  return out;
+};
 
 describe.skipIf(docs.length === 0)('private real-world documents', () => {
   it.each(docs)('%s: opens, every XML part passes strict parsing, nothing is deferred', async name => {
@@ -179,23 +219,8 @@ describe.skipIf(docs.length === 0)('private real-world documents', () => {
   });
 
   it.each(docs)('%s: inferred headings are plausible (counts here; titles are printed for the reviewer)', async name => {
-    const b = readFileSync(new URL(name, dir));
-    const pkg = await openPackage(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer);
-    const report = createReport();
-    let n = 0;
-    const ctx: ReadContext = {
-      pkg,
-      styles: readStyles(pkg, report),
-      report,
-      preservation: emptyPreservationStore(),
-      assets: [],
-      nextId: () => `b${++n}`,
-    };
-    const body = pkg.xml(mainDocumentPart(pkg))!.getElementsByTagNameNS(W_NS, 'body')[0];
-    // Lists are grouped BEFORE headings are inferred, so a bold list item is never a title candidate.
-    const flat = blockChildren(body, ctx).filter(el => isW(el, 'p')).flatMap(p => [readParagraph(p, ctx)].flat());
-    const blocks = groupListParagraphs(flat.map(node => ({ node })), readNumbering(pkg, report), ctx);
-    const doc: JSONContent = { type: 'doc', content: blocks };
+    // The grouped document INCLUDING its tables: a candidate index is a position in exactly this array.
+    const { ctx, report, sources, blocks, doc } = await readBlocks(name);
 
     // Both real grants style no heading at all, although their styles.xml defines Heading 1-3.
     expect(hasHeadings(doc)).toBe(false);
@@ -203,9 +228,39 @@ describe.skipIf(docs.length === 0)('private real-world documents', () => {
 
     const warningsBefore = report.warnings.length;
     const found = inferHeadings(doc, ctx);
-    expect(found.length).toBeGreaterThan(0);
+    // Both real documents: 9 inferred headings, with their tables in the block stream.
+    expect(found).toHaveLength(9);
     expect(report.counts.inferredHeading).toBe(found.length);
     expect(report.warnings.length).toBe(warningsBefore + 1);
+
+    // The candidate indices are positions in the GROUPED document, tables included. Checked three independent ways:
+    // (a) each index names, in the source XML, the very paragraph whose text the candidate carries (one block per source
+    //     block holds for both documents: no list here has more than one paragraph, so grouping does not merge blocks);
+    expect(blocks.length).toBe(sources.length);
+    const collapse = (t: string) => t.replace(/\s+/g, ' ').trim();
+    for (const c of found) {
+      const src = sources[c.index];
+      expect(isW(src, 'p'), `candidate ${c.index} is not a paragraph in the source`).toBe(true);
+      expect(collapse(Array.from(src.getElementsByTagNameNS(W_NS, 't')).map(t => t.textContent ?? '').join(''))).toBe(collapse(c.text));
+    }
+    // (b) applying them converts exactly those blocks to headings, each with the text it was proposed for, and every table is
+    //     the very same untouched object
+    const applied = applyHeadings(doc, found);
+    expect(applied.content!.filter(x => x.type === 'heading')).toHaveLength(9);
+    for (const c of found) {
+      expect(applied.content![c.index].type).toBe('heading');
+      expect(collapse(textOf(applied.content![c.index]))).toBe(collapse(c.text));
+    }
+    blocks.forEach((blk, i) => {
+      if (blk.type === 'table') expect(applied.content![i]).toBe(blk);
+    });
+    // (c) the table really is in the stream the detector saw, and (snsf) some titles sit after it, so a missing table would shift them
+    const tableIndexes = blocks.map((x, i) => (x.type === 'table' ? i : -1)).filter(i => i >= 0);
+    expect(tableIndexes).toEqual(name === 'snsf.docx' ? [88] : []);
+    if (name === 'snsf.docx') {
+      expect(found.some(c => c.index < 88)).toBe(true);
+      expect(found.some(c => c.index > 88)).toBe(true);
+    }
 
     // No candidate is a paragraph holding an opaque atom other than a comment anchor, and none is a paragraph
     // the reader gave a Word heading to.
@@ -324,6 +379,114 @@ describe.skipIf(docs.length === 0)('private real-world documents', () => {
         `${lists.length} lists (${kinds.bullet} bullet, ${kinds.ordered} ordered), ${blocks.filter(isList).length} top-level, by depth ${JSON.stringify(byDepth)} (max depth ${maxDepth}), ${items} list items, ` +
         `${paragraphsOut.length - flat.length === 0 ? 'all' : 'NOT all'} ${flat.length} paragraphs kept, ${lostProvenance} lost provenance, ` +
         `complexNumbering ${report.counts.complexNumbering ?? 0} (${report.warnings.filter(w => w.feature === 'complexNumbering').length} distinct warnings), summary "${summarizeReport(report)}"`,
+    );
+  });
+  it.each(docs)('%s: tables are read, no cell, row or paragraph dropped or duplicated, provenance holds (counts only)', async name => {
+    const { ctx, report, body, blocks, doc } = await readBlocks(name);
+    const tcCount = (t: Element): number => childrenW(t, 'tr').reduce((a, r) => a + childrenW(r, 'tc').length, 0);
+
+    // ── what the source says, counted from the XML alone ────────────────────────────────────────────────────────
+    const domTables = Array.from(body.getElementsByTagNameNS(W_NS, 'tbl'));
+    const domTop = domTables.filter(t => !domTables.some(o => o !== t && o.contains(t)));
+    const domNested = domTables.length - domTop.length;
+    const domRows = domTables.reduce((a, t) => a + childrenW(t, 'tr').length, 0);
+    const domCells = domTables.reduce((a, t) => a + tcCount(t), 0);
+    const tcs = domTables.flatMap(t => childrenW(t, 'tr').flatMap(r => childrenW(r, 'tc')));
+    const tcProp = (tc: Element, local: string): Element | undefined => {
+      const pr = childrenW(tc, 'tcPr')[0];
+      return pr && childrenW(pr, local)[0];
+    };
+    const domColspan = tcs.filter(tc => Number(tcProp(tc, 'gridSpan')?.getAttributeNS(W_NS, 'val') ?? 1) > 1).length;
+    const domRestart = tcs.filter(tc => tcProp(tc, 'vMerge')?.getAttributeNS(W_NS, 'val') === 'restart').length;
+    const domContinue = tcs.filter(tc => tcProp(tc, 'vMerge') && tcProp(tc, 'vMerge')!.getAttributeNS(W_NS, 'val') !== 'restart').length;
+    const continuationParagraphs = tcs
+      .filter(tc => tcProp(tc, 'vMerge') && tcProp(tc, 'vMerge')!.getAttributeNS(W_NS, 'val') !== 'restart')
+      .reduce((a, tc) => a + childrenW(tc, 'p').length, 0);
+    const KEPT_WHOLE = ['ins', 'del', 'moveFrom', 'moveTo', 'drawing', 'pict', 'object'];
+    const keptWhole = (el: Element): boolean => {
+      for (let q = el.parentNode; q; q = q.parentNode) if (q.nodeType === 1 && (q as Element).namespaceURI === W_NS && KEPT_WHOLE.includes((q as Element).localName)) return true;
+      return false;
+    };
+    const domParagraphs = Array.from(body.getElementsByTagNameNS(W_NS, 'p')).filter(x => !keptWhole(x)).length;
+
+    // ── what the reader made ────────────────────────────────────────────────────────────────────────────────────
+    const tableNodes = all(blocks, n => n.type === 'table');
+    const topTables = blocks.filter(b => b.type === 'table');
+    const cellNodes = all(blocks, n => n.type === 'tableCell' || n.type === 'tableHeader');
+    const rowNodes = all(blocks, n => n.type === 'tableRow');
+    const folded = cellNodes.reduce((a, c) => a + ((c.attrs!.rowspan as number) - 1), 0);
+    const paragraphNodes = all(blocks, n => n.type === 'paragraph' || n.type === 'heading');
+    const colspanNodes = cellNodes.filter(c => (c.attrs!.colspan as number) > 1).length;
+    const rowspanNodes = cellNodes.filter(c => (c.attrs!.rowspan as number) > 1).length;
+    const gridCols = (t: JSONContent) => domTop[topTables.indexOf(t)].getElementsByTagNameNS(W_NS, 'gridCol').length;
+
+    // 1. every table, row and cell of the source is accounted for: a model cell, or a cell folded into a rowspan
+    expect(topTables).toHaveLength(domTop.length);
+    expect(tableNodes).toHaveLength(domTables.length);
+    expect(domNested).toBe(tableNodes.length - topTables.length);
+    expect(rowNodes).toHaveLength(domRows);
+    expect(cellNodes.length + folded).toBe(domCells);
+    // 2. merges: horizontal ones exactly; vertical ones fold exactly the continuation cells (these documents' continuations are all blank)
+    expect(colspanNodes).toBe(domColspan);
+    expect(rowspanNodes).toBe(domRestart);
+    expect(folded).toBe(domContinue);
+    expect(report.counts.mergedCell ?? 0).toBe(cellNodes.filter(c => (c.attrs!.colspan as number) > 1 || (c.attrs!.rowspan as number) > 1).length);
+    expect(report.counts.table ?? 0).toBe(tableNodes.length);
+    // 3. no paragraph lost, duplicated or without provenance; the only source paragraphs not in the model are the hidden ones of folded cells
+    expect(paragraphNodes).toHaveLength(domParagraphs - continuationParagraphs);
+    const ids = paragraphNodes.map(x => (x.attrs!.ooxml as { blockId: string }).blockId);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(paragraphNodes.filter(x => !x.attrs?.ooxml || !isBlockUntouched(x))).toHaveLength(0);
+    expect(tableNodes.filter(t => !t.attrs?.ooxml || !isBlockUntouched(t))).toHaveLength(0);
+    for (const t of tableNodes) {
+      const frag = ctx.preservation.blocks[(t.attrs!.ooxml as { blockId: string }).blockId];
+      expect(frag, 'table fragment').toBeDefined();
+      expect(parseXml(frag.xml).documentElement.localName).toBe('tbl');
+    }
+    // 4. the model with its tables is a valid document and provenance survives schema normalization
+    const normalized = getSpecSchema().nodeFromJSON(doc);
+    expect(() => normalized.check()).not.toThrow();
+    const back = normalized.toJSON() as JSONContent;
+    expect(all(back.content!, n => n.type === 'table' || n.type === 'paragraph').filter(n => !isBlockUntouched(n))).toHaveLength(0);
+    // 5. no text lost anywhere in the body (paragraphs and tables): model text plus preserved fragments equals the source's w:t / w:delText / w:instrText
+    const strip = (x: string) => x.replace(/\s+/g, '');
+    const TEXT = ['t', 'delText', 'instrText'];
+    const textIn = (root: Element): string => TEXT.flatMap(t => Array.from(root.getElementsByTagNameNS(W_NS, t))).map(t => t.textContent ?? '').join('');
+    const hyphensIn = (root: Element): number => root.getElementsByTagNameNS(W_NS, 'noBreakHyphen').length + root.getElementsByTagNameNS(W_NS, 'softHyphen').length;
+    const fragRoots = Object.values(ctx.preservation.fragments).map(f => parseXml(f.xml).documentElement);
+    const docChars = strip(textOf(doc)).length;
+    const fragChars = strip(fragRoots.map(textIn).join('')).length;
+    const hyphens = hyphensIn(body) - fragRoots.reduce((a, r) => a + hyphensIn(r), 0);
+    expect(docChars + fragChars).toBe(strip(textIn(body)).length + hyphens);
+
+    // ── hand-measured shape of the two real documents ───────────────────────────────────────────────────────────
+    if (name === 'r01.docx') {
+      expect({ tables: tableNodes.length, rows: rowNodes.length, cells: cellNodes.length }).toEqual({ tables: 0, rows: 0, cells: 0 });
+    }
+    if (name === 'snsf.docx') {
+      // one table: 17 rows on a 2-column grid, 32 source cells of which 11 are blank vMerge continuations folded into 4 restart cells
+      // (spanning 5, 5, 3 and 2 rows); two rows (0 and 11) are a single cell spanning both columns; no nested table.
+      expect(tableNodes).toHaveLength(1);
+      expect(domNested).toBe(0);
+      expect(rowNodes).toHaveLength(17);
+      expect(gridCols(topTables[0])).toBe(2);
+      // cells per row in the model: a row below a restart has one fewer (its continuation cell is folded into the rowspan above)
+      expect(rowNodes.map(r => (r.content ?? []).length)).toEqual([1, 2, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 2, 1, 1, 2, 1]);
+      expect(cellNodes).toHaveLength(21);
+      expect(colspanNodes).toBe(2);
+      expect(rowspanNodes).toBe(4);
+      expect(cellNodes.filter(c => (c.attrs!.rowspan as number) > 1).map(c => c.attrs!.rowspan)).toEqual([5, 5, 3, 2]);
+      expect(folded).toBe(11);
+      expect(report.counts.mergedCell).toBe(6);
+      expect(all([topTables[0]], n => n.type === 'paragraph')).toHaveLength(21);
+      expect(blocks.findIndex(b => b.type === 'table')).toBe(88);
+      expect(blocks).toHaveLength(157);
+    }
+    console.log(
+      `tables ${name}: ${tableNodes.length} tables (${topTables.length} top-level, ${domNested} nested), ${rowNodes.length} rows, ${cellNodes.length} cells in the model + ${folded} folded = ${domCells} source cells, ` +
+        `grid columns ${JSON.stringify(topTables.map(gridCols))}, ${colspanNodes} colspan cells, ${rowspanNodes} rowspan cells (rowspans ${JSON.stringify(cellNodes.filter(c => (c.attrs!.rowspan as number) > 1).map(c => c.attrs!.rowspan))}), ` +
+        `${paragraphNodes.length} paragraphs kept of ${domParagraphs} (${continuationParagraphs} hidden in folded cells), 0 lost provenance, text chars conserved ${docChars}+${fragChars}, ` +
+        `tableBorders ${report.counts.tableBorders ?? 0}, tableLayout ${report.counts.tableLayout ?? 0}, mergedCell ${report.counts.mergedCell ?? 0}`,
     );
   });
 });

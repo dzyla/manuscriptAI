@@ -7,7 +7,7 @@ export type FeatureKey =
   | 'pageSetup' | 'trackedChange' | 'formatChange' | 'comment' | 'nativeCitation' | 'googleWrapper'
   // category 2 — approximated, semantically preserved
   | 'floatingImageOther' | 'tabStops' | 'keepRules' | 'tableBorders' | 'complexNumbering' | 'externalCitation'
-  | 'externalBibliography' | 'inferredHeading'
+  | 'externalBibliography' | 'inferredHeading' | 'tableLayout'
   // category 3 — opaque, preserved while untouched
   | 'equation' | 'footnoteRef' | 'endnoteRef' | 'contentControl' | 'bookmark' | 'unknownField'
   | 'oleObject' | 'sectionBreak'
@@ -19,7 +19,7 @@ export const FIDELITY: Record<FeatureKey, FidelityCategory> = {
   mergedCell: 1, inlineImage: 1, floatingImageSquare: 1, caption: 1, pageBreak: 1, hyperlink: 1,
   pageSetup: 1, trackedChange: 1, formatChange: 1, comment: 1, nativeCitation: 1, googleWrapper: 1,
   floatingImageOther: 2, tabStops: 2, keepRules: 2, tableBorders: 2, complexNumbering: 2,
-  externalCitation: 2, externalBibliography: 2, inferredHeading: 2,
+  externalCitation: 2, externalBibliography: 2, inferredHeading: 2, tableLayout: 2,
   equation: 3, footnoteRef: 3, endnoteRef: 3, contentControl: 3, bookmark: 3, unknownField: 3,
   oleObject: 3, sectionBreak: 3,
   activeX: 4, textBox: 4, smartArt: 4,

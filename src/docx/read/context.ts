@@ -2,6 +2,7 @@ import type { ImportReport, FeatureKey } from '../fidelity';
 import { addWarning, type FidelityCategory } from '../fidelity';
 import type { PreservationStore } from '../preserve/types';
 import type { DocxPackage } from './package';
+import type { NumberingMap } from './numbering';
 import type { StylesResult } from './styles';
 
 /** A binary asset found in the package, committed by the repository only after the author confirms. */
@@ -18,6 +19,11 @@ export interface ReadContext {
   report: ImportReport;
   preservation: PreservationStore;
   assets: AssetDraft[];
+  /**
+   * The document's numbering definitions. Optional: whoever reads blocks that can hold lists (the body reader, table cells) may
+   * set it once up front; `readTable` reads and caches it here when it is not set.
+   */
+  numbering?: NumberingMap;
   /** Unique ids for blocks and fragments. */
   nextId: () => string;
 }

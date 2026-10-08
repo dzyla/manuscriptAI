@@ -295,6 +295,14 @@ function numPrOf(node: JSONContent, numbering: NumberingMap, ctx: ReadContext): 
   return { numId, ilvl: Math.min(8, Math.max(0, ilvl ?? 0)) };
 }
 
+/**
+ * What Word counts a numbered list's numbers by: every w:num that shares one abstractNum (and has no lvlOverride) continues the
+ * same count; a w:num with a lvlOverride counts on its own. Two lists with the same key are one count in Word.
+ */
+export function listCounterKey(numId: number, def: NumberingDef): string {
+  return def.hasOverride || def.abstractNumId === null ? `n${numId}` : `a${def.abstractNumId}`;
+}
+
 // ─── grouping ───────────────────────────────────────────────────────────────────────────────────────────────
 
 /** A list as it is built: the node, and every paragraph the group holds (so a failed validation can fall back to them). */
@@ -386,7 +394,7 @@ export function groupListParagraphs(blocks: ReadonlyArray<Pick<ParagraphDraft, '
     const parent = stack[stack.length - 1];
 
     // Word's number for this item: continues what this numId has reached at this level, restarts below a higher level.
-    const key = def.hasOverride || def.abstractNumId === null ? `n${np.numId}` : `a${def.abstractNumId}`;
+    const key = listCounterKey(np.numId, def);
     const byLevel = counters.get(key) ?? new Map<number, number>();
     counters.set(key, byLevel);
     const previous = byLevel.get(np.ilvl);
