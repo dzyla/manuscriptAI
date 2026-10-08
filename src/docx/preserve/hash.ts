@@ -55,14 +55,27 @@ function skeleton(node: JSONContent): JSONContent {
  * any nested tables' skeletons count; every paragraph, list and opaque block in a cell does not. `blockHash` of a table changes
  * when one character in one cell changes, which says "the table was edited" but not "the table's shape was".
  *
- * WHAT IT MEANS, AND NOTHING MORE: while `structureHash(table)` equals the stored `ooxml.structureHash`, the original `<w:tbl>`
- * SHELL (`tblPr`, `tblGrid`, each row's `trPr`, each cell's `tcPr`) is still valid and can be reused. It does NOT say the cell
- * contents are unchanged or still where they were: moving a paragraph to another cell, reordering the blocks of a cell, swapping a
- * nested table and a paragraph, swapping two rows of identical shape, or replacing a cell's content with a list, all leave it
- * unchanged. So a writer that reuses the shell must still rebuild EACH CELL'S BLOCK SEQUENCE from the model (by each block's
- * `ooxml.blockId`, re-emitting an untouched block's original XML), never patch "only the paragraphs that were edited" into the old
- * cells. By position, a cell keeps its `tcPr` (shading, margins) and a row its `trPr` (height), so two identical-shaped rows that
- * swap keep their formatting in place and move their content: defensible.
+ * WHAT IT MEANS, AND NOTHING MORE. The hash covers only the model-visible skeleton above. The shell (`tblPr`, `tblGrid`, each row's
+ * `trPr`, each cell's `tcPr`: borders, shading, margins, row heights, the style) is NOT in the model, so the hash cannot see a
+ * change to it; "equal hash means the shell is still valid" holds only because the app has no way to edit those properties. While
+ * the hash equals the stored `ooxml.structureHash`, the original shell can be reused. The hash says nothing about where cell
+ * CONTENT is: moving a paragraph to another cell, reordering a cell's blocks, swapping a nested table and a paragraph, swapping two
+ * rows of identical shape, or replacing a cell's content with a list, all leave it unchanged. A writer that reuses the shell must
+ * therefore rebuild EACH CELL'S BLOCK SEQUENCE from the model (by each block's `ooxml.blockId`, re-emitting an untouched block's
+ * original XML), never patch "only the edited paragraphs" into the old cells. Because `tcPr` and `trPr` stay by POSITION, two
+ * identical-shaped rows that swap move their content but not their formatting: a shaded totals row swapped with a plain row shows
+ * the shading on the wrong row.
+ *
+ * WHAT IS NOT IN THE MODEL AT ALL, and so must come from the original `<w:tbl>` (`preservation.blocks[blockId]`, the source of the
+ * row and cell sequence): (1) folded vMerge continuations. Each `<w:tc>` folded into a `rowspan` is blank and is not a model cell;
+ * it exists only in the original XML, with its `tcPr` (vMerge, shading, borders). Re-emit the original `<w:tr>`/`<w:tc>` sequence
+ * and re-insert each folded cell at its grid column, or the row and the grid fall out of alignment. (2) Rows with no model cells:
+ * a `<w:tr>` whose cells were all folded (or that carried only `trPr`) is a model row with no cells; re-emit it from the original
+ * XML. Nothing is lost in text, but the structure is, if the writer builds rows from model cells alone.
+ *
+ * The hash format is not stable across builds (round 1 omitted `content` for a cell without nested tables; round 2 always sets it).
+ * That is harmless only because nothing is persisted yet: a table stamped by an older build would read as "shape changed" and be
+ * rebuilt without its original shell. Change the format again only before A2a ships, or version it.
  */
 export function structureHash(table: JSONContent): string {
   return cyrb53(stableStringify(skeleton(table)));

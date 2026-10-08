@@ -10,12 +10,17 @@ import type { JSONContent } from '@tiptap/core';
 
 let tableCalls = 0;
 let failTableCall = 0;
+let failParagraphs = 0;
 vi.mock('../../extensions/schemaSpecs', async importOriginal => {
   const actual = await importOriginal<typeof import('../../extensions/schemaSpecs')>();
   return {
     ...actual,
     specNormalizeNode: (n: { type?: string }) => {
       if (n.type === 'table' && ++tableCalls === failTableCall) throw new Error('forced');
+      if (n.type === 'paragraph' && failParagraphs > 0) {
+        failParagraphs--;
+        throw new Error('forced');
+      }
       return actual.specNormalizeNode(n as never);
     },
   };
@@ -37,13 +42,13 @@ const t = (text: string) => `<w:r><w:t>${text}</w:t></w:r>`;
 const cell = (inner: string) => `<w:tc>${inner}</w:tc>`;
 const table = (cells: string) => `<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="1000"/></w:tblGrid><w:tr>${cells}</w:tr></w:tbl>`;
 
-async function read(bodyXml: string) {
+async function read(bodyXml: string, preservation = emptyPreservationStore()) {
   const zip = await JSZip.loadAsync(readFileSync(new URL('../../test/fixtures/docx/minimal.docx', import.meta.url)));
   zip.file('word/document.xml', `<?xml version="1.0"?><w:document xmlns:w="${WNS}"><w:body>${bodyXml}</w:body></w:document>`);
   const pkg = await openPackage(await zip.generateAsync({ type: 'arraybuffer' }));
   const report = createReport();
   let n = 0;
-  const ctx = { pkg, styles: readStyles(pkg, report), report, preservation: emptyPreservationStore(), assets: [], nextId: () => `id${++n}` };
+  const ctx = { pkg, styles: readStyles(pkg, report), report, preservation, assets: [], nextId: () => `id${++n}` };
   const body = pkg.xml(mainDocumentPart(pkg))!.getElementsByTagNameNS(WNS, 'body')[0];
   const blocks = blockChildren(body, ctx).flatMap((el): JSONContent[] => (isW(el, 'p') ? [readParagraph(el, ctx)].flat() : isW(el, 'tbl') ? [readTable(el, ctx)] : []));
   return { ctx, report, blocks, doc: { type: 'doc', content: blocks } as JSONContent };
@@ -118,5 +123,45 @@ describe('a table that cannot be normalized is abandoned cleanly', () => {
     expect(r.report.counts.table).toBe(2);
     expect(r.report.counts.trackedChange).toBe(1);
     expect(r.report.counts.comment).toBe(1);
+  });
+});
+
+describe('the abandon paths do no map scans (counted, not timed)', () => {
+  it('a forced paragraph failure and a forced table failure remove their own entries by id, scanning neither preservation map', async () => {
+    let scans = 0;
+    const counting = <T extends object>(o: T): T =>
+      new Proxy(o, {
+        ownKeys(target) {
+          scans++;
+          return Reflect.ownKeys(target);
+        },
+      });
+    const store = emptyPreservationStore();
+    store.blocks = counting(store.blocks);
+    store.fragments = counting(store.fragments);
+    const ins = (n: number) => `<w:ins w:id="${n}" w:author="A" w:date="2026-01-01T00:00:00Z"><w:r><w:t>added</w:t></w:r></w:ins>`;
+    // the first paragraph fails to normalize (its tracked insertion is withdrawn: readParagraph's catch path); the second table
+    // fails its 2nd normalization (the outer one, after its nested table succeeded: rollbackPoint's closure with ids to remove)
+    const bodyXml =
+      p(t('first') + ins(1)) +
+      table(cell(p(t('x') + ins(2)) + table(cell(p(t('nested') + ins(3)))))) +
+      p(t('last') + ins(4));
+    tableCalls = 0;
+    failTableCall = 2;
+    failParagraphs = 1;
+    const r = await read(bodyXml, store);
+    failTableCall = 0;
+    failParagraphs = 0;
+    const scansWhileReading = scans;
+
+    expect(r.blocks.map(b => b.type)).toEqual(['paragraph', 'opaqueBlock', 'paragraph']);
+    expect(scansWhileReading).toBe(0);
+    // and both paths really ran: the first paragraph kept only its text and has no provenance; the table was kept whole
+    expect(r.blocks[0].attrs!.ooxml).toBeNull();
+    expect(r.report.warnings.some(w => /A paragraph could not be represented/.test(w.message))).toBe(true);
+    expect(r.report.warnings.some(w => w.feature === 'table' && /could not be represented/.test(w.message))).toBe(true);
+    // only the last paragraph's insertion and the kept-whole table remain as fragments, only the last paragraph as a block
+    expect(Object.keys(r.ctx.preservation.fragments).sort()).toEqual([...collectFragmentIds(r.doc)].sort());
+    expect(Object.keys(r.ctx.preservation.blocks)).toHaveLength(1);
   });
 });

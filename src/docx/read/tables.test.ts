@@ -942,19 +942,22 @@ describe('tables: bounded work', () => {
     const bodyXml =
       p('a') + `<w:p><w:r><w:t>b</w:t></w:r>${ins}<w:bookmarkStart w:id="1" w:name="m"/></w:p>` +
       tbl(grid(1000, 1000), tr(tc(`<w:p><w:r><w:t>c</w:t></w:r>${ins}</w:p>` + tbl(grid(500), tr(tc(p('d'))))) + tc(p('e')))) +
+      '<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="1000"/></w:tblGrid></w:tbl>' + // rowless: abandoned after it was started, so rollbackPoint's closure runs
       p('f');
     const r = await readDocument(await inline(bodyXml), store);
     const scansWhileReading = scans;
-    expect(r.blocks.map(b => b.type)).toEqual(['paragraph', 'paragraph', 'table', 'paragraph']);
+    expect(r.blocks.map(b => b.type)).toEqual(['paragraph', 'paragraph', 'table', 'opaqueBlock', 'paragraph']);
     expect(Object.keys(r.ctx.preservation.fragments).length).toBeGreaterThanOrEqual(3);
     expect(scansWhileReading).toBe(0);
   });
 });
 
 describe('tables: rarely-hit guards', () => {
-  it('gridBefore is clamped to the widest grid Word allows', async () => {
-    const r = await readInline(tbl(grid(...Array.from({ length: 100 }, () => 1500)), tr(tc(p('x')), '<w:gridBefore w:val="500"/>')));
-    expect(cellsOf(rowsOf(r.blocks[0])[0])[0].attrs!.colwidth).toEqual([100]); // starts at column 63, not 500 (beyond the grid)
+  it('gridBefore is clamped to exactly 63 columns (the widest grid Word allows)', async () => {
+    // column i is (i + 1) px wide, so the width the cell gets names the column it starts in
+    const widths = Array.from({ length: 100 }, (_, i) => (i + 1) * 15);
+    const r = await readInline(tbl(grid(...widths), tr(tc(p('x')), '<w:gridBefore w:val="500"/>')));
+    expect(cellsOf(rowsOf(r.blocks[0])[0])[0].attrs!.colwidth).toEqual([64]); // starts at column 63 (0-based), not 500 and not 99
   });
 
   it('a second tblGrid is ignored: the first one gives the widths', async () => {
