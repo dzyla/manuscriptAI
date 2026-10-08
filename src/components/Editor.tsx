@@ -907,6 +907,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
         // The editor's scrollIntoView uses the built-in ProseMirror scroll.
         // Also do a manual scroll of the parent container for reliable centering.
         setTimeout(() => {
+          if (editor.isDestroyed) return; // the editor can be unmounted while the scroll is pending
           const coords = editor.view.coordsAtPos(posMatch.from);
           if (coords) {
             const editorDom = editor.view.dom;
@@ -949,6 +950,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
       if (targetPos !== null) {
         editor.chain().focus().setTextSelection(targetPos + 1).scrollIntoView().run();
         setTimeout(() => {
+          if (editor.isDestroyed) return;
           const coords = editor.view.coordsAtPos(targetPos! + 1);
           if (coords) {
             const scrollParent = editor.view.dom.closest('.overflow-y-auto') || editor.view.dom.parentElement?.closest('.overflow-y-auto');
@@ -987,6 +989,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
       if (targetPos !== null) {
         editor.chain().focus().setTextSelection(targetPos).scrollIntoView().run();
         setTimeout(() => {
+          if (editor.isDestroyed) return;
           const coords = editor.view.coordsAtPos(targetPos!);
           if (coords) {
             const scrollParent = editor.view.dom.closest('.overflow-y-auto') || editor.view.dom.parentElement?.closest('.overflow-y-auto');

@@ -71,9 +71,10 @@ afterEach(cleanup);
  * What a passing row proves: the control is in the mounted App, visible to a person at desktop width, and enabled. Where a row ends in `expect:`/`count:`/`gone:` it also
  * proves the action took effect. A row that ends at a control (an upload, Send) is NOT evidence the feature works: the PDF parser is stubbed (pdfjs needs canvas), the
  * network is refused, and a Word import is the only worker path that runs for real. Treat those rows as "the way in has not been lost", nothing more.
- * `text:` never matches inside the document (a heading typed in the editor cannot stand in for a control); `ptext:` matches only inside the open panel.
+ * `text:` never matches inside the document (a heading typed in the editor cannot stand in for a control). `ptext:` matches only inside the open panel, `htext:` the top bar,
+ * `ctext:` the page canvas (the Editor's own stats bar and menus), `stext:` the status bar, `mtext:` a modal overlay.
  */
-export type Seed = 'saved-doc' | 'voice-profile' | 'table' | 'advisory' | 'local-model' | 'import' | 'snapshot' | 'grant' | 'suggestion' | 'history' | 'sources' | 'citations' | 'outline' | 'analyzing' | 'style-text' | 'text-selection' | 'word-selection' | 'figure';
+export type Seed = 'cited-text' | 'saved-doc' | 'voice-profile' | 'table' | 'advisory' | 'local-model' | 'import' | 'snapshot' | 'grant' | 'suggestion' | 'history' | 'sources' | 'citations' | 'outline' | 'analyzing' | 'style-text' | 'text-selection' | 'word-selection' | 'figure';
 export interface EntryPoint { feature: string; path: string[]; pending?: number; now?: string[]; isNew?: true; seed?: Seed[] }
 
 const W = 'rail:write', C = 'rail:cite', R = 'rail:review', F = 'rail:format';
@@ -129,18 +130,18 @@ export const ENTRY_POINTS: EntryPoint[] = [
   row('read the style comparison', [R, 'section:style'], 4, [F, 'section:style', 'ptext:Highlight flagged sentences in the editor'], ['style-text']),
   row('add writing samples for the voice profile', [R, 'section:style', 'control:voice-samples'], 4, [F, 'section:style', 'ptext:Add samples']),
   row('filter suggestions by severity', [R, 'control:filter'], 4, [R, 'section:suggestions', 'icon:funnel', 'ptext:All (*'], ['suggestion']),
-  row('run an analysis', [R, 'control:analyze'], 4, ['text:Analyze All']),
+  row('run an analysis', [R, 'control:analyze'], 4, ['htext:Analyze All']),
   row('stop a running analysis', [R, 'control:stop'], 4, ['title:Stop request'], ['analyzing']),
-  row('run one named agent', [R, 'control:analyze-agent-one'], 4, ['nextto:Analyze All*', 'text:Language Surgeon']),
+  row('run one named agent', [R, 'control:analyze-agent-one'], 4, ['nextto:Analyze All*', 'htext:Language Surgeon']),
   row('clear the reference search', [C, 'section:references', 'control:clear-reference-filter'], 5, [C, 'typein:Search references…|zz', 'icon:x'], ['sources', 'citations']),
   row('filter suggestions to one severity', [R, 'control:filter-severity'], 4, [R, 'section:suggestions', 'icon:funnel', 'ptext:Minor (*'], ['suggestion']),
-  row('run a single agent', [R, 'control:analyze-agent'], 4, ['nextto:Analyze All*', 'text:Run Single Agent']),
+  row('run a single agent', [R, 'control:analyze-agent'], 4, ['nextto:Analyze All*', 'htext:Run Single Agent']),
   row('summarize the manuscript and its gaps', [R, 'control:summary'], 4, ['title:Generate a high-level manuscript review*']),
   // Format
-  row('pick a grant template', [F, 'section:template'], 7, ['title:Grant mode*', 'title:Start from an NIH grant template']),
-  row('edit grant instructions', [F, 'section:template', 'control:instructions'], 7, ['title:Grant mode*', 'title:Add funder instructions*']),
-  row('see grant section page budgets', [F, 'section:template', 'control:budgets'], 7, ['title:Grant mode*', 'text:*/1 pg'], ['grant']),
-  row('trim an over-budget section', [F, 'section:template', 'control:trim'], 7, ['title:Grant mode*', 'text:Trim'], ['grant']),
+  row('pick a grant template', [F, 'section:template'], 7, ['title:Grant mode*', 'title:Start from an NIH grant template', 'css:[aria-label="Choose grant template"]']),
+  row('edit grant instructions', [F, 'section:template', 'control:instructions'], 7, ['title:Grant mode*', 'title:Add funder instructions*', 'css:[aria-label="Grant instructions"]']),
+  row('see grant section page budgets', [F, 'section:template', 'control:budgets'], 7, ['title:Grant mode*', 'htext:*/1 pg'], ['grant']),
+  row('trim an over-budget section', [F, 'section:template', 'control:trim'], 7, ['title:Grant mode*', 'htext:Trim'], ['grant']),
   row('switch between manuscript and grant mode', [F, 'section:template', 'control:mode'], 7, ['title:Grant mode*']),
   fresh('set page margins', [F, 'section:page'], 7),
   fresh('choose a format preset', [F, 'section:page', 'control:preset'], 7),
@@ -148,7 +149,7 @@ export const ENTRY_POINTS: EntryPoint[] = [
   // File and document (top bar)
   row('start a new manuscript', ['topbar:file', 'item:new'], 8, ['title:New Manuscript']),
   row('import a Word, JSON, Markdown or text file', ['topbar:file', 'item:import'], 8, ['text:Load Document (.json, .docx, .md, .txt)']),
-  row('see the import report again', ['topbar:file', 'item:import-report'], 8, ['text:Import report*'], ['import']),
+  row('see the import report again', ['topbar:file', 'item:import-report'], 8, ['text:Import report*', 'text:Import report'], ['import']),
   row('restore the previous document', ['topbar:file', 'item:revert-import'], 8, ['text:Restore previous document*'], ['import']),
   row('save a workspace file', ['topbar:file', 'item:save-workspace'], 8, ['text:Save Workspace']),
   row('export Markdown', ['topbar:file', 'item:export-md'], 8, ['text:Export Markdown']),
@@ -157,8 +158,8 @@ export const ENTRY_POINTS: EntryPoint[] = [
   row('undo', ['topbar:file', 'item:undo'], 8, ['title:Undo']),
   row('redo', ['topbar:file', 'item:redo'], 8, ['title:Redo']),
   row('rename the document', ['topbar:title'], 8, ['ph:Untitled Manuscript']),
-  row('open settings', ['topbar:overflow', 'item:settings'], 8, ['icon:settings']),
-  row('draft a rebuttal or cover letter', ['topbar:overflow', 'item:post-drafting'], 8, ['title:Post-Drafting: Rebuttal & Cover Letter']),
+  row('open settings', ['topbar:overflow', 'item:settings'], 8, ['icon:settings', 'text:AI Configuration']),
+  row('draft a rebuttal or cover letter', ['topbar:overflow', 'item:post-drafting'], 8, ['title:Post-Drafting: Rebuttal & Cover Letter', 'text:Post-Drafting Assistant']),
   row('read the keyboard shortcuts', ['topbar:overflow', 'item:shortcuts'], 8, ['title:Keyboard Shortcuts']),
   row('toggle dark mode', ['topbar:overflow', 'item:dark-mode'], 8, ['title:Dark Mode']),
   row('enter focus mode', ['topbar:overflow', 'item:focus-mode'], 8, ['title:Focus Mode']),
@@ -168,8 +169,8 @@ export const ENTRY_POINTS: EntryPoint[] = [
   row('read the page estimate', ['status:pages'], undefined, undefined),
   row('read the word count', ['status:words'], undefined, undefined),
   row('read the save state', ['status:save'], undefined, undefined),
-  row('read the token estimate and provider', ['status:tokens'], 8, ['text:*tokens']),
-  row('read characters, paragraphs and reading time', ['status:stats'], 8, ['text:*min read']),
+  row('read the token estimate and provider', ['status:tokens'], 8, ['stext:*tokens']),
+  row('read characters, paragraphs and reading time', ['status:stats'], 8, ['ctext:*min read']),
   row('analyze the section the cursor is in', ['topbar:ai', 'item:analyze-section'], 8, ['title:Analyze "Intro" section only'], ['outline']),
   // Text formatting and insert (top bar)
   ...[['bold', 'Bold'], ['italic', 'Italic'], ['underline', 'Underline'], ['heading 2', 'Heading 2'], ['heading 3', 'Heading 3'], ['bullet list', 'Bullet list'],
@@ -231,10 +232,10 @@ export const ENTRY_POINTS: EntryPoint[] = [
   row('insert an advisory suggestion as a note', [R, 'row:suggestion', 'control:insert-note'], 4, [R, 'section:suggestions', 'ptext:Insert note'], ['advisory']),
   row('dismiss an advisory suggestion', [R, 'row:suggestion', 'control:dismiss'], 4, [R, 'section:suggestions', 'ptext:Dismiss'], ['advisory']),
   row('click an applied change to find it in the text', [W, 'section:history', 'control:locate'], 6, [W, 'section:history', 'ptext:Alpha → beta gamma', 'expect:selection:beta gamma'], ['history', 'outline']),
-  row('stop an analysis from the top bar', ['topbar:ai', 'item:stop'], 8, ['rail:cite', 'text:Stop'], ['analyzing']),
-  row('confirm the export warning and download', ['topbar:file', 'item:export-confirm'], 8, ['text:Export Markdown', 'text:I Acknowledge — Download']),
-  row('cancel the export warning', ['topbar:file', 'item:export-cancel'], 8, ['text:Export Markdown', 'text:Cancel']),
-  row('close the shortcuts list', ['topbar:overflow', 'item:shortcuts-close'], 8, ['title:Keyboard Shortcuts', 'text:Close']),
+  row('stop an analysis from the top bar', ['topbar:ai', 'item:stop'], 8, ['rail:cite', 'htext:Stop'], ['analyzing']),
+  row('confirm the export warning and download', ['topbar:file', 'item:export-confirm'], 8, ['text:Export Markdown', 'mtext:I Acknowledge — Download']),
+  row('cancel the export warning', ['topbar:file', 'item:export-cancel'], 8, ['text:Export Markdown', 'mtext:Cancel']),
+  row('close the shortcuts list', ['topbar:overflow', 'item:shortcuts-close'], 8, ['title:Keyboard Shortcuts', 'mtext:Close']),
   row('measure my voice from pasted samples', [R, 'section:style', 'control:voice-measure'], 4, [F, 'section:style', 'ptext:Add samples', 'ptext:Measure my voice']),
   row('cancel adding voice samples', [R, 'section:style', 'control:voice-cancel'], 4, [F, 'section:style', 'ptext:Add samples', 'ptext:Cancel']),
   row('rebuild the voice profile', [R, 'section:style', 'control:voice-rebuild'], 4, [F, 'section:style', 'ptext:Rebuild'], ['voice-profile']),
@@ -254,17 +255,18 @@ export const ENTRY_POINTS: EntryPoint[] = [
   row('look up several DOIs typed after @', ['key:@', 'type:@10.1000/abc1,10.1000/abc2', 'text:Look up 2 DOIs via Crossref']),
   row('insert a typed DOI with Space', ['key:@', 'type:@10.1000/abc', 'keyhandled: ']),
   row('insert several typed DOIs with Space', ['key:@', 'type:@10.1000/abc1,10.1000/abc2', 'keyhandled: ']),
+  row('dismiss a failed DOI lookup', ['key:@', 'type:@10.1000/abc', 'keyhandled: ', 'text:Dismiss']),
   row('close the @ picker with Escape', ['key:@', 'text:Insert Citation', 'key:Escape', 'gone:Insert Citation']),
   row('choose the agent for a custom instruction', ['topbar:ai', 'item:instruct-agent'], 8, ['title:Custom instruction for selected text', 'select:Reviewer 2'], ['text-selection']),
   row('type a custom instruction', ['topbar:ai', 'item:instruct-text'], 8, ['title:Custom instruction for selected text', 'ph:e.g. Make this more concise...'], ['text-selection']),
-  row('read the character count', ['status:chars'], 8, ['text:*chars']),
-  row('read the paragraph count', ['status:paragraphs'], 8, ['text:*paragraphs']),
+  row('read the character count', ['status:chars'], 8, ['ctext:*chars']),
+  row('read the paragraph count', ['status:paragraphs'], 8, ['ctext:*paragraphs']),
   row('resize the side panel', [R, 'css:.cursor-col-resize', 'drag:-100', 'expect:panelwidth:500px']),
   // Keyboard bindings: independently losable, so each has its own row
   row('use the restore button on the import message', ['topbar:file', 'item:import-toast-action'], 8, ['importdocx:body-basics.docx', 'css:.toast-enter button', 'text:*Restored the document the import replaced*'], ['saved-doc']),
   row('save the workspace with Ctrl/Cmd+S', ['keyhandled:Mod+S']),
   row('analyze with Ctrl/Cmd+Shift+A', ['keyhandled:Mod+Shift+A']),
-  row('show the shortcuts with Ctrl/Cmd+?', ['key:Mod+?', 'text:Ctrl+Shift+A']),
+  row('show the shortcuts with Ctrl/Cmd+?', ['key:Mod+?', 'mtext:Ctrl+Shift+A']),
   row('bold with Ctrl+B', ['key:Ctrl+B', 'expect:bold'], undefined, undefined, ['text-selection']),
   row('italic with Ctrl+I', ['key:Ctrl+I', 'expect:italic'], undefined, undefined, ['text-selection']),
   row('underline with Ctrl+U', ['key:Ctrl+U', 'expect:underline'], undefined, undefined, ['text-selection']),
@@ -309,6 +311,8 @@ export function isShown(el: Element): boolean {
   return true;
 }
 
+/** Where each text kind looks. `text:` is the whole app minus the document and should be rare; the others name a region, so a label elsewhere cannot answer. */
+const SCOPES: Record<string, string> = { ptext: 'aside.u-shell-panel', htext: '.u-shell-top', ctext: '.u-shell-canvas', stext: '.u-shell-status', mtext: '.fixed.inset-0' };
 const innermost = (els: Element[]) => els.filter(e => !els.some(o => o !== e && e.contains(o)));
 const panelEl = () => document.querySelector('aside.u-shell-panel');
 /**
@@ -328,7 +332,7 @@ function candidates(kind: string, arg: string): Element[] {
   else if (kind === 'css') found = all(want);
   else if (kind === 'select') found = all('select').filter(sel => [...(sel as HTMLSelectElement).options].some(o => matches(norm(o.textContent), want)));
   else if (kind === 'text') found = textual(document.body);
-  else if (kind === 'ptext') found = panelEl() ? textual(panelEl()!) : [];
+  else if (kind in SCOPES) { const root = document.querySelector(SCOPES[kind]); found = root ? textual(root) : []; }
   else if (kind === 'nextto') found = innermost(all('button').filter(e => matches(norm(e.textContent), want))).map(e => e.closest('button')!.nextElementSibling).filter((e): e is Element => !!e);
   const shown = found.filter(isShown);
   return nth ? shown.slice(nth - 1, nth) : shown;
@@ -437,7 +441,7 @@ async function step(spec: string, isLast: boolean): Promise<void> {
   }
   if (kind === 'count') { const [t, n] = arg.split('='); await waitStep(`${spec} (clicking it changed what the chat will send)`, () => candidates('ptext', t).length === Number(n)); return; }
   if (kind === 'expect') { await expectation(arg); return; }
-  if (kind === 'gone') { await waitStep(`${spec} disappears`, () => candidates('text', arg).length === 0 && candidates('ptext', arg).length === 0); return; }
+  if (kind === 'gone') { await waitStep(`${spec} disappears`, () => Object.keys({ text: 1, ...SCOPES }).every(k => candidates(k, arg).length === 0)); return; }
   if (kind === 'select') {
     const sel = await waitStep(spec, () => candidates('select', arg)[0]) as HTMLSelectElement;
     if (isLast) { const opt = [...sel.options].find(o => matches(norm(o.textContent), arg))!; fireEvent.change(sel, { target: { value: opt.value } }); await waitStep(`${spec}: the choice took`, () => sel.value === opt.value); }
@@ -471,6 +475,7 @@ const seedAfter = async (seeds: Seed[] = []) => {
   await act(async () => {
     const ed = editor(); // the text first: highlights are drawn from the suggestions against the text that is there
     if (seeds.includes('outline') || seeds.includes('text-selection') || seeds.includes('word-selection')) ed.commands.setContent(POEM);
+    if (seeds.includes('cited-text')) ed.commands.setContent('<p>A claim that needs its source [1] right here.</p>');
     if (seeds.includes('style-text')) ed.commands.setContent(STYLE_TEXT);
     if (seeds.includes('table')) { ed.commands.setContent('<p>Cell text</p>'); ed.commands.insertTable({ rows: 2, cols: 2, withHeaderRow: false }); }
     if (seeds.includes('advisory')) useAIStore.setState({ suggestions: [{ id: 'adv', originalText: 'Alpha', suggestedText: '', explanation: 'Needs a citation', recommendation: 'Cite a source.', agent: 'reviewer-2', startIndex: 0, endIndex: 5, severity: 'major', kind: 'advisory' } as any] });
@@ -633,20 +638,25 @@ describe('the list itself', () => {
     }
     expect(uncovered, 'controls with a title and no row').toEqual([]);
   });
-  it('every button that is only text has a row that names its text', () => {
-    // Sees <button> elements in App, Editor, Sidebar and the style panel that carry no title/aria-label. Does NOT see: buttons built by a helper component
-    // (ToolbarButton is title-guarded above), modal contents (Settings, the grant pickers, Post-Drafting, import report, version history), or an icon-only button
-    // with no title (counted below). A reviewer adding a modal button must add the row by hand.
-    const textSteps = ENTRY_POINTS.flatMap(stepsOf).filter(st => /^(p?text|select):/.test(st)).map(st => st.slice(st.indexOf(':') + 1).replace(/#\d+$/, ''));
+  it('every button that is only text has a row whose step reaches that button', () => {
+    // Each text-only <button> in App, Editor, Sidebar and the style panel is matched, strictly (exact, or the step's own * wildcards), against the text steps whose SCOPE
+    // can contain it: panel files take ptext:/select:, Editor takes text:/ctext:, App takes text:/htext:/stext:/mtext:. A "Dismiss" in the Editor is therefore not
+    // satisfied by the Sidebar's `ptext:Dismiss`. Does NOT see: buttons built by a helper component (ToolbarButton is title-guarded), modal contents beyond the gate
+    // rows (Settings, the grant pickers, Post-Drafting, import report, version history), or an icon-only button with no title (counted below).
+    const KINDS: Record<string, string[]> = {
+      'src/App.tsx': ['text', 'htext', 'stext', 'mtext'], 'src/components/Editor.tsx': ['text', 'ctext'],
+      'src/components/Sidebar.tsx': ['ptext', 'select'], 'src/components/style/StylePanel.tsx': ['ptext'], 'src/components/style/VoiceProfileManager.tsx': ['ptext'],
+    };
+    const steps = ENTRY_POINTS.flatMap(stepsOf).map(st => ({ kind: st.slice(0, st.indexOf(':')), v: st.slice(st.indexOf(':') + 1).replace(/#\d+$/, '') }));
     const uncovered: string[] = [];
     for (const f of GUARDED) {
       for (const b of textOnlyButtons(source(f))) {
         if (b.words.length === 0) continue;
-        const named = b.words.some(w => textSteps.some(v => matches(w, v) || matches(v.replace(/^\*|\*$/g, ''), w) || w.includes(v.replace(/^\*|\*$/g, ''))) || w in NOT_A_FEATURE);
+        const named = b.words.some(w => w in NOT_A_FEATURE || steps.some(st => KINDS[f].includes(st.kind) && matches(w, st.v)));
         if (!named) uncovered.push(`${f}:${b.line}: ${b.words.join(' | ')}`);
       }
     }
-    expect(uncovered, 'text buttons with no row').toEqual([]);
+    expect(uncovered, 'text buttons with no row that reaches them').toEqual([]);
   });
   it('icon-only buttons (no title, no text) are counted: a new one must get a row with an icon: step', () => {
     const counts = Object.fromEntries(GUARDED.map(f => [f, textOnlyButtons(source(f)).filter(b => b.words.length === 0).length]));
@@ -760,4 +770,23 @@ describe('App wiring (behaviour)', () => {
     expect(box().value).toBe('half-written question');
     expect(panel().querySelector('textarea')).toBe(before); // the same element: it was hidden, not remounted
   });
+});
+
+// ── An editor unmounted while a scroll or insert is pending must not throw (a real bug these rows exposed: Editor's setTimeout callbacks used a destroyed view) ──
+describe('unmounting with a pending editor timer', () => {
+  const unmountWhilePending = async (setup: string[], seed: Seed[], act: string) => {
+    await resolve(setup, seed);
+    const [kind, ...arg] = [act.slice(0, act.indexOf(':')), act.slice(act.indexOf(':') + 1)];
+    const target = await waitStep(act, () => candidates(kind, arg.join(':'))[0]); // located before the clock is faked (waitFor needs real timers)
+    expect(target, act).toBeDefined();
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      click(target); // schedules the 50 ms callback
+      cleanup(); // the editor is destroyed before it fires
+      expect(() => vi.advanceTimersByTime(200)).not.toThrow();
+    } finally { vi.useRealTimers(); }
+  };
+  it('after a click on an outline heading', async () => { await unmountWhilePending([W, 'section:outline'], ['outline'], 'ptext:Intro'); }, 20000);
+  it('after a click on a suggestion card', async () => { await unmountWhilePending([R, 'section:suggestions'], ['suggestion', 'outline'], 'ptext:EXPLAIN_ME'); }, 20000);
+  it('after jumping to a citation', async () => { await unmountWhilePending([C], ['sources', 'citations', 'cited-text'], 'title:Jump to citation in document'); }, 20000);
 });
