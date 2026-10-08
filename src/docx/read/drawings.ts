@@ -13,15 +13,28 @@
  *     whole `<w:drawing>` (the `wp:inline` or `wp:anchor` with its position, wrap distances, effect extent, `a:srcRect` crop, effects,
  *     `docPr` ids, and the `r:embed` / `r:link` relationship id, listed in the fragment's `relIds`). Change the size by patching
  *     `wp:extent` (and `a:ext` under `pic:spPr`) of that drawing, never by rebuilding it.
- *   - `attrs.ooxml` (present when the image stands for a WHOLE paragraph: a figure on its line of its own): `blockId` ->
- *     `preservation.blocks[id]`, the original `<w:p>`. While the node is untouched (`isBlockUntouched`) re-emit that paragraph
- *     verbatim. Once edited, rebuild the paragraph from this `<w:p>`'s `<w:pPr>` and the fragment's run.
+ *   - `attrs.ooxml` (present when the image stands for a WHOLE paragraph: a figure on its line of its own, bookmarks round it or
+ *     not): `blockId` -> `preservation.blocks[id]`, the original `<w:p>`. While the node is untouched (`isBlockUntouched`)
+ *     re-emit that paragraph verbatim. Once edited, PATCH that `<w:p>` (replace the run that holds the drawing with the fragment's
+ *     run, change `wp:extent`), never rebuild it from `<w:pPr>` alone: the bookmarks round the figure (cross-reference targets) and
+ *     anything else in the paragraph are only in that XML; the bookmark atoms are deliberately not in the model.
  *   - `attrs.anchorBlockId` (present when the picture was lifted OUT of a paragraph that has other content, typically a floating
  *     picture anchored in a paragraph of text): the `ooxml.blockId` of that paragraph. The image node comes immediately before it.
- *     That paragraph's original XML STILL CONTAINS the drawing, and the paragraph node does not. While the paragraph is untouched
- *     it is re-emitted verbatim and the image must NOT be emitted again. It may be re-emitted verbatim only if every image node
- *     naming it in `anchorBlockId` is still in the document: when the author deleted the image, the anchor must be removed from the
- *     paragraph's XML. When the paragraph is edited (so rebuilt), put each surviving image's fragment run back into it.
+ *     That paragraph's original XML STILL CONTAINS the drawing, and the paragraph node does not, so a verbatim re-emit of the host
+ *     would bring back a deleted picture, ignore a moved one and never write a copy. The model alone cannot tell (the host stays
+ *     `isBlockUntouched`, and the image's fragment is pruned with the image). The read therefore records, on the HOST's block entry
+ *     (`preservation.blocks[hostBlockId].lifted`, never pruned), `[{ fragmentId, drawingIndex }]`: the image's fragment id and its
+ *     ordinal among ALL `w:drawing` elements of that `<w:p>` in document order (not `docPr@id`: those are not unique). A writer
+ *     calls `planLiftedDrawings(doc, store)` (preserve/lifted.ts), which compares record and document:
+ *       * a recorded fragment with no surviving node            -> `strip` that ordinal from the host's XML (deleted);
+ *       * a node still named for its host but no longer in front of it, or whose host is gone -> `strip` it there and `emit` it
+ *         at its new position (moved: dragging, or cut and paste, keeps `fragmentId` and `anchorBlockId`);
+ *       * a node whose `fragmentId` is in no record (a pasted copy gets a fresh one, and keeps `anchorBlockId`) -> `emit` it from
+ *         its fragment;
+ *       * a node in place whose host was edited -> `emit` it INTO the rebuilt host.
+ *     STILL OMITTED: where in a rebuilt host a surviving run goes. The original position among the host's runs is lost; put it at
+ *     the start of the host's content, in image order. That is faithful for a floating picture (positioned relative to the
+ *     paragraph) and NOT for an inline picture lifted from the middle of a sentence, which moves to the front of its paragraph.
  *   - The bytes: `assets[]` of the import (the same `AssetDraft` ids the nodes carry); the package's own copy stays in `pkg`.
  *   - An external (`r:link`) picture is a placeholder node (`src` and `assetId` null). Nothing is fetched; the link is in the
  *     fragment and in `preservation.rels`.
@@ -96,6 +109,15 @@ export function sniffImageMime(b: Uint8Array): string | undefined {
   return undefined;
 }
 
+/**
+ * NOTE: the package defers EVERY non-XML part, so for real input `isDeferred` is always true and the synchronous `bytes` branch
+ * below is never taken (all of the user's real media is read through `bytesAsync`). It is kept for a package that does hold
+ * media eagerly, and is exercised in the tests through a stand-in package.
+ *
+ * SVG: an `<img>` renders an SVG inertly (no script runs), which is the only way this app shows an image today. The bytes are
+ * stored as `image/svg+xml`, so any FUTURE use of the blob URL as a top-level document, in an `<iframe>`/`<object>`/`<embed>`, or
+ * inlined into the page would execute the script an SVG can hold. Do not do that with an asset whose mime is image/svg+xml.
+ */
 async function loadPart(part: string, ctx: ReadContext): Promise<MediaLookup> {
   try {
     const bytes = ctx.pkg.isDeferred(part) ? await ctx.pkg.bytesAsync(part) : ctx.pkg.bytes(part);
@@ -171,6 +193,9 @@ const FLOATING_OTHER =
 const NO_SIZE = 'A picture with no size is shown at the full width of the page.';
 
 // ─── assets ──────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/** The `w:drawing` an image node was read from, so the paragraph reader can record its ordinal (see `Fragment.lifted`). */
+export const drawingSource = new WeakMap<JSONContent, Element>();
 
 const knownAssets = new WeakMap<ReadContext, { ids: Set<string>; length: number }>();
 
@@ -361,7 +386,9 @@ export function readDrawing(drawing: Element, ctx: ReadContext): JSONContent | n
   recordFeature(ctx.report, feature);
   if (feature === 'floatingImageOther') warnOnce(ctx.report, 'floatingImageOther', FLOATING_OTHER, 2);
   attrs.fragmentId = preserveRun(drawing, ctx);
-  return { type: 'resizableImage', attrs };
+  const node: JSONContent = { type: 'resizableImage', attrs };
+  drawingSource.set(node, drawing);
+  return node;
 }
 
 // ─── captions ────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -377,7 +404,8 @@ export interface FigureMatch {
 
 /** A caption looks past this many blocks after its image no further: the image's paragraph, then the text that flows beside it. */
 const CAPTION_WINDOW = 3;
-const LABEL = /^\s*(?:supplementary\s+|extended\s+data\s+)?fig(?:ure)?s?\.?\s*S?\d+[A-Za-z]?\s*[.:|–—-]/i;
+/** "Fig. 3." / "Figure 3:" / "Supplementary Fig. S2 |" / "Fig. 1A." The number must be followed by a delimiter, so "Figure 3 shows" is prose. */
+const LABEL = /^\s*(supplementary\s+|extended\s+data\s+)?fig(?:ure)?s?\.?\s*(S?)(\d+)[A-Za-z]?\s*[.:|\u2013\u2014-]/i;
 const LABEL_BEFORE_FIELD = /^\s*(?:supplementary\s+|extended\s+data\s+)?fig(?:ure)?\.?\s*$/i;
 
 /** Zero-width markers (a comment range, a bookmark) may open a caption without being part of what it says. */
@@ -392,23 +420,40 @@ function leadingText(p: JSONContent): { text: string; followedByAtom: boolean } 
   return { text, followedByAtom: false };
 }
 
-function captionKind(block: JSONContent): 'style' | 'label' | null {
+interface CaptionInfo {
+  how: 'style' | 'label';
+  /** Numbering sequence: main figures, or supplementary / extended-data ones (counted apart). */
+  series: string;
+  /** The figure number in the label, or null when it is not in the text (a Caption-styled paragraph, a SEQ field). */
+  n: number | null;
+}
+
+function captionInfo(block: JSONContent): CaptionInfo | null {
   if (block.type !== 'paragraph') return null;
-  if (block.attrs?.styleId === 'caption') return 'style';
   const { text, followedByAtom } = leadingText(block);
+  const m = LABEL.exec(text);
+  const series = m ? (m[1] ?? '').trim().toLowerCase() || (m[2] ? 'supplementary' : '') : '';
+  if (block.attrs?.styleId === 'caption') return { how: 'style', series, n: m ? Number(m[3]) : null };
+  if (m) return { how: 'label', series, n: Number(m[3]) };
   // "Figure " + a SEQ field + ". Text" arrives as text, then a field atom: the number is not in the text.
-  return LABEL.test(text) || (followedByAtom && LABEL_BEFORE_FIELD.test(text)) ? 'label' : null;
+  return followedByAtom && LABEL_BEFORE_FIELD.test(text) ? { how: 'label', series: '', n: null } : null;
 }
 
 /**
  * Pair each image among the blocks of ONE container (the body, or one table cell) with its caption: the nearest following
- * paragraph in Word's Caption style, else one that opens like a caption ("Fig. 3." / "Figure 3:"; plain "Figure 3 shows" does
- * not count), within a few blocks and not past the next figure, each caption used once. Pure and derived: nothing is stored on
- * the nodes, so an edit can never leave a stale link. A picture lifted out of a paragraph of text comes immediately before that
+ * paragraph that is in Word's Caption style OR opens like a caption ("Fig. 3." / "Figure 3:"; plain "Figure 3 shows" does not
+ * count), within a few blocks and not past the next figure, each caption used once. Pure and derived: nothing is stored on the
+ * nodes, so an edit can never leave a stale link. A picture lifted out of a paragraph of text comes immediately before that
  * paragraph, so the caption written after the picture's paragraph is within reach.
+ *
+ * The label NUMBER is checked against the order of the figures: a caption is taken only if it is the next number of its series
+ * (1, 2, 3, ...) or a restart at 1 (a grant whose sections each number from 1), so `[fig 1][Fig. 2 ...][fig 2]` does not give
+ * fig 1 the caption that belongs to fig 2. A caption without a number in its text (styled, or a field) is not checked.
+ * NOT SUPPORTED: a caption written BEFORE its figure (a table-style layout). It pairs with nothing, or with the wrong figure.
  */
 export function matchCaptions(blocks: JSONContent[]): FigureMatch[] {
   const taken = new Set<number>();
+  const last = new Map<string, number>(); // series -> the last number paired
   const out: FigureMatch[] = [];
   blocks.forEach((b, i) => {
     if (b.type !== 'resizableImage') return;
@@ -421,12 +466,16 @@ export function matchCaptions(blocks: JSONContent[]): FigureMatch[] {
         break; // the next figure
       }
       seen += 1;
-      const how = taken.has(k) ? null : captionKind(next);
-      if (how) {
-        taken.add(k);
-        found = { image: i, caption: k, how };
-        break;
+      const info = taken.has(k) ? null : captionInfo(next);
+      if (!info) continue;
+      if (info.n !== null) {
+        const prev = last.get(info.series) ?? 0;
+        if (info.n !== prev + 1 && info.n !== 1) continue; // another figure's caption
+        last.set(info.series, info.n);
       }
+      taken.add(k);
+      found = { image: i, caption: k, how: info.how };
+      break;
     }
     out.push(found);
   });

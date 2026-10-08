@@ -24,6 +24,7 @@ import { getNumbering, groupListParagraphs, readNumbering } from './numbering';
 import { readTable } from './tables';
 import { readBody } from './body';
 import { collectFragmentIds } from '../preserve/refs';
+import { planLiftedDrawings } from '../preserve/lifted';
 import { collectAssetIds } from '../../db/assetStore';
 import { createHash } from 'node:crypto';
 import type { ReadContext } from './context';
@@ -416,6 +417,28 @@ describe.skipIf(docs.length === 0)('private real-world documents', () => {
         // the paragraph it came from still holds the drawing in its original XML, and comes right after the picture (or after its siblings)
         expect(ctx.preservation.blocks[i.attrs!.anchorBlockId as string].xml).toContain('<w:drawing');
       }
+      // the record a writer needs to see a delete, a move or a copy of a lifted picture: each is recorded on its host's preserved
+      // block with its ordinal among the host's drawings, and that ordinal finds the very drawing in the host's original XML
+      expect(Object.values(ctx.preservation.blocks).flatMap(b => b.lifted ?? [])).toHaveLength(lifted.length);
+      for (const i of lifted) {
+        const host = ctx.preservation.blocks[i.attrs!.anchorBlockId as string];
+        const rec = host.lifted!.find(l => l.fragmentId === i.attrs!.fragmentId)!;
+        expect(rec).toBeDefined();
+        const inHost = Array.from(parseXml(host.xml).documentElement.getElementsByTagNameNS(W_NS, 'drawing'));
+        expect(inHost[rec.drawingIndex].getElementsByTagNameNS(A, 'blip')[0].getAttributeNS(R, 'embed')).toBe(ctx.preservation.fragments[i.attrs!.fragmentId as string].relIds[0]);
+      }
+      expect(planLiftedDrawings(doc, ctx.preservation)).toEqual({ strip: [], emit: [] }); // nothing edited, nothing to do
+      for (const i of lifted) {
+        const without = { ...doc, content: blocks.filter(b => b !== i) };
+        const plan = planLiftedDrawings(without, ctx.preservation);
+        expect(plan.emit).toEqual([]);
+        expect(plan.strip).toEqual([
+          { hostBlockId: i.attrs!.anchorBlockId, drawingIndex: ctx.preservation.blocks[i.attrs!.anchorBlockId as string].lifted!.find(l => l.fragmentId === i.attrs!.fragmentId)!.drawingIndex, fragmentId: i.attrs!.fragmentId, why: 'deleted' },
+        ]);
+      }
+      // r01: one host holds two of the pictures, so its second has ordinal 1
+      if (!isSnsf) expect(Object.values(ctx.preservation.blocks).flatMap(b => (b.lifted ?? []).map(l => l.drawingIndex)).sort()).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+
       const ids = [...paragraphIds, ...standIns.map(x => (x.attrs!.ooxml as { blockId: string }).blockId)];
       expect(new Set(ids).size).toBe(ids.length);
       expect(() => getSpecSchema().nodeFromJSON(doc).check()).not.toThrow();

@@ -5,6 +5,14 @@ export interface Fragment {
   xml: string;
   relIds: string[];
   nsDecls: Record<string, string>;
+  /**
+   * Only on a `preservation.blocks` entry: the pictures that were lifted out of this paragraph into image nodes (see
+   * docx/read/drawings.ts). `drawingIndex` is the ordinal of the picture among ALL `w:drawing` elements of this `<w:p>`, in document
+   * order, which is how a writer finds it in the original XML; `fragmentId` is the image node's `fragmentId`. Blocks are never
+   * pruned, so this survives the deletion of the image node, which is what lets a writer see that a lifted picture was removed.
+   * See `planLiftedDrawings` (preserve/lifted.ts).
+   */
+  lifted?: Array<{ fragmentId: string; drawingIndex: number }>;
 }
 
 export interface PackageRel {

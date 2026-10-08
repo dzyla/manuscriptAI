@@ -13,7 +13,8 @@ import type { PreservationStore } from '../preserve/types';
 import { captureFragment, parseXml } from '../preserve/xml';
 import { specNormalizeNode } from '../../extensions/schemaSpecs';
 import { trackIds, warnOnce, type ReadContext } from './context';
-import { childElements, firstW, int, isW, onOff, round4, wAttr } from './ooxml';
+import { W_NS, childElements, firstW, int, isW, onOff, round4, wAttr } from './ooxml';
+import { drawingSource } from './drawings';
 import { snapshotCommentIds } from './opaque';
 import { readRuns, recordFormatChange } from './runs';
 import { isGoogleSdt, unwrapGoogleSdt } from './sdt';
@@ -106,14 +107,22 @@ function imageFeature(image: JSONContent): 'inlineImage' | 'floatingImageSquare'
   return wrap === 'inline' ? 'inlineImage' : wrap === 'left' || wrap === 'right' ? 'floatingImageSquare' : 'floatingImageOther';
 }
 
-/** Whitespace-only text is not content: a figure paragraph often holds a stray space next to its picture. */
-const holdsNothing = (content: JSONContent[]): boolean => content.every(c => c.type === 'text' && !(c.text ?? '').trim());
+/** A bookmark is a zero-width marker (Word puts one round a figure so that "Figure 1" cross-references can find it). */
+const isBookmark = (c: JSONContent): boolean => c.type === 'opaqueInline' && c.attrs?.label === 'bookmark';
+
+/**
+ * Whitespace-only text is not content (a figure paragraph often holds a stray space next to its picture), and neither is a
+ * bookmark. A comment anchor IS content: it has meaning in the model (the comment), so a picture with a comment on it is lifted
+ * and its paragraph stays to hold the anchors.
+ */
+const holdsNothing = (content: JSONContent[]): boolean => content.every(c => isBookmark(c) || (c.type === 'text' && !(c.text ?? '').trim()));
 
 /**
  * Read one w:p. A page break is an inline atom, so a paragraph holding a break and text is NOT split and keeps its provenance
  * (see specs/pageBreak.ts). Pictures are the one exception, because an image is a block in the model:
- *   - a paragraph whose only content is ONE inline picture (a figure on its own line) becomes that image node, which takes the
- *     paragraph's provenance (its original XML, `<w:pPr>` and all, is `preservation.blocks[ooxml.blockId]`);
+ *   - a paragraph whose only content is ONE inline picture (a figure on its own line, with or without bookmarks round it) becomes
+ *     that image node, which takes the paragraph's provenance (its original XML, `<w:pPr>`, bookmarks and all, is
+ *     `preservation.blocks[ooxml.blockId]`; the bookmark atoms are not in the model, and their fragments are withdrawn);
  *   - a picture in a paragraph that has other content (a floating picture anchored in text, two pictures side by side, a picture
  *     with a comment on it) is lifted out and returned BEFORE the paragraph, with `anchorBlockId` naming the paragraph. The
  *     paragraph keeps its own provenance and every other piece of its content; see drawings.ts for what a writer must do.
@@ -177,7 +186,9 @@ export function readParagraph(p: Element, ctx: ReadContext): JSONContent | JSONC
   });
   if (placed.length === 1 && placed[0].attrs?.wrap === 'inline' && !headingLevel && holdsNothing(content)) {
     try {
-      return stampProvenance(specNormalizeNode(placed[0]), blockId);
+      const standIn = stampProvenance(specNormalizeNode(placed[0]), blockId);
+      for (const c of content) if (isBookmark(c)) delete ctx.preservation.fragments[c.attrs!.fragmentId as string];
+      return standIn;
     } catch {
       // not reachable for an image built here; the picture is then lifted out like any other
     }
@@ -186,6 +197,14 @@ export function readParagraph(p: Element, ctx: ReadContext): JSONContent | JSONC
     warnOnce(ctx.report, 'inlineImage', 'A picture that sits inside a line of text, or beside another picture, is shown on a line of its own just above that text. Its original position is kept for export.', 2);
   }
   const lifted = placed.map(image => specNormalizeNode({ ...image, attrs: { ...image.attrs, anchorBlockId: blockId } }));
+  // Remember, on the paragraph's preserved XML (which is never pruned), which drawing of it each lifted picture is.
+  const drawings = Array.from(p.getElementsByTagNameNS(W_NS, 'drawing'));
+  const record = images.flatMap((image, k) => {
+    const el = drawingSource.get(image);
+    const drawingIndex = el ? drawings.indexOf(el) : -1;
+    return drawingIndex >= 0 ? [{ fragmentId: lifted[k].attrs!.fragmentId as string, drawingIndex }] : [];
+  });
+  if (record.length) ctx.preservation.blocks[blockId].lifted = record;
   return [...lifted, stampProvenance(normalized, blockId)];
 }
 
