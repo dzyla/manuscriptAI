@@ -17,7 +17,8 @@ import { isBlockUntouched } from '../preserve/hash';
 import { parseXml } from '../preserve/xml';
 import { getSpecSchema } from '../../extensions/schemaSpecs';
 import { W_NS, isW } from './ooxml';
-import { blockChildren, readParagraph } from './paragraphs';
+import { blockChildren, readParagraph, paragraphDrafts } from './paragraphs';
+import { bodyFontSize, detectHeadings, hasHeadings, inferHeadings } from './headings';
 import { isGoogleSdt } from './sdt';
 import type { ReadContext } from './context';
 
@@ -173,6 +174,72 @@ describe.skipIf(docs.length === 0)('private real-world documents', () => {
         `${report.counts.googleWrapper ?? 0} Google wrappers unwrapped (${blockLevelWrappers} at block level, ${googleInsideFragments} more kept inside preserved fragments), ${atoms} opaque atoms ` +
         `(${Object.values(ctx.preservation.fragments).length} fragments), ${pageBreaks} page breaks, ${links} linked runs, ` +
         `${Object.keys(ctx.preservation.blocks).length} block fragments, ${report.warnings.length} warnings, summary "${summarizeReport(report)}", text chars conserved ${docChars}+${fragmentChars}=${sourceChars + hyphens}`,
+    );
+  });
+
+  it.each(docs)('%s: inferred headings are plausible (counts here; titles are printed for the reviewer)', async name => {
+    const b = readFileSync(new URL(name, dir));
+    const pkg = await openPackage(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer);
+    const report = createReport();
+    let n = 0;
+    const ctx: ReadContext = {
+      pkg,
+      styles: readStyles(pkg, report),
+      report,
+      preservation: emptyPreservationStore(),
+      assets: [],
+      nextId: () => `b${++n}`,
+    };
+    const body = pkg.xml(mainDocumentPart(pkg))!.getElementsByTagNameNS(W_NS, 'body')[0];
+    const blocks = blockChildren(body, ctx).filter(el => isW(el, 'p')).flatMap(p => [readParagraph(p, ctx)].flat());
+    const doc: JSONContent = { type: 'doc', content: blocks };
+
+    // Both real grants style no heading at all, although their styles.xml defines Heading 1-3.
+    expect(hasHeadings(doc)).toBe(false);
+    expect(ctx.styles.headingLevelByStyleId.size).toBeGreaterThan(0);
+
+    const warningsBefore = report.warnings.length;
+    const found = inferHeadings(doc, ctx);
+    expect(found.length).toBeGreaterThan(0);
+    expect(report.counts.inferredHeading).toBe(found.length);
+    expect(report.warnings.length).toBe(warningsBefore + 1);
+
+    // No candidate is a paragraph holding an opaque atom other than a comment anchor, and none is a paragraph
+    // the reader gave a Word heading to.
+    const blocksByIndex = blocks;
+    for (const c of found) {
+      const node = blocksByIndex[c.index];
+      expect(node.type).toBe('paragraph');
+      const atoms = (node.content ?? []).filter(x => x.type !== 'text' && !(x.type === 'opaqueInline' && x.attrs?.label === 'comment anchor'));
+      expect(atoms, `candidate ${c.index}`).toEqual([]);
+      expect(c.evidence.length).toBeGreaterThan(0);
+    }
+    expect(new Set(found.map(c => c.index)).size).toBe(found.length);
+
+    // Which otherwise-qualifying titles were refused only because of an opaque atom? (re-run with atoms removed)
+    const drafts = paragraphDrafts(blocks, { format: ctx.styles.format, styleIdByWordId: ctx.styles.styleIdByWordId, blocks: ctx.preservation.blocks });
+    const withoutAtoms = detectHeadings(
+      drafts.map(d => ({ ...d, atoms: [] })),
+      { hasRealHeadings: false, bodyFontSizePt: bodyFontSize(drafts, ctx.styles.format.defaults.fontSizePt) },
+    );
+    const refused = withoutAtoms.filter(c => !found.some(f => f.index === c.index));
+    const atomLabels = new Map<string, number>();
+    for (const c of refused) {
+      for (const x of blocks[c.index].content ?? []) {
+        if (x.type !== 'text') atomLabels.set(String(x.attrs?.label ?? x.type), (atomLabels.get(String(x.attrs?.label ?? x.type)) ?? 0) + 1);
+      }
+    }
+
+    const tally = (lvl: number, conf: string) => found.filter(c => c.level === lvl && c.confidence === conf).length;
+    console.log(
+      `headings ${name}: ${found.length} inferred of ${blocks.length} paragraphs; ` +
+        `L1 name ${tally(1, 'name')}, L1 format ${tally(1, 'format')}, L2 name ${tally(2, 'name')}, L2 format ${tally(2, 'format')}, L3 ${found.filter(c => c.level === 3).length}; ` +
+        `${refused.length} more refused only for holding an atom ${JSON.stringify(Object.fromEntries(atomLabels))}`,
+    );
+    console.log(
+      `titles ${name}:\n` +
+        found.map(c => `  [${String(c.index).padStart(3)}] L${c.level} ${c.confidence.padEnd(6)} ${JSON.stringify(c.text)}`).join('\n') +
+        (refused.length ? '\n  refused (atom): ' + refused.map(c => `[${c.index}] ${JSON.stringify(c.text)} (${c.confidence})`).join('; ') : ''),
     );
   });
 });

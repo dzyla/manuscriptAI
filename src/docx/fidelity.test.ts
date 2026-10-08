@@ -9,6 +9,7 @@ describe('fidelity table (spec §1)', () => {
     expect(FIDELITY.googleWrapper).toBe(1);
     expect(FIDELITY.floatingImageOther).toBe(2);
     expect(FIDELITY.externalCitation).toBe(2);
+    expect(FIDELITY.inferredHeading).toBe(2);
     expect(FIDELITY.equation).toBe(3);
     expect(FIDELITY.footnoteRef).toBe(3);
     expect(FIDELITY.activeX).toBe(4);

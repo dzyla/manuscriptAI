@@ -42,6 +42,10 @@
  *                   super/subscript, a character style, page breaks (alone and inside text), http/mailto/file/javascript/anchor
  *                   hyperlinks, justify+spacing+indent, hanging indent, outlineLvl heading, keepNext+tabs, a smartTag wrapper,
  *                   an equation, a footnote reference inside a formatted run, a tracked insertion, a non-Google content control
+ *   unstyled-sections.docx  a grant-shaped document with NO heading styles: section titles are bold Normal paragraphs (known section
+ *                   names, an enumerated one, a formatted sub-heading, a larger-font line, one led by a page break, one with a comment
+ *                   anchor), plus the shapes that must NOT be detected (bold lead-in sharing a paragraph with body text, a bold
+ *                   sentence mid-paragraph, a 14-word bold line, a figure label, a bookmarked title, a title with a tracked insertion)
  *   google-export.docx  Google Docs shape: goog_rdk_* w:sdt wrappers (one nested two deep) around runs, plus word/fonts/ font
  */
 process.env.TZ = 'UTC'; // must precede any Date use so zip timestamps are reproducible
@@ -163,6 +167,36 @@ const GOOGLE_EXPORT = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:p>${goog(0, run('wrappedonce'))}</w:p>
 <w:p>${goog(1, run('outer ') + goog(2, run('wrappedtwice', '<w:b/>')))}</w:p>
 <w:p>${run('Plain tail.')}</w:p>
+<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:body></w:document>`;
+
+const bold = '<w:b/>';
+const UNSTYLED_SECTIONS = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="${W}" xmlns:r="${R}"><w:body>
+<w:p><w:pPr><w:jc w:val="center"/></w:pPr>${run('Mitochondrial Stress Signalling in Muscle', bold)}</w:p>
+<w:p>${run('Specific Aims', bold)}</w:p>
+<w:p>${run('Skeletal muscle loses mass with age, and the stress responses that protect it are poorly understood. We propose to define how these responses are coordinated across tissues and over time.')}</w:p>
+<w:p>${run('A. Significance', bold)}</w:p>
+<w:p>${run('Muscle decline is a leading cause of frailty. Understanding its drivers will change how it is treated.')}</w:p>
+<w:p>${run('Aim 1: Define the mechanism', bold)}</w:p>
+<w:p>${run('We will map the signalling pathway in cultured myotubes and in mice.')}</w:p>
+<w:p>${run('Approach', bold)}${run(' We will use a combination of imaging, proteomics and genetics to test each prediction in turn.')}</w:p>
+<w:p>${run('Earlier work established the basis. ')}${run('Thrombin cleaves the receptor within seconds.', bold)}${run(' This motivates the present proposal.')}</w:p>
+<w:p>${run('Vertebrate Animals', bold)}${run(' ')}</w:p>
+<w:p>${run('All procedures follow institutional guidelines and have been approved by the committee.')}</w:p>
+<w:p>${run('The overall objective of this application is to determine how stress signalling remodels muscle', bold)}</w:p>
+<w:p>${run('The remainder of this paragraph is ordinary body text that follows the long bold line.')}</w:p>
+<w:p>${run('Figure 1', bold)}</w:p>
+<w:p>${run('A schematic of the pathway is shown above.')}</w:p>
+<w:p>${run('Timeline of Experiments', '<w:sz w:val="40"/>')}</w:p>
+<w:p>${run('Year one covers the cell work; year two covers the animal work.')}</w:p>
+<w:p><w:r><w:br w:type="page"/></w:r>${run('Results', bold)}</w:p>
+<w:p>${run('Knockdown reduced the response by half in every line tested.')}</w:p>
+<w:p><w:bookmarkStart w:id="1" w:name="_Ref1"/>${run('Discussion', bold)}<w:bookmarkEnd w:id="1"/></w:p>
+<w:p>${run('These data suggest a conserved mechanism that deserves further study.')}</w:p>
+<w:p><w:commentRangeStart w:id="5"/>${run('Innovation', bold)}<w:commentRangeEnd w:id="5"/><w:r><w:commentReference w:id="5"/></w:r></w:p>
+<w:p>${run('The approach combines two methods that have not been used together before.')}</w:p>
+<w:p>${run('Conclusion', bold)}<w:ins w:id="9" w:author="Reviewer" w:date="2026-01-01T00:00:00Z"><w:r><w:t xml:space="preserve"> and outlook</w:t></w:r></w:ins></w:p>
+<w:p>${run('We conclude that the pathway is required for maintenance of muscle.')}</w:p>
 <w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:body></w:document>`;
 
 function basePackage(
@@ -352,6 +386,9 @@ const fixtures: Record<string, () => Promise<Uint8Array>> = {
         extra: { 'word/fonts/font1.odttf': new Uint8Array(64).fill(0x4f) },
       }),
     ),
+
+  'unstyled-sections.docx': () =>
+    build(basePackage({ documentXml: UNSTYLED_SECTIONS, stylesXml: STYLES_BODY, relsXml: BODY_RELS })),
 
   'truncated.docx': () =>
     build(basePackage({ documentXml: DOCUMENT.slice(0, DOCUMENT.indexOf('<w:t>Second') + '<w:t>Sec'.length) })),
