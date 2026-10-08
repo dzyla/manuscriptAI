@@ -49,7 +49,11 @@ export const ResizableImageSpec = Node.create({
         },
         renderHTML: (attrs: Record<string, unknown>) => (attrs.wrap ? { 'data-wrap': attrs.wrap } : {}),
       },
-      /** The size Word gave the image, in inches (`width` is that as a share of the content width). */
+      /**
+       * The size Word gave the image, in inches, AS READ (`width` is that as a share of the content width). A resize in the editor
+       * changes `width` only: these two go STALE, so a writer must take the size from `width`, not from them. See
+       * docx/read/drawings.ts and docx/preserve/lifted.ts.
+       */
       widthIn: numberAttr('data-width-in', 'widthIn'),
       heightIn: numberAttr('data-height-in', 'heightIn'),
       /** Word's crop of the picture (`a:srcRect`, percent of each edge); the stored bytes are the whole picture. */

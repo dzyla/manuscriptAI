@@ -32,10 +32,10 @@
  *       * a node whose `fragmentId` is in no record (a pasted copy gets a fresh one, and keeps `anchorBlockId`) -> `emit` it from
  *         its fragment;
  *       * a node in place whose host was edited -> `emit` it INTO the rebuilt host;
-       * a node in place, host untouched, but the PICTURE edited (its `sourceHash` differs: resized, cropped, re-captioned, its
-         alt text changed) -> `emit` with `why: 'edited'`: patch that drawing in the verbatim host (see lifted.ts for which attrs
-         map to which attributes; `width` is what a resize changes, `widthIn` goes stale).
-     Strips are ordered DESCENDING by `drawingIndex`; apply them in that order or snapshot the drawing list first.
+ *       * a node in place, host untouched, but the PICTURE edited (its `sourceHash` differs: resized, cropped, re-captioned, its
+ *         alt text changed) -> `emit` with `why: 'edited'`: patch that drawing in the verbatim host (see lifted.ts for which attrs
+ *         map to which attributes; `width` is what a resize changes, `widthIn` goes stale).
+ *     Strips are ordered DESCENDING by `drawingIndex`; apply them in that order or snapshot the drawing list first.
  *     STILL OMITTED: where in a rebuilt host a surviving run goes. The original position among the host's runs is lost; put it at
  *     the start of the host's content, in image order. That is faithful for a floating picture (positioned relative to the
  *     paragraph) and NOT for an inline picture lifted from the middle of a sentence, which moves to the front of its paragraph.

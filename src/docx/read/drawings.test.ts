@@ -873,6 +873,16 @@ describe('lifted pictures: the read-time record lets a writer see a delete, a mo
     expect(planLiftedDrawings({ ...doc, content }, r.ctx.preservation)).toEqual({ strip: [], emit: [] });
   });
 
+  it('a record with no sourceHash (an import made before it was recorded) cannot show an edit, and is not flagged as one', async () => {
+    const { r, a, doc } = await load();
+    const store = JSON.parse(JSON.stringify(r.ctx.preservation)) as typeof r.ctx.preservation;
+    for (const entry of Object.values(store.blocks)) for (const l of entry.lifted ?? []) delete l.sourceHash;
+    const edited: JSONContent = JSON.parse(JSON.stringify(doc));
+    edited.content!.find(n => n.attrs?.fragmentId === a.attrs!.fragmentId)!.attrs!.widthIn = 1;
+    expect(planLiftedDrawings(edited, store)).toEqual({ strip: [], emit: [] });
+    expect(planLiftedDrawings(doc, store)).toEqual({ strip: [], emit: [] }); // and nothing is flagged as edited just because there is no hash to compare
+  });
+
   it('a duplicate of a picture keeps the host it was copied from in its emit', async () => {
     const { r, a, doc } = await load();
     const copy = { ...structuredClone(a), attrs: { ...a.attrs, fragmentId: 'f_x' } };
@@ -1050,6 +1060,13 @@ describe('captions', () => {
     // a figure that does not start at 1 (an excerpt) is not trusted either, unless drawings before it explain it
     expect(pairs([img(), para('Fig. 3. c')])).toEqual([[0, null, null]]);
     expect(pairs([chart(), chart(), img(), para('Fig. 3. c')])).toEqual([[2, 3, 'label']]);
+  });
+
+  it('a repeated or backwards number is refused, even when drawings are around to explain a gap', () => {
+    expect(pairs([img(), para('Fig. 2. a'), img(), para('Fig. 2. again')])).toEqual([[0, null, null], [2, null, null]]);
+    expect(pairs([img(), para('Fig. 1. a'), chart(), img(), para('Fig. 3. b'), img(), para('Fig. 2. back')])).toEqual([[0, 1, 'label'], [3, 4, 'label'], [5, null, null]]);
+    expect(pairs([img(), para('Fig. 1. a'), chart(), chart(), img(), para('Fig. 3. b'), img(), para('Fig. 3. same again')])).toEqual([[0, 1, 'label'], [4, 5, 'label'], [6, null, null]]);
+    expect(pairs([chart(), chart(), chart(), img(), para('Fig. 3. c'), img(), para('Fig. 2. back')])).toEqual([[3, 4, 'label'], [5, null, null]]);
   });
 
   it('a drawing only explains the gap between ITS neighbours, and only once', () => {
