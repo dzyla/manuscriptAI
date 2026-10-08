@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseXml, parseXmlStrict, captureFragment, remapRelIds, allocateRelIds, collectFragmentIds, pruneFragments } from './xml';
+import { parseXml, parseXmlStrict, captureFragment, captureChildren, remapRelIds, allocateRelIds, collectFragmentIds, pruneFragments } from './xml';
 import { emptyPreservationStore } from './types';
 
 const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
@@ -98,5 +98,21 @@ describe('parseXmlStrict', () => {
     ['DTD with entity', '<!DOCTYPE a [<!ENTITY x "y">]><a>&x;</a>'],
   ])('throws for %s', (_label, xml) => {
     expect(() => parseXmlStrict(xml)).toThrow();
+  });
+});
+
+describe('captureChildren', () => {
+  it('keeps only the chosen children, self-contained, with the container attributes', () => {
+    const doc = parseXml(`<w:styles xmlns:w="${W}" xmlns:m="${M}"><w:style w:styleId="X"><w:keepNext/><w:name w:val="x"/><w:tabs><w:tab w:val="left" w:pos="720"/></w:tabs></w:style></w:styles>`);
+    const style = doc.getElementsByTagNameNS(W, 'style')[0];
+    const keep = [style.getElementsByTagNameNS(W, 'keepNext')[0], style.getElementsByTagNameNS(W, 'tabs')[0]];
+    const xml = captureChildren(style, keep);
+    const re = parseXml(xml);
+    expect(re.documentElement.localName).toBe('style');
+    expect(re.documentElement.getAttributeNS(W, 'styleId')).toBe('X');
+    expect(re.getElementsByTagNameNS(W, 'name').length).toBe(0);
+    expect(re.getElementsByTagNameNS(W, 'tab').length).toBe(1);
+    expect(xml).toContain('xmlns:m=');
+    expect(style.getElementsByTagNameNS(W, 'name').length).toBe(1); // source untouched
   });
 });

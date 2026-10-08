@@ -385,6 +385,41 @@ describe('openPackage: round 3', () => {
     expect(pkg.isDeferred('word/media/missing.png')).toBe(false);
     expect(pkg.isDeferred('word/document.xml')).toBe(false);
     const tight = await openPackage(load('minimal.docx'), { maxEagerBytes: 700 });
+    expect(tight.deferred().length).toBeGreaterThan(0);
     for (const n of tight.deferred()) expect(tight.isDeferred(n.toUpperCase())).toBe(true);
+  });
+});
+
+describe('openPackage: the parsed-DOM cache is bounded', () => {
+  it('reuses a parsed document while it fits the budget', async () => {
+    const pkg = await openPackage(load('minimal.docx'));
+    expect(pkg.xml('word/document.xml')).toBe(pkg.xml('word/document.xml'));
+  });
+
+  it('never caches when the budget is 0, so memory cannot accumulate', async () => {
+    const pkg = await openPackage(load('minimal.docx'), { maxCachedXmlBytes: 0 });
+    const a = pkg.xml('word/document.xml');
+    expect(a).toBeDefined();
+    expect(pkg.xml('word/document.xml')).not.toBe(a);
+  });
+
+  it('evicts the least recently used document once the budget is exceeded', async () => {
+    const pkg0 = await openPackage(load('minimal.docx'));
+    const docLen = pkg0.bytes('word/document.xml')!.length;
+    const stylesLen = pkg0.bytes('word/styles.xml')!.length;
+    // Room for the larger of the two but not both.
+    const pkg = await openPackage(load('minimal.docx'), { maxCachedXmlBytes: Math.max(docLen, stylesLen) + 1 });
+    const doc1 = pkg.xml('word/document.xml');
+    const styles1 = pkg.xml('word/styles.xml');
+    expect(styles1).toBe(pkg.xml('word/styles.xml')); // most recent survives
+    expect(pkg.xml('word/document.xml')).not.toBe(doc1); // oldest was evicted and re-parsed
+  });
+
+  it('releaseXml drops a parsed document on request', async () => {
+    const pkg = await openPackage(load('minimal.docx'));
+    const a = pkg.xml('word/document.xml');
+    pkg.releaseXml('WORD/document.xml');
+    expect(pkg.xml('word/document.xml')).not.toBe(a);
+    expect(() => pkg.releaseXml('word/missing.xml')).not.toThrow();
   });
 });

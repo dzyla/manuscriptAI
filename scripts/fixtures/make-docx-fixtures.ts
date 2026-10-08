@@ -28,6 +28,13 @@
  *   swapped-local-names.docx  two records whose local-header names are swapped (same name SET, wrong owner)
  *   macro-content-type.docx  macro-enabled main content type but no vbaProject part (the content-type check alone)
  *   truncated.docx  valid zip whose word/document.xml is cut mid-element
+ *   styles.docx     rich styles.xml: docDefaults (Arial 11pt, spacing), outline-level and name-matched headings,
+ *                   inherited heading level, character style, a 3-deep basedOn chain, properties the app does not
+ *                   model (keepNext, tabs, theme fonts, caps), a styleId that differs from its name, a table
+ *                   style, a dangling basedOn and a basedOn cycle
+ *   a4-margins.docx A4 body sectPr with 2 cm margins plus a US Letter sectPr inside a paragraph (an earlier section)
+ *   no-styles.docx  minimal with no word/styles.xml part (the relationship to it dangles)
+ *   bad-styles.docx minimal whose word/styles.xml is not well-formed XML
  */
 process.env.TZ = 'UTC'; // must precede any Date use so zip timestamps are reproducible
 
@@ -63,16 +70,37 @@ const DOCUMENT = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 const STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:styles xmlns:w="${W}"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial"/><w:sz w:val="22"/></w:rPr></w:rPrDefault></w:docDefaults><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:pPr><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:style></w:styles>`;
 
-type Extra = (zip: JSZip) => void;
+const STYLES_RICH = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="${W}"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="160" w:line="259" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults>
+<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>
+<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:link w:val="Heading1Char"/><w:uiPriority w:val="9"/><w:qFormat/><w:pPr><w:spacing w:before="240" w:after="0"/><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/><w:color w:val="2E74B5"/><w:sz w:val="28"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Heading1"/><w:next w:val="Normal"/><w:pPr><w:outlineLvl w:val="1"/></w:pPr><w:rPr><w:sz w:val="26"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:customStyle="1" w:styleId="SubAim"><w:name w:val="Sub Aim"/><w:basedOn w:val="Heading2"/></w:style>
+<w:style w:type="paragraph" w:customStyle="1" w:styleId="Titre3"><w:name w:val="heading 3"/><w:basedOn w:val="Normal"/><w:rPr><w:b/><w:i/></w:rPr></w:style>
+<w:style w:type="character" w:styleId="Heading1Char"><w:name w:val="Heading 1 Char"/><w:link w:val="Heading1"/><w:rPr><w:b/></w:rPr></w:style>
+<w:style w:type="character" w:styleId="Emphasis"><w:name w:val="Emphasis"/><w:rPr><w:i/></w:rPr></w:style>
+<w:style w:type="paragraph" w:customStyle="1" w:styleId="Chain1"><w:name w:val="Chain 1"/><w:basedOn w:val="Normal"/><w:rPr><w:b/></w:rPr></w:style>
+<w:style w:type="paragraph" w:customStyle="1" w:styleId="Chain2"><w:name w:val="Chain 2"/><w:basedOn w:val="Chain1"/><w:rPr><w:color w:val="C00000"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:customStyle="1" w:styleId="Chain3"><w:name w:val="Chain 3"/><w:basedOn w:val="Chain2"/><w:rPr><w:i/></w:rPr></w:style>
+<w:style w:type="paragraph" w:customStyle="1" w:styleId="KeepTabs"><w:name w:val="Keep Tabs"/><w:basedOn w:val="Normal"/><w:pPr><w:keepNext/><w:tabs><w:tab w:val="left" w:pos="720"/></w:tabs><w:spacing w:before="120" w:after="60" w:line="360" w:lineRule="exact"/><w:ind w:left="720" w:hanging="360"/><w:jc w:val="both"/></w:pPr><w:rPr><w:rFonts w:asciiTheme="minorHAnsi" w:hAnsiTheme="minorHAnsi"/><w:caps/><w:sz w:val="20"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:customStyle="1" w:styleId="aimTitle"><w:name w:val="Aim Title"/><w:basedOn w:val="Normal"/><w:pPr><w:jc w:val="center"/></w:pPr></w:style>
+<w:style w:type="table" w:styleId="TableGrid"><w:name w:val="Table Grid"/><w:tblPr><w:tblBorders><w:top w:val="single" w:sz="4" w:space="0" w:color="auto"/></w:tblBorders></w:tblPr></w:style>
+<w:style w:type="paragraph" w:customStyle="1" w:styleId="Dangling"><w:name w:val="Dangling"/><w:basedOn w:val="NoSuchStyle"/><w:rPr><w:b/></w:rPr></w:style>
+<w:style w:type="paragraph" w:customStyle="1" w:styleId="CycA"><w:name w:val="Cyc A"/><w:basedOn w:val="CycB"/></w:style>
+<w:style w:type="paragraph" w:customStyle="1" w:styleId="CycB"><w:name w:val="Cyc B"/><w:basedOn w:val="CycA"/></w:style>
+</w:styles>`;
 
-function basePackage(opts: { main?: string; documentXml?: string } = {}): JSZip {
+const A4_DOCUMENT = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="${W}" xmlns:r="${R}"><w:body><w:p><w:pPr><w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:pPr><w:r><w:t>First section.</w:t></w:r></w:p><w:p><w:r><w:t>Second section.</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134" w:header="709" w:footer="709" w:gutter="0"/></w:sectPr></w:body></w:document>`;
+
+function basePackage(opts: { main?: string; documentXml?: string; stylesXml?: string | null } = {}): JSZip {
   const zip = new JSZip();
   const add = (name: string, body: string | Uint8Array) => zip.file(name, body, FILE_OPTS);
   add('[Content_Types].xml', contentTypes(opts.main ?? CT_MAIN));
   add('_rels/.rels', ROOT_RELS);
   add('word/document.xml', opts.documentXml ?? DOCUMENT);
   add('word/_rels/document.xml.rels', DOC_RELS);
-  add('word/styles.xml', STYLES);
+  if (opts.stylesXml !== null) add('word/styles.xml', opts.stylesXml ?? STYLES);
   return zip;
 }
 
@@ -223,6 +251,14 @@ const fixtures: Record<string, () => Promise<Uint8Array>> = {
   },
 
   'macro-content-type.docx': () => build(basePackage({ main: CT_MACRO })),
+
+  'styles.docx': () => build(basePackage({ stylesXml: STYLES_RICH })),
+
+  'a4-margins.docx': () => build(basePackage({ documentXml: A4_DOCUMENT })),
+
+  'no-styles.docx': () => build(basePackage({ stylesXml: null })),
+
+  'bad-styles.docx': () => build(basePackage({ stylesXml: STYLES.slice(0, STYLES.indexOf('<w:name') + 8) })),
 
   'truncated.docx': () =>
     build(basePackage({ documentXml: DOCUMENT.slice(0, DOCUMENT.indexOf('<w:t>Second') + '<w:t>Sec'.length) })),

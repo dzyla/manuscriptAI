@@ -163,8 +163,13 @@ export interface StyleDef {
   spaceAfterPt?: number;
   indent?: { leftIn?: number; firstLineIn?: number; hangingIn?: number };
   align?: 'left' | 'center' | 'right' | 'justify';
-  /** Category-2 properties kept verbatim from styles.xml (keepNext, tabs, borders, …) */
-  preserved?: { pPrXml?: string; rPrXml?: string };
+  /**
+   * Category-2 properties kept verbatim from styles.xml (keepNext, tabs, borders, …). `pPrXml`/`rPrXml`
+   * are a w:pPr/w:rPr holding only what StyleDef does not model (plus any modelled element whose
+   * attributes were only partly understood, kept whole). `extraXml` is the w:style element reduced to
+   * its other children (w:link, w:uiPriority, w:tblPr, w:tblStylePr, …) and its attributes.
+   */
+  preserved?: { pPrXml?: string; rPrXml?: string; extraXml?: string };
 }
 
 export type FormatPreset = 'nih' | 'manuscript' | 'a4' | 'custom';

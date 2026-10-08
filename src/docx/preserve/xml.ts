@@ -118,6 +118,21 @@ export function captureFragment(el: Element): Fragment {
   return { xml: serializeXml(clone), relIds: collectRelIds(el), nsDecls };
 }
 
+/**
+ * Serialize `container` (attributes included) holding ONLY the given child elements, as a
+ * self-contained fragment string with every in-scope namespace declared. Used to keep the part of
+ * a property container (w:pPr, w:rPr, w:style) the app does not model, verbatim.
+ */
+export function captureChildren(container: Element, keep: Element[]): string {
+  const shell = container.cloneNode(false) as Element;
+  for (const [prefix, uri] of Object.entries(inScopeNamespaces(container))) {
+    const name = prefix ? `xmlns:${prefix}` : 'xmlns';
+    if (!shell.hasAttribute(name)) shell.setAttributeNS(XMLNS_NS, name, uri);
+  }
+  for (const k of keep) shell.appendChild(k.cloneNode(true));
+  return serializeXml(shell);
+}
+
 export function remapRelIds(fragment: Fragment, mapping: Record<string, string>): Fragment {
   const doc = parseXml(fragment.xml);
   const walk = (n: Element) => {

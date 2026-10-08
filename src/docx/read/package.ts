@@ -17,7 +17,7 @@
  * the budget cannot silently read as empty). A deferred part is reachable only through
  * `bytesAsync` / `entryAsync` / `xmlAsync`; `deferred()` lists them. On-demand reads are bounded
  * by the declared size and by `maxPartBytes` (32 MB) BEFORE anything is allocated. Deferred XML
- * parsed via `xmlAsync` is cached; raw deferred bytes are not. Ordinary documents (a few MB in
+ * parsed via `xmlAsync` goes through the same bounded DOM cache; raw deferred bytes are not. Ordinary documents (a few MB in
  * total) are entirely on the sync path for their XML; media always needs `bytesAsync`.
  */
 import JSZip from 'jszip';
@@ -42,6 +42,14 @@ export const DEFAULT_LIMITS: Readonly<PackageLimits> = Object.freeze({
 /** Total uncompressed bytes of XML parts that openPackage inflates eagerly for the sync accessors. */
 export const DEFAULT_EAGER_BYTES = 64e6;
 
+/**
+ * Budget for the parsed-DOM cache, counted in SOURCE bytes of the cached parts. A parsed DOM costs
+ * roughly 10-25x its source (measured on real grant documents), so 8 MB of source bounds the cache to
+ * around 100-200 MB however large the package is. Least-recently-used documents are evicted; a part
+ * bigger than the whole budget is parsed on every request and never cached.
+ */
+export const DEFAULT_MAX_CACHED_XML_BYTES = 8e6;
+
 /** Largest single part the async accessors will inflate on demand (they allocate its declared size up front). */
 export const DEFAULT_MAX_PART_BYTES = 32e6;
 
@@ -50,6 +58,8 @@ export interface OpenOptions extends Partial<PackageLimits> {
   maxEagerBytes?: number;
   /** Per-part cap for on-demand async reads of deferred parts. Default 32 MB. */
   maxPartBytes?: number;
+  /** Parsed-DOM cache budget in source bytes (see DEFAULT_MAX_CACHED_XML_BYTES). 0 disables caching. */
+  maxCachedXmlBytes?: number;
 }
 
 export type DocxOpenErrorCode =
@@ -75,8 +85,13 @@ export interface DocxPackage {
   entry(path: string): string | undefined;
   /** Raw part bytes (shared, do not mutate); undefined when absent; throws DocxOpenError('too-large') when deferred (use `bytesAsync`). */
   bytes(path: string): Uint8Array | undefined;
-  /** Part parsed as XML (cached, treat as read-only); undefined when absent; throws DocxOpenError('corrupt') when malformed and DocxOpenError('too-large') when deferred (use `xmlAsync`). */
+  /**
+   * Part parsed as XML; treat as read-only. Parsed documents sit in a bounded LRU cache, so two calls may
+   * return different objects for the same part (never hold a Document across other reads expecting identity);
+   * undefined when absent; throws DocxOpenError('corrupt') when malformed and DocxOpenError('too-large') when deferred (use `xmlAsync`). */
   xml(path: string): Document | undefined;
+  /** Drop a part's parsed document from the cache once a consumer is done with it. */
+  releaseXml(path: string): void;
   /**
    * Relationships of a part (`''` for the package itself), keyed by Id; an empty map when the part has no
    * `.rels`. Throws DocxOpenError('corrupt') when the `.rels` part exists but is malformed or empty, and
@@ -341,11 +356,9 @@ function isXmlPart(types: ContentTypes, path: string): boolean {
 class Package implements DocxPackage {
   /** lowercased part name -> real name (OPC part names are case-insensitive); covers deferred parts too. */
   private readonly index = new Map<string, string>();
-  /**
-   * Parsed-DOM cache. UNBOUNDED: up to 64 MB of eager XML can become several hundred MB of parsed
-   * DOM once every part is parsed (Task 5 must bound or release what it no longer needs).
-   */
-  private readonly docs = new Map<string, Document>();
+  /** Parsed-DOM LRU cache (Map insertion order = recency), bounded by `cachedBytes` <= `maxCachedBytes` of source. */
+  private readonly docs = new Map<string, { doc: Document; cost: number }>();
+  private cachedBytes = 0;
   private readonly relCache = new Map<string, Map<string, PackageRel>>();
 
   constructor(
@@ -355,6 +368,7 @@ class Package implements DocxPackage {
     private readonly types: ContentTypes,
     readonly original: ArrayBuffer,
     private readonly maxPartBytes: number,
+    private readonly maxCachedBytes: number,
   ) {
     for (const name of files.keys()) this.index.set(name.toLowerCase(), name);
   }
@@ -372,6 +386,38 @@ class Package implements DocxPackage {
       throw new DocxOpenError('too-large', `${name} is not available synchronously (deferred); use the async accessors`);
     }
     return name;
+  }
+
+  private cached(name: string): Document | undefined {
+    const hit = this.docs.get(name);
+    if (!hit) return undefined;
+    this.docs.delete(name); // refresh recency
+    this.docs.set(name, hit);
+    return hit.doc;
+  }
+
+  private remember(name: string, doc: Document, cost: number): void {
+    if (cost > this.maxCachedBytes) return; // would evict everything and still not fit
+    this.forget(name);
+    this.docs.set(name, { doc, cost });
+    this.cachedBytes += cost;
+    for (const [oldest, entry] of this.docs) {
+      if (this.cachedBytes <= this.maxCachedBytes) break;
+      this.docs.delete(oldest);
+      this.cachedBytes -= entry.cost;
+    }
+  }
+
+  private forget(name: string): void {
+    const entry = this.docs.get(name);
+    if (!entry) return;
+    this.docs.delete(name);
+    this.cachedBytes -= entry.cost;
+  }
+
+  releaseXml(path: string): void {
+    const name = this.resolve(path);
+    if (name !== undefined) this.forget(name);
   }
 
   names(): string[] {
@@ -400,10 +446,11 @@ class Package implements DocxPackage {
   xml(path: string): Document | undefined {
     const name = this.resolveEager(path);
     if (name === undefined) return undefined;
-    const cached = this.docs.get(name);
+    const cached = this.cached(name);
     if (cached) return cached;
-    const doc = parseDoc(name, this.parts.get(name)!);
-    this.docs.set(name, doc);
+    const bytes = this.parts.get(name)!;
+    const doc = parseDoc(name, bytes);
+    this.remember(name, doc, bytes.length);
     return doc;
   }
 
@@ -428,10 +475,11 @@ class Package implements DocxPackage {
   async xmlAsync(path: string): Promise<Document | undefined> {
     const name = this.resolve(path);
     if (name === undefined) return undefined;
-    const cached = this.docs.get(name);
+    const cached = this.cached(name);
     if (cached) return cached;
-    const doc = parseDoc(name, (await this.bytesAsync(name))!);
-    this.docs.set(name, doc);
+    const bytes = (await this.bytesAsync(name))!;
+    const doc = parseDoc(name, bytes);
+    this.remember(name, doc, bytes.length);
     return doc;
   }
 
@@ -469,7 +517,12 @@ class Package implements DocxPackage {
 }
 
 export async function openPackage(data: ArrayBuffer, options: OpenOptions = {}): Promise<DocxPackage> {
-  const { maxEagerBytes = DEFAULT_EAGER_BYTES, maxPartBytes = DEFAULT_MAX_PART_BYTES, ...limitOverrides } = options;
+  const {
+    maxEagerBytes = DEFAULT_EAGER_BYTES,
+    maxPartBytes = DEFAULT_MAX_PART_BYTES,
+    maxCachedXmlBytes = DEFAULT_MAX_CACHED_XML_BYTES,
+    ...limitOverrides
+  } = options;
   const lim: PackageLimits = { ...DEFAULT_LIMITS, ...limitOverrides };
 
   // 1. Cheap checks on the raw bytes: no zip object has been built yet.
@@ -558,5 +611,5 @@ export async function openPackage(data: ArrayBuffer, options: OpenOptions = {}):
     eager += size;
   }
 
-  return new Package(parts, new Map(real.map(f => [f.name, f])), sizes, types, data, maxPartBytes);
+  return new Package(parts, new Map(real.map(f => [f.name, f])), sizes, types, data, maxPartBytes, maxCachedXmlBytes);
 }
