@@ -48,6 +48,20 @@ describe('import report', () => {
     expect(s).toContain('1 warning');
   });
 
+  it('summary does not count a tracked change or a comment anchor a second time as "preserved read-only"', () => {
+    const r = createReport();
+    recordFeature(r, 'trackedChange', 32);
+    recordFeature(r, 'comment', 52);
+    recordFeature(r, 'unknownField', 184); // 32 revisions + 152 anchors, each an atom
+    r.described = { trackedChange: 32, commentAnchor: 152, citationField: 0 };
+    expect(summarizeReport(r)).toBe('Imported 32 tracked changes · 52 comments');
+    recordFeature(r, 'equation', 2);
+    expect(summarizeReport(r)).toBe('Imported 32 tracked changes · 52 comments · 2 other preserved read-only');
+    // a report that was not annotated keeps the plain total
+    delete r.described;
+    expect(summarizeReport(r)).toContain('186 preserved read-only');
+  });
+
   it('summary names bibliographies, pluralised, next to citations', () => {
     const one = createReport();
     recordFeature(one, 'externalCitation', 22);

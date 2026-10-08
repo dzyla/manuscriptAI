@@ -42,6 +42,13 @@ export interface ImportReport {
   byCategory: Record<FidelityCategory, number>;
   warnings: ImportWarning[];
   pageCount?: number;
+  /**
+   * Set by the importer once the document is read: how many of the category-3 atoms (`byCategory[3]`) are pieces that already have a
+   * count of their own, so the summary does not describe the same pieces twice. A tracked change is one atom; a comment is up to
+   * three (where its range starts, where it ends, and its reference), so 52 comments are 152 anchors; a reference-manager citation
+   * or bibliography is the four pieces of its field (begin, code, separator, end).
+   */
+  described?: { trackedChange: number; commentAnchor: number; citationField: number };
 }
 
 export function createReport(): ImportReport {
@@ -75,7 +82,11 @@ export function summarizeReport(r: ImportReport): string {
   const cites = (c.nativeCitation ?? 0) + (c.externalCitation ?? 0);
   if (cites) parts.push(plural(cites, 'citation'));
   if (c.externalBibliography) parts.push(plural(c.externalBibliography, 'bibliography', 'bibliographies'));
-  if (r.byCategory[3]) parts.push(`${r.byCategory[3]} preserved read-only`);
+  // The atoms that are tracked changes, comment anchors or the pieces of a citation field are the ones counted above; what is left is everything else the
+  // document holds that the editor keeps but cannot edit (equations, footnote markers, fields, content controls, ...).
+  const described = r.described ? r.described.trackedChange + r.described.commentAnchor + r.described.citationField : 0;
+  const other = Math.max(0, r.byCategory[3] - described);
+  if (other) parts.push(`${other} ${described ? 'other ' : ''}preserved read-only`);
   if (r.warnings.length) parts.push(plural(r.warnings.length, 'warning'));
   return parts.length ? `Imported ${parts.join(' · ')}` : 'Imported document';
 }

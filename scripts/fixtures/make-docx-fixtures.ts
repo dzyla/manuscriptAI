@@ -59,6 +59,10 @@
  *                   uses (right of centre); a wrapSquare PNG A (the same bytes, a second reference) anchored near the left edge; a
  *                   wrapTopAndBottom PNG B centred; an inline image whose r:embed is not in the rels; an image linked from
  *                   https://example.org (TargetMode="External", r:link only); an inline WebP
+ *   opaque.docx     one of each thing the reader keeps as an opaque atom: an m:oMath equation, a footnote reference (with a footnotes.xml
+ *                   part), a non-Google content control, a bookmarkStart/bookmarkEnd pair, a complex field the reader does not model
+ *                   (PAGEREF) with an editable result, a w:object OLE object (with its embedding and preview-image relationships) and a
+ *                   paragraph-level sectPr; every piece of text is a distinct word
  *   google-export.docx  Google Docs shape: goog_rdk_* w:sdt wrappers (one nested two deep) around runs, plus word/fonts/ font
  */
 process.env.TZ = 'UTC'; // must precede any Date use so zip timestamps are reproducible
@@ -474,6 +478,35 @@ function patchLocalName(buf: Uint8Array, from: string, to: string): void {
   throw new Error(`patchLocalName: local header for ${from} not found`);
 }
 
+// ─── opaque.docx (Task 10) ───────────────────────────────────────────────────────────────────────────────────────
+const CT_FOOTNOTES = 'application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml';
+
+const FOOTNOTES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:footnotes xmlns:w="${W}" xmlns:r="${R}"><w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote><w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote><w:footnote w:id="1"><w:p><w:r><w:t>Footnote body text.</w:t></w:r></w:p></w:footnote></w:footnotes>`;
+
+const OPAQUE_RELS = BODY_RELS.replace(
+  '</Relationships>',
+  `<Relationship Id="rId31" Type="${R}/footnotes" Target="footnotes.xml"/><Relationship Id="rId40" Type="${R}/oleObject" Target="embeddings/oleObject1.bin"/><Relationship Id="rId41" Type="${R}/image" Target="media/image1.png"/></Relationships>`,
+);
+
+const fld = (type: string) => `<w:r><w:fldChar w:fldCharType="${type}"/></w:r>`;
+
+/**
+ * Every paragraph states a distinct word per piece of editable text, so a test can prove that the words outside the atoms are
+ * in the document's text and the words inside them are in exactly one stored fragment.
+ */
+const OPAQUE = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="${W}" xmlns:r="${R}" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office"><w:body>
+<w:p>${run('Equationbefore ')}<m:oMath><m:r><m:t>x+1</m:t></m:r></m:oMath>${run(' equationafter.')}</w:p>
+<w:p>${run('Notetext')}<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:footnoteReference w:id="1"/></w:r>${run(' noteend.')}</w:p>
+<w:p>${run('Controlbefore ')}<w:sdt><w:sdtPr><w:tag w:val="my_control"/></w:sdtPr><w:sdtContent>${run('controlledtext')}</w:sdtContent></w:sdt>${run(' controlafter.')}</w:p>
+<w:p>${run('Markstart ')}<w:bookmarkStart w:id="5" w:name="_Ref100"/>${run('markedwords')}<w:bookmarkEnd w:id="5"/>${run(' markend.')}</w:p>
+<w:p>${run('Fieldbefore ')}${fld('begin')}<w:r><w:instrText xml:space="preserve"> PAGEREF _Ref100 \\h </w:instrText></w:r>${fld('separate')}${run('fieldresult')}${fld('end')}${run(' fieldafter.')}</w:p>
+<w:p>${run('Objectbefore ')}<w:r><w:object w:dxaOrig="1440" w:dyaOrig="1440"><v:shape id="_x0000_i1025" type="#_x0000_t75" style="width:72pt;height:72pt"><v:imagedata r:id="rId41" o:title=""/></v:shape><o:OLEObject Type="Embed" ProgID="Package" ShapeID="_x0000_i1025" DrawAspect="Content" ObjectID="_1" r:id="rId40"/></w:object></w:r>${run(' objectafter.')}</w:p>
+<w:p><w:pPr><w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:pPr>${run('Sectionone ends here.')}</w:p>
+<w:p>${run('Lastparagraph.')}</w:p>
+<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:body></w:document>`;
+
 const fixtures: Record<string, () => Promise<Uint8Array>> = {
   'minimal.docx': () => build(basePackage()),
 
@@ -641,6 +674,25 @@ const fixtures: Record<string, () => Promise<Uint8Array>> = {
           '<Default Extension="png" ContentType="image/png"/><Default Extension="webp" ContentType="image/webp"/><Override',
         ),
         extra: { 'word/media/image1.png': png(200, 30, 30), 'word/media/image2.png': png(30, 30, 200, 8, 4), 'word/media/image3.webp': WEBP },
+      }),
+    ),
+
+  'opaque.docx': () =>
+    build(
+      basePackage({
+        documentXml: OPAQUE,
+        stylesXml: STYLES_BODY,
+        relsXml: OPAQUE_RELS,
+        contentTypesXml: contentTypes(CT_MAIN).replace(
+          '<Override',
+          `<Default Extension="png" ContentType="image/png"/><Default Extension="bin" ContentType="application/vnd.openxmlformats-officedocument.oleObject"/><Override PartName="/word/footnotes.xml" ContentType="${CT_FOOTNOTES}"/><Override`,
+        ),
+        extra: {
+          'word/footnotes.xml': FOOTNOTES,
+          // Not a real OLE container: only the part's presence matters to the reader.
+          'word/embeddings/oleObject1.bin': new Uint8Array(32).fill(0x2a),
+          'word/media/image1.png': png(200, 30, 30),
+        },
       }),
     ),
 

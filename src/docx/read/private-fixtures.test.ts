@@ -23,6 +23,8 @@ import { isGoogleSdt } from './sdt';
 import { getNumbering, groupListParagraphs, readNumbering } from './numbering';
 import { readTable } from './tables';
 import { readBody } from './body';
+import { readDocx } from './index';
+import { matchCaptions } from './drawings';
 import { collectFragmentIds } from '../preserve/refs';
 import { planLiftedDrawings } from '../preserve/lifted';
 import { collectAssetIds } from '../../db/assetStore';
@@ -570,6 +572,188 @@ describe.skipIf(docs.length === 0)('private real-world documents', () => {
         `complexNumbering ${report.counts.complexNumbering ?? 0} (${report.warnings.filter(w => w.feature === 'complexNumbering').length} distinct warnings), summary "${summarizeReport(report)}"`,
     );
   });
+  /**
+   * Task 10: the whole `readDocx` result for each real document, asserted. Every number below was measured (by hand, or from the
+   * XML and the package alone, not through the reader) before it was written here, and the report is compared whole, so a count that
+   * moves, a warning that appears or one that goes missing fails this test. Counts and the reader's own fixed messages only: no
+   * document text is read out or printed.
+   */
+  it.each(docs)('%s: the assembled import result and its full report are exactly what was measured', async name => {
+    const fetchSpy = vi.fn(() => {
+      throw new Error('fetch must never be called while reading a .docx');
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    try {
+      const isSnsf = name === 'snsf.docx';
+      const bytes = readFileSync(new URL(name, dir));
+      const input = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+      const r = await readDocx(input, undefined, name);
+      const doc = r.doc;
+      const blocks = doc.content!;
+      const REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+
+      // ── the source, counted from its XML and package alone ───────────────────────────────────────────────────
+      const pkg = await openPackage(input);
+      const main = mainDocumentPart(pkg);
+      const body = pkg.xml(main)!.getElementsByTagNameNS(W_NS, 'body')[0];
+      const rawCount = (...names: string[]) => names.reduce((n, x) => n + body.getElementsByTagNameNS(W_NS, x).length, 0);
+      const commentsPart = pkg.xml('word/comments.xml');
+      const commentsInPart = commentsPart ? commentsPart.getElementsByTagNameNS(W_NS, 'comment').length : 0;
+      const usedRelIds = new Set<string>();
+      const scan = (el: Element): void => {
+        for (let i = 0; i < el.attributes.length; i++) if (el.attributes[i].namespaceURI === REL) usedRelIds.add(el.attributes[i].value);
+        for (let c = el.firstChild; c; c = c.nextSibling) if (c.nodeType === 1) scan(c as Element);
+      };
+      scan(body);
+      const definedRels = pkg.rels(main);
+
+      // ── the result as a whole ────────────────────────────────────────────────────────────────────────────────
+      expect(r.fileName).toBe(name);
+      expect(r.original).toBe(input);
+      expect(() => getSpecSchema().nodeFromJSON(doc).check()).not.toThrow();
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(r.format.page.size).toBe('letter');
+      // the margins are the body section's own pgMar (twentieths of a point, read here straight from the XML), not a default
+      const pgMar = body.getElementsByTagNameNS(W_NS, 'sectPr')[0].getElementsByTagNameNS(W_NS, 'pgMar')[0];
+      const margin = (side: string) => Number(pgMar.getAttributeNS(W_NS, side)) / 1440;
+      expect(r.format.page.marginsIn).toEqual({ top: margin('top'), right: margin('right'), bottom: margin('bottom'), left: margin('left') });
+      expect(r.format.page.marginsIn).toEqual(isSnsf ? { top: 709 / 1440, right: 0.75, bottom: 1, left: 0.75 } : { top: 0.5, right: 0.5, bottom: 0.5, left: 0.5 });
+
+      // ── the report, whole ────────────────────────────────────────────────────────────────────────────────────
+      const INFERRED =
+        'This document uses no Word heading styles. 9 section headings were inferred from bold or larger text, short lines, aim titles, numbering and common section names. Review them: each can be accepted or rejected, and none is applied until you accept it.';
+      const CITATION_FIELDS =
+        'Reference-manager fields (Zotero, Mendeley, EndNote, Paperpile, ...) are kept as read-only pieces. Where a field is split, the text it displays is ordinary editable text between those pieces, so editing a paragraph that holds one can break the field. Change citations and bibliographies in the reference manager instead.';
+      const expected = isSnsf
+        ? {
+            counts: {
+              paragraphStyle: 12, keepRules: 52, characterStyle: 13, tabStops: 102, tableBorders: 2, paragraph: 177, run: 2233, pageBreak: 8,
+              unknownField: 94, externalCitation: 22, inlineImage: 3, list: 5, table: 1, mergedCell: 6, externalBibliography: 1,
+              inferredHeading: 9, pageSetup: 1,
+            },
+            byCategory: { 1: 2459, 2: 188, 3: 94, 4: 0 },
+            pageCount: 20,
+            described: { trackedChange: 0, commentAnchor: 0, citationField: 94 },
+            warnings: [
+              { feature: 'externalCitation', category: 2, message: CITATION_FIELDS },
+              { feature: 'tableBorders', category: 2, message: 'Table borders and shading are shown approximately. The original table formatting is kept for export.' },
+              { feature: 'externalBibliography', category: 2, message: CITATION_FIELDS },
+              { feature: 'inferredHeading', category: 2, message: INFERRED },
+              { feature: 'part', category: 3, message: '3 header or footer parts have content (text, a page number or a picture). They are kept in the file but not shown or editable here.' },
+            ],
+          }
+        : {
+            counts: {
+              paragraphStyle: 20, keepRules: 251, characterStyle: 23, tableBorders: 1, paragraph: 135, googleWrapper: 78, unknownField: 184,
+              comment: 52, run: 1046, trackedChange: 32, floatingImageSquare: 10, formatChange: 13, inferredHeading: 9, pageSetup: 1,
+            },
+            byCategory: { 1: 1410, 2: 261, 3: 184, 4: 0 },
+            described: { trackedChange: 32, commentAnchor: 152, citationField: 0 },
+            warnings: [
+              { feature: 'part', category: 2, message: 'A duplicate style definition was ignored; the first one is used.' },
+              { feature: 'comment', category: 3, message: 'Comments are kept as read-only anchors for now; their text and replies are not shown or editable here. They stay in the file.' },
+              { feature: 'trackedChange', category: 3, message: 'Tracked changes are kept as read-only pieces for now; their text is not shown or editable here.' },
+              { feature: 'formatChange', category: 2, message: 'Formatting-change revisions are shown with their new formatting; the record of the old formatting is kept only while the paragraph is unedited.' },
+              { feature: 'part', category: 2, message: 'A cropped picture is shown whole (its crop is kept for export).' },
+              { feature: 'inferredHeading', category: 2, message: INFERRED },
+              { feature: 'formatChange', category: 3, message: '10 formatting changes sit on a paragraph mark, in a table, or inside other preserved content (such as a tracked insertion). They are counted above and kept in the file, but are not shown as separate pieces.' },
+              { feature: 'part', category: 3, message: '1 header or footer part has content (text, a page number or a picture). It is kept in the file but not shown or editable here.' },
+            ],
+          };
+      expect(r.report).toEqual(expected);
+      expect(summarizeReport(r.report)).toBe(
+        isSnsf
+          ? 'Imported 20 pages · 5 lists · 22 citations · 1 bibliography · 5 warnings'
+          : 'Imported 45 tracked changes · 52 comments · 8 warnings',
+      );
+
+      // ── review state: the numbers are the document's, from sources the reader did not produce ───────────────────
+      // tracked changes: the w:ins / w:del / w:moveFrom / w:moveTo elements; formatting changes: the w:rPrChange elements
+      const revisions = rawCount('ins', 'del', 'moveFrom', 'moveTo');
+      expect(revisions).toBe(isSnsf ? 0 : 32);
+      expect(r.report.counts.trackedChange ?? 0).toBe(revisions);
+      expect(rawCount('rPrChange', 'pPrChange')).toBe(isSnsf ? 0 : 13);
+      expect(r.report.counts.formatChange ?? 0).toBe(rawCount('rPrChange', 'pPrChange'));
+      // comments: the comment records in comments.xml, which the reader never opens
+      expect(commentsInPart).toBe(isSnsf ? 0 : 52);
+      expect(r.report.counts.comment ?? 0).toBe(commentsInPart);
+      // the atoms that stand for them: one each for the revisions, three at most per comment (start, end, reference)
+      const atoms = all(blocks, n => n.type === 'opaqueInline' || n.type === 'opaqueBlock');
+      expect(atoms.filter(a => a.attrs!.label === 'tracked change')).toHaveLength(revisions);
+      expect(atoms.filter(a => a.attrs!.label === 'comment anchor')).toHaveLength(isSnsf ? 0 : 152);
+      // 157 anchors in the XML: 152 are atoms of their own, and the other 5 sit inside a tracked change's atom (counted with it, kept in its XML)
+      expect(rawCount('commentRangeStart', 'commentRangeEnd', 'commentReference')).toBe(isSnsf ? 0 : 157);
+      const insideRevisions = atoms
+        .filter(a => a.attrs!.label === 'tracked change')
+        .reduce((n, a) => {
+          const root = parseXml(r.preservation.fragments[a.attrs!.fragmentId as string].xml).documentElement;
+          return n + ['commentRangeStart', 'commentRangeEnd', 'commentReference'].reduce((m, x) => m + root.getElementsByTagNameNS(W_NS, x).length, 0);
+        }, 0);
+      expect(insideRevisions).toBe(isSnsf ? 0 : 5);
+      // snsf's 94 atoms are the pieces of its 23 reference-manager fields: 69 w:fldChar (begin, separate, end) and 25 w:instrText
+      // (two of the 23 codes continue in a second piece). None is left over as "other preserved".
+      expect(rawCount('fldChar') + rawCount('instrText')).toBe(isSnsf ? 94 : 0);
+      expect((r.report.counts.externalCitation ?? 0) + (r.report.counts.externalBibliography ?? 0)).toBe(isSnsf ? 23 : 0);
+      // every atom is a category-3 record and the report's category-3 total is exactly the atoms (no section break in either document)
+      expect(r.report.byCategory[3]).toBe(atoms.length);
+      expect(r.report.counts.sectionBreak).toBeUndefined();
+      expect(rawCount('sectPr')).toBe(1);
+      expect(Object.keys(r.preservation.fragments)).toHaveLength(atoms.length + (isSnsf ? 3 : 10)); // and the pictures' runs
+
+      // ── structure ────────────────────────────────────────────────────────────────────────────────────────────
+      expect(r.headingCandidates).toHaveLength(9); // proposed ...
+      expect(all(blocks, n => n.type === 'heading')).toHaveLength(0); // ... and not applied
+      expect(r.report.counts.inferredHeading).toBe(9);
+      expect(all(blocks, n => n.type === 'table')).toHaveLength(isSnsf ? 1 : 0);
+      expect(r.report.counts.table ?? 0).toBe(isSnsf ? 1 : 0);
+      const bullets = all(blocks, n => n.type === 'bulletList');
+      expect(bullets).toHaveLength(isSnsf ? 5 : 0);
+      expect(bullets.every(b => b.content!.length === 1)).toBe(true);
+      expect(r.report.counts.list ?? 0).toBe(bullets.length);
+      if (isSnsf) {
+        const table = all(blocks, n => n.type === 'table')[0];
+        expect(table.content).toHaveLength(17);
+        expect(all([table], n => n.type === 'tableCell' || n.type === 'tableHeader')).toHaveLength(21);
+        expect(rawCount('tc') - 21).toBe(11); // the 32 source cells, 11 of them continuations folded into a rowspan
+      }
+
+      // ── images: read, not left opaque ────────────────────────────────────────────────────────────────────────
+      const domDrawings = rawCount('drawing');
+      const imgs = all(blocks, n => n.type === 'resizableImage');
+      expect(domDrawings).toBe(isSnsf ? 3 : 10);
+      expect(imgs).toHaveLength(domDrawings);
+      expect(atoms.filter(a => a.attrs!.label === 'drawing' || a.attrs!.label === 'picture')).toHaveLength(0);
+      expect(r.assets).toHaveLength(isSnsf ? 3 : 10);
+      expect(r.assets.map(a => a.mime)).toEqual(Array(r.assets.length).fill('image/png'));
+      expect([...collectAssetIds(doc)].sort()).toEqual(r.assets.map(a => a.id).sort());
+      const figures = matchCaptions(blocks);
+      expect(figures.filter(f => f.caption !== null)).toHaveLength(isSnsf ? 2 : 10);
+      expect(imgs.filter(i => i.attrs!.anchorBlockId)).toHaveLength(isSnsf ? 0 : 10); // r01: all ten lifted
+      expect(Object.values(r.preservation.blocks).flatMap(b => b.lifted ?? [])).toHaveLength(isSnsf ? 0 : 10);
+      expect(planLiftedDrawings(doc, r.preservation)).toEqual({ strip: [], emit: [] });
+
+      // ── preservation: every stored piece is referenced, every reference is stored, and the relationships are the document's ──
+      expect([...collectFragmentIds(doc)].sort()).toEqual(Object.keys(r.preservation.fragments).sort());
+      const expectedIds = [...usedRelIds].filter(id => definedRels.has(id)).sort();
+      expect([...usedRelIds].filter(id => !definedRels.has(id))).toEqual([]); // neither document has a dangling id
+      expect(Object.keys(r.preservation.rels).sort()).toEqual(expectedIds);
+      expect(expectedIds).toHaveLength(isSnsf ? 6 : 11); // the pictures, and the header and footer references of the body's own section
+      for (const id of expectedIds) {
+        const rel = definedRels.get(id)!;
+        expect(r.preservation.rels[id]).toEqual({ id: rel.id, type: rel.type, target: rel.target, ...(rel.targetMode ? { targetMode: rel.targetMode } : {}) });
+      }
+      expect(Object.values(r.preservation.rels).filter(x => x.targetMode === 'External')).toEqual([]);
+      expect(fetchSpy).not.toHaveBeenCalled();
+
+      // ── reading twice gives the same result ────────────────────────────────────────────────────────────────────
+      const again = await readDocx(input, undefined, name);
+      expect({ ...again, original: null }).toEqual({ ...r, original: null });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it.each(docs)('%s: tables are read, no cell, row or paragraph dropped or duplicated, provenance holds (counts only)', async name => {
     const { ctx, report, body, blocks, doc } = await readBlocks(name);
     const tcCount = (t: Element): number => childrenW(t, 'tr').reduce((a, r) => a + childrenW(r, 'tc').length, 0);

@@ -105,6 +105,14 @@ function recordSemantic(el: Element, c: OpaqueClass, ctx: ReadContext): void {
     if (id) seen.add(id);
   }
   recordFeature(ctx.report, c.semantic);
+  if (c.semantic === 'comment') {
+    warnOnce(
+      ctx.report,
+      'comment',
+      'Comments are kept as read-only anchors for now; their text and replies are not shown or editable here. They stay in the file.',
+      3,
+    );
+  }
   if (c.semantic === 'trackedChange') {
     warnOnce(
       ctx.report,
