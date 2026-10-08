@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { compareMarkers } from './markers';
 import { buildRewritePrompt, checkRewrite, neighbourSentences } from './rewrite';
 
 const original = 'The functional state is selected kinetically rather than thermodynamically, which is the quantity that matters; we measured 42 complexes at pH 5.5 [3].';
@@ -215,5 +216,26 @@ describe('guards: tell rules each pinned on their own (round 1)', () => {
     const r = checkRewrite(o, longer);
     expect(r.ok).toBe(false);
     expect(r.reasons.join(' ')).toMatch(/style score/);
+  });
+});
+
+describe('round 2 pins', () => {
+  it('rejects one [3] where the original has two', () => {
+    const o = 'The first claim holds [3]; the second claim also holds in these cells [3].';
+    const r = checkRewrite(o, 'The first claim holds. The second claim also holds in these cells [3].');
+    expect(r.ok).toBe(false);
+    expect(r.reasons.join(' ')).toMatch(/\[3\] is missing/);
+  });
+  it('treats [3;4], [3 , 4] and [3,4] as the same marker', () => {
+    const o = 'The first claim holds [3,4], which is clear in all of the cells we examined.';
+    expect(checkRewrite(o, 'The first claim holds [3 , 4]. Both claims are clear in all of the cells we examined.').ok).toBe(true);
+    // [3;4] counts as equal at the marker level (the semicolon inside it is also a tell, so checkRewrite is stricter by design).
+    expect(compareMarkers('claim [3,4] here', 'claim [3;4] here').ok).toBe(true);
+    expect(compareMarkers('claim [3,4] here', 'claim [3–4] here').ok).toBe(false);
+  });
+  it('maps subscript digits to plain digits and rejects a changed one', () => {
+    const o = 'Cells grew in CO₂ at 5 percent; the medium was changed daily for the whole run.';
+    expect(checkRewrite(o, 'Cells grew in CO2 at 5 percent. The medium was changed daily for the whole run.').ok).toBe(true);
+    expect(checkRewrite(o, 'Cells grew in CO₃ at 5 percent. The medium was changed daily for the whole run.').ok).toBe(false);
   });
 });

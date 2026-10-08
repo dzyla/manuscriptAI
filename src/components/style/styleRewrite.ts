@@ -29,15 +29,17 @@ const REFUSALS: Record<string, string> = {
 export async function performStyleRewrite(args: {
   sentence: SentenceAudit;
   audit: StyleAuditSnapshot | null;
-  editor: StyleRewriteEditor | null;
+  /** Read the editor each time it is needed: the handle is recreated with the TipTap editor, and the model takes seconds. */
+  getEditor: () => StyleRewriteEditor | null;
   settings: AISettings;
   inFlight: { current: AbortController | null };
   setBusy: (id: string | null) => void;
   toast: Toast;
   rewrite?: typeof rewriteSentence;
 }): Promise<void> {
-  const { sentence: s, audit, editor, settings, inFlight, setBusy, toast } = args;
+  const { sentence: s, audit, getEditor, settings, inFlight, setBusy, toast } = args;
   const rewrite = args.rewrite ?? rewriteSentence;
+  const editor = getEditor();
   if (!editor || inFlight.current) return;
   const plain = editor.getPlainText();
   if (!auditMatchesDoc(audit, plain)) {
@@ -56,7 +58,8 @@ export async function performStyleRewrite(args: {
   try {
     const result = await rewrite({ sentence: text, ...neighbourSentences(plain, s.start, s.end), profile: settings.voiceProfile, settings, signal: ac.signal });
     // The model took seconds; apply only if the sentence is still exactly where it was and the citations still match.
-    const applied = editor.replaceFlatSentence(s.start, s.end, text, result.text);
+    const live = getEditor();
+    const applied = live ? live.replaceFlatSentence(s.start, s.end, text, result.text) : ({ ok: false, reason: 'unmappable' } as const);
     if (applied.ok === false) {
       toast(REFUSALS[applied.reason] ?? REFUSALS.unmappable, 'error');
       return;

@@ -527,6 +527,24 @@ describe('replaceFlatSentence keeps citation atoms', () => {
     e2.destroy();
   });
 
+  it('uses each of two same-display atoms once, in order (no node reuse)', () => {
+    const one = '<span data-citation-node="" data-source-ids="a" data-nums="3">[3]</span>';
+    const two = '<span data-citation-node="" data-source-ids="b" data-nums="3">[3]</span>';
+    const e = mk(`<p>First claim ${one} and second claim ${two} hold in these cells.</p>`);
+    expect(apply(e, 'First claim [3]. Second claim [3] holds in these cells.').ok).toBe(true);
+    const ids: string[][] = [];
+    e.state.doc.descendants(n => { if (n.type.name === 'citation') ids.push(n.attrs.sourceIds); return true; });
+    expect(ids).toEqual([['a'], ['b']]);
+    e.destroy();
+  });
+
+  it('reports a hard break ahead of an inline object in the same span', () => {
+    const e = mk('<p>See the plot<br>and <span data-figure-label="" data-figure-id="f1" data-figure-num="1"></span> for the effect here.</p>');
+    const t = text(e);
+    expect(resolveFlatSentence(e, 0, t.length, t)).toEqual({ ok: false, reason: 'hard-break' });
+    e.destroy();
+  });
+
   it('keeps the marks around the atoms', () => {
     const e = mk(`<p><strong>Bold claim ${cite('1')} here and more words follow.</strong></p>`);
     expect(apply(e, 'Bold claim here [1] and more words follow.').ok).toBe(true);

@@ -2,11 +2,12 @@ import { describe, it, expect, vi } from 'vitest';
 import { performStyleRewrite, type StyleRewriteEditor } from './styleRewrite';
 import type { AISettings, SentenceAudit, AuditMetrics } from '../../types';
 
-const TEXT = 'Intro words here. The state is selected kinetically rather than thermodynamically; we measured 42 complexes [3].';
+const TEXT = 'Intro words here. Lead in sentence. The state is selected kinetically rather than thermodynamically; we measured 42 complexes [3]. Follow up sentence. Last one.';
 const start = TEXT.indexOf('The state');
-const sentence: SentenceAudit = { start, end: TEXT.length, words: 15, tells: ['semicolon'], severity: 50 };
+const sentence: SentenceAudit = { start, end: TEXT.indexOf(' Follow up'), words: 15, tells: ['semicolon'], severity: 50 };
 const audit = { metrics: {} as AuditMetrics, text: TEXT };
-const settings = {} as AISettings;
+const profile = { id: 'v', name: 'mine', createdAt: 0, sampleWords: 1, summary: { sentences: 1, meanWords: 20, pctOver35: 0, lengthCv: 0, counts: {}, rates: {} }, exampleSentences: ['We purified it.'] };
+const settings = { voiceProfile: profile } as unknown as AISettings;
 
 function setup(over: Partial<StyleRewriteEditor> = {}, rewriteResult: { text: string; retried: boolean; warnings: string[] } | Error = { text: 'Kinetics select the state. We measured 42 complexes [3].', retried: false, warnings: [] }) {
   const editor: StyleRewriteEditor = {
@@ -19,15 +20,46 @@ function setup(over: Partial<StyleRewriteEditor> = {}, rewriteResult: { text: st
   const setBusy = vi.fn();
   const inFlight = { current: null as AbortController | null };
   const rewrite = vi.fn(async () => { if (rewriteResult instanceof Error) throw rewriteResult; return rewriteResult; });
-  const run = () => performStyleRewrite({ sentence, audit, editor, settings, inFlight, setBusy, toast, rewrite });
+  const run = () => performStyleRewrite({ sentence, audit, getEditor: () => editor, settings, inFlight, setBusy, toast, rewrite });
   return { editor, toast, setBusy, inFlight, rewrite, run };
 }
 
 describe('performStyleRewrite', () => {
+  it('passes the voice profile, the neighbouring sentences, the abort signal and the sentence text to the rewrite, and marks the right sentence busy', async () => {
+    const t = setup();
+    await t.run();
+    const arg = (t.rewrite.mock.calls[0] as unknown[])[0] as Record<string, unknown>;
+    expect(arg.profile).toBe(profile);
+    expect(arg.settings).toBe(settings);
+    expect(arg.sentence).toBe(TEXT.slice(start, sentence.end));
+    expect(arg.before).toBe('Lead in sentence.');
+    expect(arg.after).toBe('Follow up sentence.');
+    expect(arg.signal).toBeInstanceOf(AbortSignal);
+    expect(t.setBusy).toHaveBeenNthCalledWith(1, `${sentence.start}-${sentence.end}`);
+  });
+
+  it('forwards an abort of the in-flight request', async () => {
+    const t = setup();
+    let seen: AbortSignal | undefined;
+    t.rewrite.mockImplementationOnce((async (a: { signal?: AbortSignal }) => { seen = a.signal; t.inFlight.current?.abort(); return { text: 'x', retried: false, warnings: [] }; }) as never);
+    await t.run();
+    expect(seen?.aborted).toBe(true);
+  });
+
+  it('applies through the editor as it is after the model returns, not the one captured before', async () => {
+    const t = setup();
+    const later = { ...t.editor, replaceFlatSentence: vi.fn(() => ({ ok: true, from: 1, to: 2, citations: 0, atoms: [] })) } as StyleRewriteEditor;
+    let current: StyleRewriteEditor = t.editor;
+    t.rewrite.mockImplementationOnce((async () => { current = later; return { text: 'Kinetics select the state. We measured 42 complexes [3].', retried: false, warnings: [] }; }) as never);
+    await performStyleRewrite({ sentence, audit, getEditor: () => current, settings, inFlight: t.inFlight, setBusy: t.setBusy, toast: t.toast, rewrite: t.rewrite as never });
+    expect(later.replaceFlatSentence).toHaveBeenCalledTimes(1);
+    expect(t.editor.replaceFlatSentence).not.toHaveBeenCalled();
+  });
+
   it('applies a clean rewrite and says so', async () => {
     const t = setup();
     await t.run();
-    expect(t.editor.replaceFlatSentence).toHaveBeenCalledWith(start, TEXT.length, TEXT.slice(start), 'Kinetics select the state. We measured 42 complexes [3].');
+    expect(t.editor.replaceFlatSentence).toHaveBeenCalledWith(start, sentence.end, TEXT.slice(start, sentence.end), 'Kinetics select the state. We measured 42 complexes [3].');
     expect(t.toast).toHaveBeenCalledWith('Sentence rewritten. Ctrl+Z undoes it.', 'success');
     expect(t.inFlight.current).toBeNull();
     expect(t.setBusy).toHaveBeenLastCalledWith(null);
@@ -50,6 +82,7 @@ describe('performStyleRewrite', () => {
     const t = setup({ replaceFlatSentence: vi.fn(() => ({ ok: false, reason: 'stale' })) as never });
     await t.run();
     expect(t.toast).toHaveBeenCalledWith(expect.stringMatching(/changed while it was being rewritten/), 'error');
+    expect(t.toast).toHaveBeenCalledTimes(1);
     expect(t.inFlight.current).toBeNull();
   });
 

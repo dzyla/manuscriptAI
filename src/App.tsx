@@ -318,7 +318,7 @@ export default function App() {
   // Rewrite one flagged sentence in the author's voice; the guards and the apply step live in performStyleRewrite.
   const handleStyleRewrite = useCallback(
     (s: SentenceAudit) => performStyleRewrite({
-      sentence: s, audit: styleAudit, editor: editorRef.current, settings: aiSettings,
+      sentence: s, audit: styleAudit, getEditor: () => editorRef.current, settings: aiSettings,
       inFlight: rewriteAbort, setBusy: setRewritingId, toast: showToast,
     }),
     [aiSettings, styleAudit, showToast],
