@@ -78,6 +78,17 @@ describe('parseXmlStrict', () => {
     expect(parseXmlStrict('<a/>').documentElement.localName).toBe('a');
   });
 
+  it('accepts legal trailing syntax after the root', () => {
+    expect(parseXmlStrict('<w:a xmlns:w="urn:x"><w:b/></w:a >').documentElement.nodeName).toBe('w:a');
+    expect(parseXmlStrict('<a><b/></a>\n<!-- note -->\n<?pi x?>\n').documentElement.nodeName).toBe('a');
+    expect(parseXmlStrict('<a x="1"/> <!-- note -->').documentElement.nodeName).toBe('a');
+  });
+
+  it('rejects content after the root and an unterminated trailing comment', () => {
+    expect(() => parseXmlStrict('<a><b/></a>junk')).toThrow();
+    expect(() => parseXmlStrict('<a><b/></a><!-- never closed')).toThrow();
+  });
+
   it.each([
     ['cut inside text', '<a><b>hi'],
     ['cut at a tag boundary', '<a><b></b>'],

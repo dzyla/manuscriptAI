@@ -7,11 +7,46 @@ export function parseXml(xml: string): Document {
   return new DOMParser().parseFromString(xml, 'text/xml') as unknown as Document;
 }
 
+/** After index `i`, only whitespace, comments and processing instructions are allowed. */
+function onlyMiscAfter(src: string, i: number): boolean {
+  while (i < src.length) {
+    const ch = src[i];
+    if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r') i++;
+    else if (src.startsWith('<!--', i)) {
+      const end = src.indexOf('-->', i + 4);
+      if (end < 0) return false;
+      i = end + 3;
+    } else if (src.startsWith('<?', i)) {
+      const end = src.indexOf('?>', i + 2);
+      if (end < 0) return false;
+      i = end + 2;
+    } else return false;
+  }
+  return true;
+}
+
+function rootIsClosed(src: string, root: Element): boolean {
+  const close = src.lastIndexOf(`</${root.nodeName}`);
+  if (close >= 0) {
+    let i = close + 2 + root.nodeName.length;
+    while (/\s/.test(src[i] ?? '')) i++;
+    return src[i] === '>' && onlyMiscAfter(src, i + 1);
+  }
+  // Self-closed root (`<a/>`): it can have no children.
+  if (root.firstChild) return false;
+  const start = src.indexOf(`<${root.nodeName}`);
+  const end = start < 0 ? -1 : src.indexOf('/>', start);
+  return end >= 0 && onlyMiscAfter(src, end + 2);
+}
+
 /**
  * Parse untrusted XML or throw. xmldom is lenient by default (a truncated document parses to a
  * partial tree and only logs a warning), so every warning/error is fatal here, DTDs/entity
  * declarations are refused outright (OOXML never needs them), and the root element must be
  * closed by the end of the source. Throws a plain Error; callers map it to their own error type.
+ *
+ * The DTD guard is a raw-source regex, so it also rejects a literal `<!DOCTYPE`/`<!ENTITY` that sits
+ * inside a CDATA section or comment. That is an accepted false positive: Word never writes one.
  */
 export function parseXmlStrict(xml: string): Document {
   const src = xml.charCodeAt(0) === 0xfeff ? xml.slice(1) : xml;
@@ -29,10 +64,9 @@ export function parseXmlStrict(xml: string): Document {
   const root = doc?.documentElement;
   if (!root) throw new Error('XML has no root element');
   if (problems.length) throw new Error(`malformed XML (${problems[0]})`);
-  // xmldom does not notice elements left open at end of input: require the root to be closed.
-  const tail = src.trimEnd();
-  const closed = tail.endsWith(`</${root.nodeName}>`) || (!root.firstChild && tail.endsWith('/>'));
-  if (!closed) throw new Error('XML is truncated: the root element is not closed');
+  // xmldom does not notice elements left open at end of input: require the root to be closed, and
+  // nothing but whitespace, comments and processing instructions to follow it.
+  if (!rootIsClosed(src, root)) throw new Error('XML is truncated: the root element is not closed');
   return doc;
 }
 

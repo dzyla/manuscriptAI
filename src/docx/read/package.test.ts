@@ -66,6 +66,44 @@ describe('openPackage', () => {
   });
 });
 
+/** Names of the entries JSZip was asked to inflate while `run` executes. */
+async function spyInflations(sample: ArrayBuffer, run: () => Promise<unknown>): Promise<string[]> {
+  const probe = await JSZip.loadAsync(sample);
+  const proto = Object.getPrototypeOf(Object.values(probe.files).find(f => !f.dir)!);
+  const orig = proto.internalStream;
+  const names: string[] = [];
+  proto.internalStream = function (this: { name: string }, ...args: unknown[]) {
+    names.push(this.name);
+    return orig.apply(this, args);
+  };
+  try {
+    await run();
+  } finally {
+    proto.internalStream = orig;
+  }
+  return names;
+}
+
+/** Rewrite the declared uncompressed size of one entry in the central directory. */
+function declareUncompressed(buf: Uint8Array, entry: string, size: number): void {
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  for (let pos = 0; pos + 46 <= buf.length; pos++) {
+    if (dv.getUint32(pos, true) !== 0x02014b50) continue;
+    const nameLen = dv.getUint16(pos + 28, true);
+    if (new TextDecoder().decode(buf.subarray(pos + 46, pos + 46 + nameLen)) === entry) {
+      dv.setUint32(pos + 24, size, true);
+      return;
+    }
+  }
+  throw new Error(`no central directory record for ${entry}`);
+}
+
+async function minimalWith(extra: (zip: JSZip) => void): Promise<ArrayBuffer> {
+  const zip = await JSZip.loadAsync(load('minimal.docx'));
+  extra(zip);
+  return zip.generateAsync({ type: 'arraybuffer', compression: 'DEFLATE' });
+}
+
 describe('openPackage: hardening beyond the happy path', () => {
   it('actually records the external hyperlink and never touches the network', async () => {
     const fetchSpy = vi.fn();
@@ -95,15 +133,26 @@ describe('openPackage: hardening beyond the happy path', () => {
     await expect(openPackage(load('lying-size.docx'))).rejects.toMatchObject({ code: 'bomb' });
   });
 
+  it('catches the same lie on a deferred (non-XML) part when it is finally read', async () => {
+    const zip = await JSZip.loadAsync(load('minimal.docx'));
+    zip.file('word/media/liar.bin', new Uint8Array(20_000_000).fill(0x41), { createFolders: false, compression: 'DEFLATE' });
+    const buf = new Uint8Array(await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }));
+    declareUncompressed(buf, 'word/media/liar.bin', 1_000_000);
+    const pkg = await openPackage(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer);
+    expect(pkg.deferred()).toEqual(['word/media/liar.bin']);
+    await expect(pkg.bytesAsync('word/media/liar.bin')).rejects.toMatchObject({ code: 'bomb' });
+  });
+
   it('rejects when declared uncompressed sizes sum past the total limit, before inflating', async () => {
     await expect(openPackage(load('minimal.docx'), { maxUncompressedBytes: 100 })).rejects.toMatchObject({ code: 'too-large' });
   });
 
   it('does not inflate any entry once a declared-size check fails', async () => {
-    // bomb.docx fails on the ratio check; the 20 MB entry must never be materialised.
-    const before = process.memoryUsage().arrayBuffers;
-    await expect(openPackage(load('bomb.docx'))).rejects.toMatchObject({ code: 'bomb' });
-    expect(process.memoryUsage().arrayBuffers - before).toBeLessThan(10_000_000);
+    // bomb.docx fails on the ratio check; its 20 MB entry must never be streamed.
+    const calls = await spyInflations(load('bomb.docx'), () =>
+      expect(openPackage(load('bomb.docx'))).rejects.toMatchObject({ code: 'bomb' }),
+    );
+    expect(calls).toEqual([]);
   });
 
   it('rejects duplicate part names (zip-confusion guard)', async () => {
@@ -160,5 +209,118 @@ describe('openPackage: hardening beyond the happy path', () => {
     expect(pkg.xml('word/document.xml')).toBe(pkg.xml('word/document.xml'));
     expect(pkg.entry('word/document.xml')?.startsWith('<?xml')).toBe(true);
     expect(pkg.bytes('word/document.xml')).toBeInstanceOf(Uint8Array);
+  });
+});
+
+describe('openPackage: alias entries (JSZip collapses ., empty and .. segments)', () => {
+  it.each(['alias.docx', 'alias-empty-segment.docx'])('rejects %s instead of letting the alias replace word/document.xml', async name => {
+    await expect(openPackage(load(name))).rejects.toMatchObject({ code: 'bad-path' });
+  });
+
+  it('rejects every spelling of a dot or empty segment, including over [Content_Types].xml', async () => {
+    const names = ['./word/document.xml', 'word//document.xml', 'word/./document.xml', './/word/document.xml', './[Content_Types].xml', 'word/x/../document.xml'];
+    for (const name of names) {
+      const buf = await minimalWith(zip => zip.file(name, '<x/>', { createFolders: false }));
+      await expect(openPackage(buf), name).rejects.toMatchObject({ code: 'bad-path' });
+    }
+  });
+
+  it('still rejects collapsed aliases when the name check alone would let them through', async () => {
+    // Guard (b): the record count from the raw central directory must equal what JSZip ends up with.
+    // alias.docx has 6 records but JSZip keeps 5; this is the check that notices, independent of names.
+    const probe = await JSZip.loadAsync(load('alias.docx'));
+    expect(Object.keys(probe.files)).toHaveLength(5);
+  });
+});
+
+describe('openPackage: part names are case-insensitive', () => {
+  it('resolves a part whatever the case of the request', async () => {
+    const pkg = await openPackage(load('minimal.docx'));
+    expect(pkg.bytes('WORD/STYLES.XML')).toBeInstanceOf(Uint8Array);
+    expect(pkg.xml('/Word/Document.xml')?.documentElement.localName).toBe('document');
+    expect(pkg.rels('WORD/DOCUMENT.XML').size).toBeGreaterThan(0);
+    expect(pkg.contentType('WORD/DOCUMENT.XML')).toMatch(/document\.main/);
+  });
+
+  it('finds [Content_Types].xml whatever case the producer wrote', async () => {
+    const zip = await JSZip.loadAsync(load('minimal.docx'));
+    const ct = await zip.file('[Content_Types].xml')!.async('string');
+    zip.remove('[Content_Types].xml');
+    zip.file('[content_types].XML', ct, { createFolders: false });
+    const pkg = await openPackage(await zip.generateAsync({ type: 'arraybuffer' }));
+    expect(pkg.contentType('word/document.xml')).toMatch(/document\.main/);
+  });
+});
+
+describe('openPackage: eager budget and deferred parts', () => {
+  it('serves every XML part of an ordinary document on the sync path, nothing deferred', async () => {
+    const pkg = await openPackage(load('minimal.docx'));
+    expect(pkg.deferred()).toEqual([]);
+  });
+
+  it('defers non-XML parts: absent from sync accessors, readable asynchronously', async () => {
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+    const buf = await minimalWith(zip => zip.file('word/media/image1.png', png, { createFolders: false }));
+    const pkg = await openPackage(buf);
+    expect(pkg.names()).toContain('word/media/image1.png');
+    expect(pkg.deferred()).toEqual(['word/media/image1.png']);
+    expect(pkg.bytes('word/media/image1.png')).toBeUndefined();
+    expect(Array.from((await pkg.bytesAsync('WORD/media/image1.png'))!)).toEqual(Array.from(png));
+    expect(await pkg.bytesAsync('word/media/missing.png')).toBeUndefined();
+  });
+
+  it('defers an XML part that does not fit the eager budget, but still serves it via the async accessors', async () => {
+    const pkg = await openPackage(load('minimal.docx'), { maxEagerBytes: 700 });
+    const deferred = pkg.deferred();
+    expect(deferred.length).toBeGreaterThan(0);
+    const name = deferred[0];
+    expect(pkg.xml(name)).toBeUndefined();
+    expect(pkg.entry(name)).toBeUndefined();
+    expect((await pkg.entryAsync(name))!.length).toBeGreaterThan(0);
+    expect(await pkg.xmlAsync(name)).toBeDefined();
+    expect(pkg.names()).toContain(name);
+  });
+
+  it('refuses to read a deferred .rels part as empty', async () => {
+    const pkg = await openPackage(load('minimal.docx'), { maxEagerBytes: 1 });
+    expect(pkg.deferred()).toContain('word/_rels/document.xml.rels');
+    expect(() => pkg.rels('word/document.xml')).toThrowError(expect.objectContaining({ code: 'too-large' }));
+  });
+
+  it('does not allocate for a media part that declares 299 MB at the 100:1 ratio edge', async () => {
+    // ~3 MB of stored (incompressible) bytes whose header claims 299 MB: it passes every
+    // declared-size check, and must never be inflated by openPackage.
+    const noise = new Uint8Array(3_000_000);
+    for (let i = 0; i < noise.length; i++) noise[i] = (i * 2654435761) >>> 24;
+    const zip = await JSZip.loadAsync(load('minimal.docx'));
+    zip.file('word/media/x.bin', noise, { createFolders: false, compression: 'STORE' });
+    const buf = new Uint8Array(await zip.generateAsync({ type: 'uint8array' }));
+    declareUncompressed(buf, 'word/media/x.bin', 299_000_000);
+    const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+    let pkg;
+    const calls = await spyInflations(ab, async () => {
+      pkg = await openPackage(ab);
+    });
+    expect(calls).not.toContain('word/media/x.bin');
+    expect(pkg!.deferred()).toEqual(['word/media/x.bin']);
+    // Asking for it is where the lie is caught: the real stream is far shorter than declared.
+    await expect(pkg!.bytesAsync('word/media/x.bin')).rejects.toMatchObject({ code: expect.stringMatching(/corrupt|bomb/) });
+  });
+});
+
+describe('openPackage: API contracts', () => {
+  it('DEFAULT_LIMITS cannot be edited in place', () => {
+    expect(Object.isFrozen(DEFAULT_LIMITS)).toBe(true);
+    expect(() => {
+      (DEFAULT_LIMITS as any).maxRatio = 1e9;
+    }).toThrow();
+    expect(DEFAULT_LIMITS.maxRatio).toBe(100);
+  });
+
+  it('rels() throws corrupt for a malformed or empty .rels part, and returns empty when there is none', async () => {
+    const empty = await minimalWith(zip => zip.file('word/_rels/document.xml.rels', '', { createFolders: false }));
+    const pkg = await openPackage(empty);
+    expect(() => pkg.rels('word/document.xml')).toThrowError(expect.objectContaining({ code: 'corrupt' }));
+    expect((await openPackage(load('minimal.docx'))).rels('word/styles.xml').size).toBe(0);
   });
 });

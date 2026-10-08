@@ -14,10 +14,12 @@
  *   minimal.docx    well-formed package, two paragraphs, styles, one internal + one external rel
  *   macro.docm      minimal + word/vbaProject.bin and a macro-enabled main content type
  *   bomb.docx       minimal + one 20 MB entry of a single byte (a few KB deflated, ratio > 1000)
- *   lying-size.docx like bomb.docx, but the central directory UNDER-declares the entry's size
+ *   lying-size.docx like bomb.docx but the entry is word/bomb.xml (eagerly inflated), and the central directory UNDER-declares the entry's size
  *                   so the ratio guard passes; only bounded inflation can catch it
  *   traversal.docx minimal + an entry named ../evil.xml
  *   duplicate.docx minimal + two central-directory entries with the same name
+ *   alias.docx     minimal + "./word/document.xml" appended: JSZip collapses it onto the real part
+ *   alias-empty-segment.docx  same, with "word//document.xml"
  *   truncated.docx  valid zip whose word/document.xml is cut mid-element
  */
 process.env.TZ = 'UTC'; // must precede any Date use so zip timestamps are reproducible
@@ -99,10 +101,11 @@ const fixtures: Record<string, () => Promise<Uint8Array>> = {
 
   'lying-size.docx': async () => {
     const zip = basePackage();
-    zip.file('word/bomb.bin', new Uint8Array(20_000_000).fill(0x41), FILE_OPTS);
+    // An .xml part, so openPackage inflates it eagerly and the bound is exercised on open.
+    zip.file('word/bomb.xml', new Uint8Array(20_000_000).fill(0x41), FILE_OPTS);
     const buf = await build(zip);
     const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-    // Walk the central directory and rewrite the declared uncompressed size of word/bomb.bin
+    // Walk the central directory and rewrite the declared uncompressed size of word/bomb.xml
     // from 20 MB down to 1 MB (offset 24 in a central file header). Ratio stays well under 100.
     let pos = find(buf, 0x02014b50);
     let patched = 0;
@@ -111,13 +114,13 @@ const fixtures: Record<string, () => Promise<Uint8Array>> = {
       const extraLen = dv.getUint16(pos + 30, true);
       const commentLen = dv.getUint16(pos + 32, true);
       const name = new TextDecoder().decode(buf.subarray(pos + 46, pos + 46 + nameLen));
-      if (name === 'word/bomb.bin') {
+      if (name === 'word/bomb.xml') {
         dv.setUint32(pos + 24, 1_000_000, true);
         patched++;
       }
       pos += 46 + nameLen + extraLen + commentLen;
     }
-    if (patched !== 1) throw new Error('lying-size: did not find exactly one bomb entry to patch');
+    if (patched !== 1) throw new Error('lying-size: did not find exactly one bomb.xml entry to patch');
     return buf;
   },
 
@@ -144,6 +147,18 @@ const fixtures: Record<string, () => Promise<Uint8Array>> = {
     }
     if (n !== 2) throw new Error(`duplicate: expected 2 name occurrences, patched ${n}`);
     return buf;
+  },
+
+  'alias.docx': () => {
+    const zip = basePackage();
+    zip.file('./word/document.xml', '<w:document xmlns:w="urn:x"><w:body>ALIAS</w:body></w:document>', FILE_OPTS);
+    return build(zip);
+  },
+
+  'alias-empty-segment.docx': () => {
+    const zip = basePackage();
+    zip.file('word//document.xml', '<w:document xmlns:w="urn:x"><w:body>ALIAS</w:body></w:document>', FILE_OPTS);
+    return build(zip);
   },
 
   'truncated.docx': () =>
