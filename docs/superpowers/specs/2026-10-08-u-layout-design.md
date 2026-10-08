@@ -24,7 +24,7 @@ Success criteria:
 
 - At rest the top bar shows roughly 8 controls, not 53.
 - Four task panels replace six tabs; one panel open at a time; the rail collapses to nothing.
-- The writing surface renders the document's real `PageSetup` (size, margins) and `DocumentFormat.defaults` (font family, size).
+- The writing surface renders the document's real `PageSetup` (size, margins) and `DocFormat.defaults` (font family, size).
 - Every feature reachable before the restructure is still reachable after it, proven by a test, not by inspection.
 - No file left over ~400 lines among the ones this sub-project touches.
 
@@ -84,12 +84,12 @@ The canvas binds to data that already exists from A1 rather than to new UI state
   ```ts
   // src/services/pagination.ts
   export interface PageEstimate { pages: number; approximate: boolean; breaks: number[] }
-  export function estimatePages(doc: JSONContent, format: DocumentFormat): PageEstimate
+  export function estimatePages(doc: JSONContent, format: DocFormat): PageEstimate
   ```
 
   Both the guides and the status bar read it, and nothing else computes a page number. A3 replaces the implementation and flips `approximate` to `false`; no UI changes. Until then the status bar reads `~11 of 12 pp` with the tilde, and a tooltip says the estimate ignores figure and table flow.
 
-**Reasoning:** binding to `DocumentFormat` means the NIH compliance the user asked for is a property of the document, not a view setting, so it survives save, reload and export. Putting the estimate behind one function is what keeps A3 from becoming a second UI change.
+**Reasoning:** binding to `DocFormat` means the NIH compliance the user asked for is a property of the document, not a view setting, so it survives save, reload and export. Putting the estimate behind one function is what keeps A3 from becoming a second UI change.
 
 ## 3. Selection-aware top bar
 
