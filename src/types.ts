@@ -170,6 +170,16 @@ export interface StyleDef {
    * its other children (w:link, w:uiPriority, w:tblPr, w:tblStylePr, …) and its attributes.
    */
   preserved?: { pPrXml?: string; rPrXml?: string; extraXml?: string };
+  /** Word's `w:default="1"`: this is the document's default style for its type. Written back as-is. */
+  wordDefault?: boolean;
+  /** Word's `w:customStyle="1"`: the author's own style rather than a built-in. Written back as-is. */
+  customStyle?: boolean;
+  /**
+   * Fields on this style whose values were NOT declared by the style but copied in from
+   * w:docDefaults/w:pPrDefault (so the app's resolver agrees with Word). A writer must omit them
+   * when re-emitting the style: they are inherited, not authored.
+   */
+  derivedFromDefaults?: Array<'spaceBeforePt' | 'spaceAfterPt' | 'lineSpacing' | 'indent' | 'align'>;
 }
 
 export type FormatPreset = 'nih' | 'manuscript' | 'a4' | 'custom';

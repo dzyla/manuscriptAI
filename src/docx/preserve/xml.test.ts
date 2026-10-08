@@ -112,7 +112,26 @@ describe('captureChildren', () => {
     expect(re.documentElement.getAttributeNS(W, 'styleId')).toBe('X');
     expect(re.getElementsByTagNameNS(W, 'name').length).toBe(0);
     expect(re.getElementsByTagNameNS(W, 'tab').length).toBe(1);
-    expect(xml).toContain('xmlns:m=');
+    expect(xml).not.toContain('xmlns:m='); // only the namespaces the fragment uses are declared
+    expect(xml).toContain(`xmlns:w="${W}"`);
     expect(style.getElementsByTagNameNS(W, 'name').length).toBe(1); // source untouched
+  });
+
+  it('declares a namespace the kept content uses, including prefixed attributes and mc:Ignorable tokens', () => {
+    const MC = 'http://schemas.openxmlformats.org/markup-compatibility/2006';
+    const W14 = 'http://schemas.microsoft.com/office/word/2010/wordml';
+    const doc = parseXml(`<w:styles xmlns:w="${W}" xmlns:m="${M}" xmlns:w14="${W14}" xmlns:mc="${MC}"><w:style w:styleId="X" mc:Ignorable="w14"><w:rPr><w14:ligatures w14:val="all"/><w:b/></w:rPr><w:other/></w:style></w:styles>`);
+    const rPr = doc.getElementsByTagNameNS(W, 'rPr')[0];
+    const xml = captureChildren(rPr, [rPr.firstChild as Element]);
+    expect(xml).toContain('xmlns:w14=');
+    expect(xml).not.toContain('xmlns:m=');
+    const re = parseXml(xml);
+    expect(re.getElementsByTagNameNS(W14, 'ligatures').length).toBe(1);
+    // Ignorable on the container: the tokens it names must stay declared
+    const style = doc.getElementsByTagNameNS(W, 'style')[0];
+    const kept = captureChildren(style, [style.getElementsByTagNameNS(W, 'other')[0]]);
+    expect(kept).toContain('xmlns:w14=');
+    expect(kept).toContain('xmlns:mc=');
+    expect(kept).not.toContain('xmlns:m=');
   });
 });

@@ -239,6 +239,101 @@ describe('readStyles', () => {
   });
 });
 
+describe('readStyles: Word attributes, localised built-ins and derived defaults', () => {
+  const localised = async (report?: ReturnType<typeof createReport>) => readStyles(await openPackage(load('localised-styles.docx')), report);
+
+  it('keeps w:customStyle and w:default on the style even when nothing else is unmodelled', async () => {
+    const { format, styleIdByWordId } = await localised();
+    const only = format.styles[styleIdByWordId.get('OnlyBold')!];
+    expect(only.customStyle).toBe(true);
+    expect(only.bold).toBe(true);
+    expect(only.preserved).toBeUndefined(); // nothing opaque was needed: the flag lives on the StyleDef
+    expect(format.styles.normal.wordDefault).toBe(true);
+    const english = readStyles(await openPackage(load('styles.docx'))).format;
+    expect(english.styles.normal.wordDefault).toBe(true);
+    expect(english.styles.heading1.customStyle).toBeUndefined();
+  });
+
+  it('warns about a style with no styleId instead of skipping it silently', async () => {
+    const report = createReport();
+    const { format } = await localised(report);
+    expect(report.warnings.some(w => /without a styleId/.test(w.message))).toBe(true);
+    expect(Object.values(format.styles).some(s => s.name === 'No Id')).toBe(false);
+  });
+
+  it('maps localised built-in styles onto the app built-ins by w:name, not by styleId', async () => {
+    const { format, styleIdByWordId, headingLevelByStyleId, backfilled } = await localised();
+    expect(styleIdByWordId.get('Standard')).toBe('normal');
+    expect(styleIdByWordId.get('Titre1')).toBe('heading1');
+    expect(styleIdByWordId.get('\u00dcberschrift2')).toBe('heading2');
+    expect(styleIdByWordId.get('Legende')).toBe('caption');
+    expect(headingLevelByStyleId.get('heading1')).toBe(1);
+    expect(headingLevelByStyleId.get('heading2')).toBe(2);
+    expect(format.styles.heading1.basedOn).toBe('normal');
+    expect(format.styles.heading1.name).toBe('heading 1');
+    // no duplicate "heading 1" appears, and the app's heading1 IS the document's
+    expect(Object.values(format.styles).filter(s => s.name.toLowerCase() === 'heading 1')).toHaveLength(1);
+    expect(Object.values(format.styles).filter(s => s.name.toLowerCase() === 'normal')).toHaveLength(1);
+    for (const own of ['normal', 'heading1', 'heading2', 'caption']) expect(backfilled.has(own), own).toBe(false);
+    // only what the document lacks is backfilled
+    expect([...backfilled].sort()).toEqual(['bibliography', 'heading3']);
+    expect(format.styles.normal.wordDefault).toBe(true);
+  });
+
+  it('reports the backfilled set explicitly', async () => {
+    const minimal = readStyles(await openPackage(load('minimal.docx')));
+    expect(minimal.backfilled.has('normal')).toBe(true);
+    expect(minimal.backfilled.has('heading2')).toBe(true);
+    expect(minimal.backfilled.has('heading1')).toBe(false); // the document defines Heading1
+    for (const id of minimal.styleIdByWordId.values()) expect(minimal.backfilled.has(id)).toBe(false);
+    const none = readStyles(await openPackage(load('no-styles.docx')));
+    expect([...none.backfilled].sort()).toEqual(Object.keys(none.format.styles).sort());
+  });
+
+  it('marks values copied from docDefaults as derived, and never marks declared ones', async () => {
+    const { format, styleIdByWordId } = await localised();
+    expect(format.styles.normal.spaceAfterPt).toBe(8);
+    expect(format.styles.normal.derivedFromDefaults).toEqual(['spaceAfterPt', 'lineSpacing']);
+    // a style that inherits from Normal gets nothing copied (the resolver walks basedOn)
+    expect(format.styles.heading2.derivedFromDefaults).toBeUndefined();
+    expect(format.styles.heading2.spaceAfterPt).toBeUndefined();
+    // a root paragraph style that is not the default also inherits docDefaults in Word
+    const root = format.styles[styleIdByWordId.get('Rootless')!];
+    expect(root.spaceBeforePt).toBe(5); // declared, kept
+    expect(root.derivedFromDefaults).toEqual(['spaceAfterPt', 'lineSpacing']);
+    expect(root.spaceAfterPt).toBe(8);
+    // declared values are never listed
+    expect(format.styles.heading1.spaceAfterPt).toBe(0);
+    expect(format.styles.heading1.derivedFromDefaults).toBeUndefined();
+    // table styles are not paragraph styles
+    const table = format.styles[styleIdByWordId.get('TableauNormal')!];
+    expect(table.derivedFromDefaults).toBeUndefined();
+    expect(table.spaceAfterPt).toBeUndefined();
+    expect(table.wordDefault).toBe(true);
+  });
+
+  it('puts the derived defaults on a synthesised normal when the document has no Normal style', async () => {
+    const zip = await JSZip.loadAsync(load('localised-styles.docx'));
+    const styles = await zip.file('word/styles.xml')!.async('string');
+    zip.file('word/styles.xml', styles.replace('<w:name w:val="Normal"/>', '<w:name w:val="Corps"/>'));
+    const { format, backfilled } = readStyles(await openPackage(await zip.generateAsync({ type: 'arraybuffer' })));
+    expect(backfilled.has('normal')).toBe(true);
+    expect(format.styles.normal.basedOn).toBe('standard'); // the document's own default style
+    expect(format.styles.standard.derivedFromDefaults).toEqual(['spaceAfterPt', 'lineSpacing']);
+    expect(format.styles.normal.derivedFromDefaults).toBeUndefined();
+  });
+
+  it('declares only the namespaces a preserved fragment uses', async () => {
+    const { format } = await localised();
+    const frags = Object.values(format.styles).flatMap(s => Object.values(s.preserved ?? {}));
+    expect(frags.length).toBeGreaterThan(0);
+    for (const xml of frags) {
+      expect(xml!.match(/xmlns(:\w+)?=/g)!.length, xml).toBeLessThanOrEqual(1);
+      expect(parseXml(xml!).documentElement).toBeTruthy(); // still independently parseable
+    }
+  });
+});
+
 describe('resolveRelTarget', () => {
   it('resolves relative, parent and absolute targets against the source part', () => {
     expect(resolveRelTarget('word/document.xml', 'styles.xml')).toBe('word/styles.xml');

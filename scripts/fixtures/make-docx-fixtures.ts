@@ -33,6 +33,9 @@
  *                   model (keepNext, tabs, theme fonts, caps), a styleId that differs from its name, a table
  *                   style, a dangling basedOn and a basedOn cycle
  *   a4-margins.docx A4 body sectPr with 2 cm margins plus a US Letter sectPr inside a paragraph (an earlier section)
+ *   localised-styles.docx  French/German style ids over English built-in names (Standard=Normal, Titre1=heading 1,
+ *                   \u00dcberschrift2=heading 2, Legende=caption), a custom style whose only child is rPr, a style with
+ *                   no styleId, a root paragraph style, a table style, and ~15 unused namespaces on the root
  *   no-styles.docx  minimal with no word/styles.xml part (the relationship to it dangles)
  *   bad-styles.docx minimal whose word/styles.xml is not well-formed XML
  */
@@ -88,6 +91,22 @@ const STYLES_RICH = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:style w:type="paragraph" w:customStyle="1" w:styleId="Dangling"><w:name w:val="Dangling"/><w:basedOn w:val="NoSuchStyle"/><w:rPr><w:b/></w:rPr></w:style>
 <w:style w:type="paragraph" w:customStyle="1" w:styleId="CycA"><w:name w:val="Cyc A"/><w:basedOn w:val="CycB"/></w:style>
 <w:style w:type="paragraph" w:customStyle="1" w:styleId="CycB"><w:name w:val="Cyc B"/><w:basedOn w:val="CycA"/></w:style>
+</w:styles>`;
+
+const EXTRA_NS = ['w14', 'w15', 'w16se', 'wp', 'wp14', 'a', 'pic', 'm', 'v', 'o', 'w10', 'wne', 'wpg', 'wps', 'mc']
+  .map(p => `xmlns:${p}="urn:example:${p}"`)
+  .join(' ');
+
+const STYLES_LOCALISED = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="${W}" ${EXTRA_NS}><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/><w:sz w:val="22"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="160" w:line="259" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults>
+<w:style w:type="paragraph" w:default="1" w:styleId="Standard"><w:name w:val="Normal"/><w:qFormat/></w:style>
+<w:style w:type="paragraph" w:styleId="Titre1"><w:name w:val="heading 1"/><w:basedOn w:val="Standard"/><w:next w:val="Standard"/><w:pPr><w:keepNext/><w:spacing w:after="0"/></w:pPr><w:rPr><w:b/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="\u00dcberschrift2"><w:name w:val="heading 2"/><w:basedOn w:val="Standard"/><w:rPr><w:b/><w:sz w:val="26"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Legende"><w:name w:val="caption"/><w:basedOn w:val="Standard"/><w:rPr><w:i/></w:rPr></w:style>
+<w:style w:type="paragraph" w:customStyle="1" w:styleId="OnlyBold"><w:name w:val="Only Bold"/><w:rPr><w:b/></w:rPr></w:style>
+<w:style w:type="paragraph" w:customStyle="1" w:styleId="Rootless"><w:name w:val="Rootless"/><w:pPr><w:spacing w:before="100"/></w:pPr></w:style>
+<w:style w:type="table" w:default="1" w:styleId="TableauNormal"><w:name w:val="Normal Table"/><w:tblPr><w:tblInd w:w="0" w:type="dxa"/></w:tblPr></w:style>
+<w:style w:type="paragraph" w:customStyle="1"><w:name w:val="No Id"/></w:style>
 </w:styles>`;
 
 const A4_DOCUMENT = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -255,6 +274,8 @@ const fixtures: Record<string, () => Promise<Uint8Array>> = {
   'styles.docx': () => build(basePackage({ stylesXml: STYLES_RICH })),
 
   'a4-margins.docx': () => build(basePackage({ documentXml: A4_DOCUMENT })),
+
+  'localised-styles.docx': () => build(basePackage({ stylesXml: STYLES_LOCALISED })),
 
   'no-styles.docx': () => build(basePackage({ stylesXml: null })),
 

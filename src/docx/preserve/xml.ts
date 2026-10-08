@@ -118,18 +118,37 @@ export function captureFragment(el: Element): Fragment {
   return { xml: serializeXml(clone), relIds: collectRelIds(el), nsDecls };
 }
 
+/** Prefixes used by element and attribute names under `el` ('' = the default namespace), plus mc:Ignorable tokens. */
+function usedPrefixes(el: Element, out: Set<string>): void {
+  out.add(el.prefix || '');
+  for (let i = 0; i < el.attributes.length; i++) {
+    const a = el.attributes[i];
+    if (a.name === 'xmlns' || a.name.startsWith('xmlns:')) continue;
+    if (a.prefix) out.add(a.prefix);
+    if (a.localName === 'Ignorable') for (const t of a.value.split(/\s+/)) if (t) out.add(t);
+  }
+  for (let c = el.firstChild; c; c = c.nextSibling) if (c.nodeType === 1) usedPrefixes(c as Element, out);
+}
+
 /**
  * Serialize `container` (attributes included) holding ONLY the given child elements, as a
- * self-contained fragment string with every in-scope namespace declared. Used to keep the part of
- * a property container (w:pPr, w:rPr, w:style) the app does not model, verbatim.
+ * self-contained fragment string: it declares just the namespaces the fragment actually uses (a Word
+ * styles.xml has ~30 in scope; re-declaring them all on every preserved string would bloat storage),
+ * so it re-parses on its own. Used to keep the part of a property container (w:pPr, w:rPr, w:style)
+ * the app does not model, verbatim.
  */
 export function captureChildren(container: Element, keep: Element[]): string {
   const shell = container.cloneNode(false) as Element;
-  for (const [prefix, uri] of Object.entries(inScopeNamespaces(container))) {
+  for (const k of keep) shell.appendChild(k.cloneNode(true));
+  const used = new Set<string>();
+  usedPrefixes(shell, used);
+  const inScope = inScopeNamespaces(container);
+  for (const prefix of used) {
+    const uri = inScope[prefix];
+    if (uri === undefined) continue; // undeclared, or declared inside the fragment itself
     const name = prefix ? `xmlns:${prefix}` : 'xmlns';
     if (!shell.hasAttribute(name)) shell.setAttributeNS(XMLNS_NS, name, uri);
   }
-  for (const k of keep) shell.appendChild(k.cloneNode(true));
   return serializeXml(shell);
 }
 

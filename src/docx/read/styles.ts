@@ -32,9 +32,27 @@ export interface StylesResult {
   styleIdByWordId: Map<string, string>;
   /** App style id -> heading level, for the document's own heading styles. */
   headingLevelByStyleId: Map<string, 1 | 2 | 3>;
+  /**
+   * App style ids that exist in `format.styles` but NOT in the document's styles.xml (the preset's
+   * built-ins the document lacks, and a synthesised `normal`). A writer must not emit these as the
+   * document's own styles. Every id not in this set came from the document.
+   */
+  backfilled: Set<string>;
 }
 
 type StyleType = StyleDef['type'];
+/** Word's English built-in style names (lower-case) -> the app's built-in style ids. */
+const BUILTIN_BY_NAME: ReadonlyMap<string, string> = new Map([
+  ['normal', 'normal'],
+  ['heading 1', 'heading1'],
+  ['heading 2', 'heading2'],
+  ['heading 3', 'heading3'],
+  ['caption', 'caption'],
+  ['bibliography', 'bibliography'],
+]);
+
+const flag = (v: string | undefined): boolean => ['1', 'true', 'on'].includes((v ?? '').trim().toLowerCase());
+
 const STYLE_TYPES: ReadonlySet<string> = new Set<StyleType>(['paragraph', 'character', 'table', 'numbering']);
 
 // ─── small DOM helpers ───────────────────────────────────────────────────────
@@ -220,7 +238,8 @@ function partWarning(report: ImportReport | undefined, message: string): void {
 }
 
 function nihFallback(): StylesResult {
-  return { format: createFormat('nih'), styleIdByWordId: new Map(), headingLevelByStyleId: new Map() };
+  const format = createFormat('nih');
+  return { format, styleIdByWordId: new Map(), headingLevelByStyleId: new Map(), backfilled: new Set(Object.keys(format.styles)) };
 }
 
 export function readStyles(pkg: DocxPackage, report?: ImportReport): StylesResult {
@@ -268,15 +287,17 @@ export function readStyles(pkg: DocxPackage, report?: ImportReport): StylesResul
     if (pPr) defaultPPr = readPPr(pPr).props;
   }
 
-  // Pass 1: collect style records and assign app ids.
+  // Pass 1: collect style records.
   const recs: Rec[] = [];
   const byWord = new Map<string, Rec>();
-  const taken = new Set<string>();
   for (const el of childElements(root)) {
     if (!isW(el, 'style')) continue;
     const wordId = wAttr(el, 'styleId');
     const type = wAttr(el, 'type') ?? 'paragraph';
-    if (!wordId) continue;
+    if (!wordId) {
+      partWarning(report, 'A style without a styleId was skipped.');
+      continue;
+    }
     if (!STYLE_TYPES.has(type)) {
       partWarning(report, `A style of unknown type "${type}" was skipped.`);
       continue;
@@ -285,10 +306,7 @@ export function readStyles(pkg: DocxPackage, report?: ImportReport): StylesResul
       partWarning(report, 'A duplicate style definition was ignored; the first one is used.');
       continue;
     }
-    let appId = toAppStyleId(wordId);
-    // `in Object.prototype` keeps ids like "constructor" or "__proto__" from touching the prototype chain.
-    for (let n = 2; taken.has(appId) || appId in Object.prototype; n++) appId = `${toAppStyleId(wordId)}${n}`;
-    taken.add(appId);
+    const appId = '';
     const name = childElements(el).find(c => isW(c, 'name'));
     const basedOn = childElements(el).find(c => isW(c, 'basedOn'));
     const pPr = childElements(el).find(c => isW(c, 'pPr'));
@@ -306,12 +324,36 @@ export function readStyles(pkg: DocxPackage, report?: ImportReport): StylesResul
     byWord.set(wordId, rec);
   }
 
+  // Assign app ids. Built-in styles are recognised by their w:name, which Word keeps in English whatever
+  // the UI language ("heading 1" with styleId "Titre1" or "\u00dcberschrift1", "Normal" with styleId
+  // "Standard"), so a localised document maps onto the app's own heading1/normal rather than gaining a
+  // duplicate. Everything else gets the lower-camel of its styleId.
+  const taken = new Set<string>();
+  for (const rec of recs) {
+    const builtin = rec.type === 'paragraph' ? BUILTIN_BY_NAME.get(rec.name.trim().toLowerCase()) : undefined;
+    if (builtin && !taken.has(builtin)) {
+      rec.appId = builtin;
+      taken.add(builtin);
+    }
+  }
+  for (const rec of recs) {
+    if (rec.appId) continue;
+    const base = toAppStyleId(rec.wordId);
+    let appId = base;
+    // `in Object.prototype` keeps ids like "constructor" or "__proto__" from touching the prototype chain.
+    for (let n = 2; taken.has(appId) || appId in Object.prototype; n++) appId = `${base}${n}`;
+    taken.add(appId);
+    rec.appId = appId;
+  }
+
   // Pass 2: map each style.
   const styles: Record<string, StyleDef> = {};
   const extras = new Map<string, Element[]>(); // appId -> extra children (kept for extraXml)
   let defaultParagraphId: string | undefined;
   for (const rec of recs) {
     const def: StyleDef = { id: rec.appId, name: rec.name, type: rec.type };
+    if (flag(wAttr(rec.el, 'customStyle'))) def.customStyle = true;
+    if (flag(wAttr(rec.el, 'default'))) def.wordDefault = true;
     const extra: Element[] = [];
     const preserved: NonNullable<StyleDef['preserved']> = {};
     const seen = new Set<string>();
@@ -350,7 +392,7 @@ export function readStyles(pkg: DocxPackage, report?: ImportReport): StylesResul
     if (preserved.pPrXml || preserved.rPrXml || preserved.extraXml) def.preserved = preserved;
     styles[rec.appId] = def;
     extras.set(rec.appId, extra);
-    if (rec.type === 'paragraph' && defaultParagraphId === undefined && ['1', 'true', 'on'].includes((wAttr(rec.el, 'default') ?? '').toLowerCase())) {
+    if (rec.type === 'paragraph' && defaultParagraphId === undefined && def.wordDefault) {
       defaultParagraphId = rec.appId;
     }
     if (report && rec.type === 'character') recordFeature(report, 'characterStyle');
@@ -395,21 +437,34 @@ export function readStyles(pkg: DocxPackage, report?: ImportReport): StylesResul
     if (level) headingLevelByStyleId.set(rec.appId, level);
   }
 
-  // The default paragraph style carries docDefaults' paragraph properties as fallbacks.
   const styleIdByWordId = new Map(recs.map(r => [r.wordId, r.appId] as const));
-  const ensureNormal = (): string => {
-    if (!styles.normal) {
-      styles.normal = { id: 'normal', name: 'Normal', type: 'paragraph', ...(defaultParagraphId ? { basedOn: defaultParagraphId } : {}) };
+  const backfilled = new Set<string>();
+  if (!styles.normal) {
+    // No style named "Normal": synthesise one on top of whatever the document uses as its default.
+    styles.normal = { id: 'normal', name: 'Normal', type: 'paragraph', ...(defaultParagraphId ? { basedOn: defaultParagraphId } : {}) };
+    backfilled.add('normal');
+  }
+  // w:docDefaults paragraph properties are what every root paragraph style inherits in Word. Copy them
+  // onto root paragraph styles so the app's resolver agrees, and say so in `derivedFromDefaults`: they
+  // are inherited, not authored, and a writer must not emit them back as the style's own. (Table
+  // styles are not paragraph styles and are not touched.)
+  for (const def of Object.values(styles)) {
+    if (def.type !== 'paragraph' || def.basedOn) continue;
+    const derived: NonNullable<StyleDef['derivedFromDefaults']> = [];
+    for (const key of ['spaceBeforePt', 'spaceAfterPt', 'lineSpacing', 'indent', 'align'] as const) {
+      if (def[key] === undefined && defaultPPr[key] !== undefined) {
+        (def as any)[key] = structuredClone(defaultPPr[key]);
+        derived.push(key);
+      }
     }
-    return defaultParagraphId ?? 'normal';
-  };
-  const target = styles[ensureNormal()];
-  for (const key of ['spaceBeforePt', 'spaceAfterPt', 'lineSpacing', 'indent', 'align'] as const) {
-    if (target[key] === undefined && defaultPPr[key] !== undefined) (target as any)[key] = defaultPPr[key];
+    if (derived.length) def.derivedFromDefaults = derived;
   }
   // Built-in styles the app's toolbar and exporter rely on, if the document does not define them.
   for (const [id, def] of Object.entries(nih.styles)) {
-    if (!(id in styles) && id !== 'normal') styles[id] = structuredClone(def);
+    if (!(id in styles)) {
+      styles[id] = structuredClone(def);
+      backfilled.add(id);
+    }
   }
 
   pkg.releaseXml(stylesPart); // read once; do not keep the parsed document alive
@@ -417,5 +472,6 @@ export function readStyles(pkg: DocxPackage, report?: ImportReport): StylesResul
     format: { page: nih.page, styles, defaults, preset: 'custom' },
     styleIdByWordId,
     headingLevelByStyleId,
+    backfilled,
   };
 }
