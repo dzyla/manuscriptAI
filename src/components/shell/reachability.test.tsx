@@ -6,20 +6,47 @@ import type { RailTask } from './Rail';
 
 // Environment stand-ins, not feature stubs: pdfjs needs canvas, Worker and layout do not exist in jsdom. Nothing a row looks for is faked.
 vi.mock('pdfjs-dist', () => ({ GlobalWorkerOptions: {}, getDocument: vi.fn(), version: 'test' }));
+// The literature-search service is the network. It returns two canned papers so the result list, "Add source" and the PDF-match trio can be reached.
+vi.mock('../../services/ai', async (orig) => ({ ...(await orig<typeof import('../../services/ai')>()), getThesaurus: vi.fn(async () => ['SYNONYM_X']) }));
+vi.mock('../../services/manuscriptSearch', async (orig) => {
+  const real = await orig<typeof import('../../services/manuscriptSearch')>();
+  const paper = (n: number) => ({ title: `Mock paper ${n} on screens`, authors: `Author${n} A, Other B`, journal: 'Journal X', doi: `10.1000/mock${n}`, abstract: 'An abstract.', year: 2020 + n, score: 0.9, source: 'PubMed' });
+  return { ...real, searchSimilarManuscripts: vi.fn(async () => [paper(1), paper(2)]) };
+});
 import App from '../../App';
 import { db } from '../../db/manuscriptDb';
 import { useAIStore } from '../../stores/useAIStore';
 import { useSourceStore } from '../../stores/useSourceStore';
 import { useDocumentStore, documentRepository } from '../../stores/useDocumentStore';
 import { readDocx } from '../../docx/read';
+import { expose } from 'comlink';
+import { readForImport } from '../../workers/docxImportCore';
 import { loadDocx } from '../../test/docxFixtures';
 import { htmlToDoc } from '../../extensions/schema';
 import { createFormat } from '../../services/formatPresets';
+import { buildProfile } from '../../services/proseAudit/profile';
+import { autocompleteKey } from '../../extensions/AutoComplete';
 
 class InertWorker { postMessage() {} terminate() {} addEventListener() {} removeEventListener() {} }
+/** The import worker runs the real reader (`readForImport`) behind a MessageChannel, so an import in these tests parses a real .docx. Every other worker is inert. */
+class TestWorker {
+  constructor(url: URL | string) {
+    if (!String(url).includes('docxImportWorker')) return new InertWorker() as any;
+    const ch = new MessageChannel();
+    // the buffer arrives from Node's structured clone, a different realm from this jsdom one; the zip reader only knows its own
+    expose({ read: (data: ArrayBuffer, name: string, onStage?: any) => { const own = new ArrayBuffer(data.byteLength); new Uint8Array(own).set(new Uint8Array(data)); return readForImport(own, name, onStage); } }, ch.port1 as any);
+    return Object.assign(ch.port2, { terminate: () => ch.port1.close() }) as any;
+  }
+}
 const noRects: any = () => Object.assign([], { item: () => null });
 beforeAll(() => {
-  (globalThis as any).Worker = InertWorker;
+  (globalThis as any).Worker = TestWorker;
+  // Any real network call is a test failure of its own: the app must degrade, not reach out. Crossref, AI providers and pdfjs all land here.
+  vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('network disabled in reachability tests'); }));
+  // jsdom's Blob has no text()/arrayBuffer(); the app's file handlers call them.
+  const readAs = (b: Blob, how: 'readAsText' | 'readAsArrayBuffer') => new Promise<any>((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(r.error); r[how](b); });
+  if (!Blob.prototype.text) Blob.prototype.text = function (this: Blob) { return readAs(this, 'readAsText'); };
+  if (!Blob.prototype.arrayBuffer) Blob.prototype.arrayBuffer = function (this: Blob) { return readAs(this, 'readAsArrayBuffer'); };
   Element.prototype.scrollIntoView = () => {};
   for (const p of [Range.prototype, Element.prototype, Text.prototype] as any[]) p.getClientRects = noRects;
   (Range.prototype as any).getBoundingClientRect = () => new DOMRect();
@@ -40,8 +67,13 @@ afterEach(cleanup);
  * `now` steps also accept: title:/text:/ph: (exact, or a trailing * for a prefix; #n picks the nth match), icon:<lucide name>,
  * nextto:<text>, fill:<text> (types into the chat box), key:@ (keydown in the editor). The last step is only checked, never clicked.
  * `seed` sets up state the feature needs (a suggestion, a source, a selection) and is documented under `seedAfter`.
+ *
+ * What a passing row proves: the control is in the mounted App, visible to a person at desktop width, and enabled. Where a row ends in `expect:`/`count:`/`gone:` it also
+ * proves the action took effect. A row that ends at a control (an upload, Send) is NOT evidence the feature works: the PDF parser is stubbed (pdfjs needs canvas), the
+ * network is refused, and a Word import is the only worker path that runs for real. Treat those rows as "the way in has not been lost", nothing more.
+ * `text:` never matches inside the document (a heading typed in the editor cannot stand in for a control); `ptext:` matches only inside the open panel.
  */
-export type Seed = 'import' | 'snapshot' | 'grant' | 'suggestion' | 'history' | 'sources' | 'citations' | 'outline' | 'analyzing' | 'style-text' | 'text-selection' | 'word-selection' | 'figure';
+export type Seed = 'saved-doc' | 'voice-profile' | 'table' | 'advisory' | 'local-model' | 'import' | 'snapshot' | 'grant' | 'suggestion' | 'history' | 'sources' | 'citations' | 'outline' | 'analyzing' | 'style-text' | 'text-selection' | 'word-selection' | 'figure';
 export interface EntryPoint { feature: string; path: string[]; pending?: number; now?: string[]; isNew?: true; seed?: Seed[] }
 
 const W = 'rail:write', C = 'rail:cite', R = 'rail:review', F = 'rail:format';
@@ -52,60 +84,63 @@ const fresh = (feature: string, path: string[], pending: number): EntryPoint => 
 export const ENTRY_POINTS: EntryPoint[] = [
   // Write
   row('see the outline', [W, 'section:outline'], undefined, undefined, ['outline']),
-  row('jump to a heading from the outline', [W, 'section:outline', 'control:goto-heading'], 6, [W, 'section:outline', 'text:Intro'], ['outline']),
+  row('jump to a heading from the outline', [W, 'section:outline', 'control:goto-heading'], 6, [W, 'section:outline', 'cursor:30', 'ptext:Intro', 'expect:cursor:1'], ['outline']),
   row('analyze one section from the outline', [W, 'section:outline', 'control:analyze-section'], 6, [W, 'section:outline', 'title:Analyze "Intro" section'], ['outline']),
   row('see applied-suggestion history', [W, 'section:history'], undefined, undefined, ['history']),
   row('inspect an applied change', [W, 'section:history', 'control:show-changes'], 6, [W, 'section:history', 'title:Show changes'], ['history']),
-  row('revert an applied change', [W, 'section:history', 'control:revert-change'], 6, [W, 'section:history', 'title:Show changes', 'text:Revert Change'], ['history']),
+  row('revert an applied change', [W, 'section:history', 'control:revert-change'], 6, [W, 'section:history', 'title:Show changes', 'ptext:Revert Change'], ['history']),
   row('restore a version snapshot', [W, 'section:versions', 'control:restore-version'], 6, ['title:Version History', 'title:Restore'], ['snapshot']),
   row('save a version snapshot', [W, 'section:versions', 'control:save-version'], 6, ['title:Version History', 'title:Save snapshot']),
   row('preview a version snapshot', [W, 'section:versions', 'control:preview-version'], 6, ['title:Version History', 'title:Preview'], ['snapshot']),
   row('delete a version snapshot', [W, 'section:versions', 'control:delete-version'], 6, ['title:Version History', 'title:Delete'], ['snapshot']),
   // Cite
-  row('upload a PDF, DOCX, BibTeX or text source', [C, 'section:library', 'control:upload'], 5, [C, 'text:Browse files']),
-  row('add a source by DOI', [C, 'section:library', 'control:doi'], 5, [C, 'ph:10.1234/journal.article']),
+  row('upload a PDF, DOCX, BibTeX or text source', [C, 'section:library', 'control:upload'], 5, [C, 'ptext:Browse files']),
+  row('add a source by DOI', [C, 'section:library', 'control:doi'], 5, [C, 'typein:10.1234/journal.article|10.1000/xyz', 'ptext:Add']),
   row('remove a source', [C, 'section:library', 'control:remove-source'], 5, [C, 'icon:trash-2'], ['sources']),
   row('regenerate a source summary', [C, 'section:library', 'control:regenerate-summary'], 5, [C, 'title:Regenerate AI summary'], ['sources']),
   row('copy a source as BibTeX', [C, 'section:library', 'control:copy-bibtex'], 5, [C, 'title:Copy BibTeX entry to clipboard'], ['sources']),
-  row('compare a source with the manuscript', [C, 'section:library', 'control:compare-source'], 5, [C, 'text:Compare'], ['sources']),
-  row('chat about one source', [C, 'section:library', 'control:chat-source'], 5, [C, 'text:Chat#2'], ['sources']),
-  row('check a source against the citations', [C, 'section:library', 'control:check-citations'], 5, [C, 'text:Check Citations'], ['sources']),
+  row('compare a source with the manuscript', [C, 'section:library', 'control:compare-source'], 5, [C, 'ptext:Compare'], ['sources']),
+  row('chat about one source', [C, 'section:library', 'control:chat-source'], 5, [C, 'ptext:Chat#2'], ['sources']),
+  row('check a source against the citations', [C, 'section:library', 'control:check-citations'], 5, [C, 'ptext:Check Citations'], ['sources']),
   row('find the published record of a PDF', [C, 'section:library', 'control:match-pdf'], 5, [C, 'ph:Search paper title or keywords…'], ['sources']),
   row('search the literature', [C, 'section:search', 'control:query'], 5, [C, 'ph:Title, keywords, or paste abstract…']),
-  row('format a bibliography from a BibTeX source', [C, 'section:references', 'control:format-bibliography'], 5, [C, 'text:Insert'], ['sources']),
+  row('format a bibliography from a BibTeX source', [C, 'section:references', 'control:format-bibliography'], 5, [C, 'ptext:Insert'], ['sources']),
   row('renumber citations', [C, 'section:references', 'control:renumber'], 5, [C, 'title:Renumber citations in document order'], ['sources', 'citations']),
   row('search the reference list', [C, 'section:references', 'control:filter-references'], 5, [C, 'ph:Search references…'], ['sources', 'citations']),
   row('jump to a citation in the document', [C, 'section:references', 'control:goto-citation'], 5, [C, 'title:Jump to citation in document'], ['sources', 'citations']),
   row('jump to the first citation of a source', [C, 'section:references', 'control:first-citation'], 5, [C, 'title:Jump to first citation'], ['sources', 'citations']),
   row('remove a citation', [C, 'section:references', 'control:remove-citation'], 5, [C, 'title:Remove citation'], ['sources', 'citations']),
-  row('insert the reference list', [C, 'section:references', 'control:insert-reference-list'], 5, [C, 'text:Insert reference list'], ['sources', 'citations']),
+  row('insert the reference list', [C, 'section:references', 'control:insert-reference-list'], 5, [C, 'ptext:Insert reference list'], ['sources', 'citations']),
   row('insert a citation with @', ['topbar:insert', 'item:citation'], 8, ['key:@', 'text:Insert Citation']),
   // Review
   row('open chat', [R, 'section:chat']),
   row('send a chat message', [R, 'section:chat', 'control:send'], 4, [R, 'section:chat', 'fill:hello', 'icon:send']),
-  row('switch between Manuscript AI and agents', [R, 'section:chat', 'control:agent-mode'], 4, [R, 'section:chat', 'text:Agents']),
+  row('switch between Manuscript AI and agents', [R, 'section:chat', 'control:agent-mode'], 4, [R, 'section:chat', 'ptext:Agents']),
   row('read what each agent does', [R, 'section:chat', 'control:agent-info'], 4, [R, 'section:chat', 'title:Show agent descriptions']),
   row('attach an image to a chat message', [R, 'section:chat', 'control:attach-image'], 4, [R, 'section:chat', 'title:Attach image (JPEG, PNG, WebP)']),
   row('choose which sources the chat sees', [R, 'section:chat', 'control:attach-sources'], 4, [R, 'section:chat', 'title:Attach context sources']),
-  row('accept a suggestion', [R, 'row:suggestion', 'control:accept'], 4, [R, 'section:suggestions', 'text:Accept'], ['suggestion']),
-  row('reject a suggestion', [R, 'row:suggestion', 'control:reject'], 4, [R, 'section:suggestions', 'text:Reject'], ['suggestion']),
-  row('accept every suggestion', [R, 'control:accept-all'], 4, [R, 'section:suggestions', 'text:Accept All'], ['suggestion']),
-  row('clear every suggestion', [R, 'control:reject-all'], 4, [R, 'section:suggestions', 'text:Clear All'], ['suggestion']),
-  row('disagree with a suggestion and reply', [R, 'row:suggestion', 'control:rebut'], 4, [R, 'section:suggestions', 'text:Disagree? Reply to this suggestion...'], ['suggestion']),
-  row('rewrite a flagged sentence', [R, 'row:style', 'control:rewrite'], 4, [F, 'section:style', 'text:Rewrite in my voice'], ['style-text']),
-  row('jump to a flagged sentence', [R, 'row:style', 'control:goto'], 4, [F, 'section:style', 'text:*words ·*'], ['style-text']),
-  row('read the style comparison', [R, 'section:style'], 4, [F, 'section:style', 'text:Highlight flagged sentences in the editor'], ['style-text']),
-  row('add writing samples for the voice profile', [R, 'section:style', 'control:voice-samples'], 4, [F, 'section:style', 'text:Add samples']),
-  row('filter suggestions by severity', [R, 'control:filter'], 4, [R, 'section:suggestions', 'icon:funnel'], ['suggestion']),
+  row('accept a suggestion', [R, 'row:suggestion', 'control:accept'], 4, [R, 'section:suggestions', 'ptext:Accept'], ['suggestion']),
+  row('reject a suggestion', [R, 'row:suggestion', 'control:reject'], 4, [R, 'section:suggestions', 'ptext:Reject'], ['suggestion']),
+  row('accept every suggestion', [R, 'control:accept-all'], 4, [R, 'section:suggestions', 'ptext:Accept All'], ['suggestion']),
+  row('clear every suggestion', [R, 'control:reject-all'], 4, [R, 'section:suggestions', 'ptext:Clear All'], ['suggestion']),
+  row('disagree with a suggestion and reply', [R, 'row:suggestion', 'control:rebut'], 4, [R, 'section:suggestions', 'ptext:Disagree? Reply to this suggestion...'], ['suggestion']),
+  row('rewrite a flagged sentence', [R, 'row:style', 'control:rewrite'], 4, [F, 'section:style', 'ptext:Rewrite in my voice'], ['style-text']),
+  row('jump to a flagged sentence', [R, 'row:style', 'control:goto'], 4, [F, 'section:style', 'ptext:*words ·*'], ['style-text']),
+  row('read the style comparison', [R, 'section:style'], 4, [F, 'section:style', 'ptext:Highlight flagged sentences in the editor'], ['style-text']),
+  row('add writing samples for the voice profile', [R, 'section:style', 'control:voice-samples'], 4, [F, 'section:style', 'ptext:Add samples']),
+  row('filter suggestions by severity', [R, 'control:filter'], 4, [R, 'section:suggestions', 'icon:funnel', 'ptext:All (*'], ['suggestion']),
   row('run an analysis', [R, 'control:analyze'], 4, ['text:Analyze All']),
   row('stop a running analysis', [R, 'control:stop'], 4, ['title:Stop request'], ['analyzing']),
+  row('run one named agent', [R, 'control:analyze-agent-one'], 4, ['nextto:Analyze All*', 'text:Language Surgeon']),
+  row('clear the reference search', [C, 'section:references', 'control:clear-reference-filter'], 5, [C, 'typein:Search references…|zz', 'icon:x'], ['sources', 'citations']),
+  row('filter suggestions to one severity', [R, 'control:filter-severity'], 4, [R, 'section:suggestions', 'icon:funnel', 'ptext:Minor (*'], ['suggestion']),
   row('run a single agent', [R, 'control:analyze-agent'], 4, ['nextto:Analyze All*', 'text:Run Single Agent']),
   row('summarize the manuscript and its gaps', [R, 'control:summary'], 4, ['title:Generate a high-level manuscript review*']),
   // Format
-  row('pick a grant template', [F, 'section:template'], 7, ['text:Grant', 'title:Start from an NIH grant template']),
-  row('edit grant instructions', [F, 'section:template', 'control:instructions'], 7, ['text:Grant', 'title:Add funder instructions*']),
-  row('see grant section page budgets', [F, 'section:template', 'control:budgets'], 7, ['text:Grant', 'text:Specific Aims'], ['grant']),
-  row('trim an over-budget section', [F, 'section:template', 'control:trim'], 7, ['text:Grant', 'text:Trim'], ['grant']),
+  row('pick a grant template', [F, 'section:template'], 7, ['title:Grant mode*', 'title:Start from an NIH grant template']),
+  row('edit grant instructions', [F, 'section:template', 'control:instructions'], 7, ['title:Grant mode*', 'title:Add funder instructions*']),
+  row('see grant section page budgets', [F, 'section:template', 'control:budgets'], 7, ['title:Grant mode*', 'text:*/1 pg'], ['grant']),
+  row('trim an over-budget section', [F, 'section:template', 'control:trim'], 7, ['title:Grant mode*', 'text:Trim'], ['grant']),
   row('switch between manuscript and grant mode', [F, 'section:template', 'control:mode'], 7, ['title:Grant mode*']),
   fresh('set page margins', [F, 'section:page'], 7),
   fresh('choose a format preset', [F, 'section:page', 'control:preset'], 7),
@@ -151,15 +186,89 @@ export const ENTRY_POINTS: EntryPoint[] = [
   row('give a custom instruction', ['topbar:ai', 'item:instruct'], 8, ['title:Custom instruction for selected text'], ['text-selection']),
   row('find synonyms', ['topbar:ai', 'item:synonyms'], 8, ['title:Find synonyms / alternatives'], ['word-selection']),
   row('verify a claim against sources', ['topbar:ai', 'item:verify'], 8, ['title:Verify this claim against uploaded PDF sources'], ['text-selection']),
+  row('replace a word with a synonym', ['topbar:ai', 'item:synonym-choice'], 8, ['title:Find synonyms / alternatives', 'text:SYNONYM_X', 'expect:doctext:SYNONYM_X'], ['word-selection']),
+  row('bold the selection from the selection menu', ['topbar:format', 'control:bold-selection'], 8, ['icon:bold#2'], ['text-selection']),
+  row('italicize the selection from the selection menu', ['topbar:format', 'control:italic-selection'], 8, ['icon:italic#2'], ['text-selection']),
+  row('underline the selection from the selection menu', ['topbar:format', 'control:underline-selection'], 8, ['icon:underline#2'], ['text-selection']),
+  row('send a custom instruction', ['topbar:ai', 'item:instruct-send'], 8, ['title:Custom instruction for selected text', 'icon:send#2'], ['text-selection']),
   row('find similar manuscripts', ['topbar:ai', 'item:similar'], 8, ['title:Find similar published manuscripts for this selection'], ['text-selection']),
   // AI and layout on the selected figure
   row('describe a figure', ['figure:selected', 'control:describe'], 8, ['title:Visual description of what is seen in the figure'], ['figure']),
   row('check figure quality', ['figure:selected', 'control:quality'], 8, ['title:Check figure quality, spelling, colors, readability'], ['figure']),
   row('review figure relevance', ['figure:selected', 'control:relevance'], 8, ['title:Review figure relevance and clarity in context of manuscript'], ['figure']),
+  row('type a question about a figure', ['figure:selected', 'control:ask-text'], 8, ['title:Ask a custom question about this figure', 'ph:Ask about this figure…*'], ['figure']),
   row('ask about a figure', ['figure:selected', 'control:ask'], 8, ['title:Ask a custom question about this figure'], ['figure']),
   row('align a figure', ['figure:selected', 'control:align-figure'], 8, ['title:Align center'], ['figure']),
   row('resize a figure', ['figure:selected', 'control:size-figure'], 8, ['title:Set width to 50%'], ['figure']),
   row('delete a figure', ['figure:selected', 'control:delete-figure'], 8, ['title:Delete figure'], ['figure']),
+
+  // ── Round 1: the interactions, keyboard bindings and Cite/Editor details the first pass left out ──
+  // Cite
+  row('run a literature search', [C, 'section:search', 'control:run-search'], 5, [C, 'typein:Title, keywords, or paste abstract…|crispr screens', 'ptext:Search', 'ptext:Mock paper 1 on screens']),
+  row('add a search result to the library', [C, 'section:search', 'control:add-result'], 5, [C, 'typein:Title, keywords, or paste abstract…|crispr screens', 'ptext:Search', 'ptext:Add source', 'expect:source:Mock paper 1 on screens']),
+  row('choose the bibliography style', [C, 'section:references', 'control:bib-style'], 5, [C, 'select:Vancouver'], ['sources']),
+  row('sort the reference list', [C, 'section:references', 'control:sort-references'], 5, [C, 'select:Year'], ['sources', 'citations']),
+  row('expand a reference row', [C, 'section:references', 'control:expand-reference'], 5, [C, 'ptext:More'], ['sources', 'citations']),
+  row('confirm a PDF match', [C, 'section:library', 'control:match-yes'], 5, [C, 'typein:Search paper title or keywords…|crispr screens', 'ptext:Search#2', 'ptext:Yes, this is it', 'expect:source:Mock paper 1 on screens'], ['sources']),
+  row('try the next PDF match', [C, 'section:library', 'control:match-next'], 5, [C, 'typein:Search paper title or keywords…|crispr screens', 'ptext:Search#2', 'ptext:Try next', 'ptext:Is this your paper? (2/2)'], ['sources']),
+  row('dismiss a PDF match', [C, 'section:library', 'control:match-dismiss'], 5, [C, 'typein:Search paper title or keywords…|crispr screens', 'ptext:Search#2', 'ptext:Dismiss', 'gone:Is this your paper?*'], ['sources']),
+  row('switch a PDF between summary and abstract', [C, 'section:library', 'control:source-tabs'], 5, [C, 'ptext:abstract#1', 'ptext:abs'], ['sources']),
+  row('re-extract a PDF abstract', [C, 'section:library', 'control:reextract-abstract'], 5, [C, 'ptext:abstract#1', 'title:Re-extract abstract'], ['sources']),
+  row('drop files on the sources area', [C, 'section:library', 'control:dropzone'], 5, [C, 'dropcss:.border-dashed|notes.txt', 'ptext:notes.txt']),
+  // Review (chat and suggestions)
+  row('attach one source to a chat message', [R, 'section:chat', 'control:attach-one-source'], 4, [R, 'section:chat', 'title:Attach context sources', 'ptext:PDF'], ['sources']),
+  row('limit chat to the whole manuscript', [R, 'section:chat', 'control:scope-full'], 4, [R, 'section:chat', 'title:Attach context sources', 'ptext:Full Manuscript#2', 'count:Full Manuscript=1']),
+  row('limit chat to the current section', [R, 'section:chat', 'control:scope-section'], 4, [R, 'section:chat', 'title:Attach context sources', 'ptext:Current Section', 'count:Current Section=2']),
+  row('choose which agent replies', [R, 'section:chat', 'control:agent'], 4, [R, 'section:chat', 'ptext:Agents', 'ptext:Reviewer 2', 'expect:agent:Reviewer 2']),
+  row('send a chat message with Enter', [R, 'section:chat', 'control:send'], 4, [R, 'section:chat', 'fill:hello', 'keyin:Enter', 'expect:message:hello']),
+  row('drop an image into chat', [R, 'section:chat', 'control:attach-image'], 4, [R, 'section:chat', 'dropcss:aside textarea|pic.png', 'title:pic.png']),
+  row('paste an image into chat', [R, 'section:chat', 'control:attach-image'], 4, [R, 'section:chat', 'pastecss:aside textarea|pic.png', 'title:pic.png']),
+  row('dismiss the vision warning', [R, 'section:chat', 'control:vision-warning'], 4, [R, 'section:chat', 'dropcss:aside textarea|pic.png', 'ptext:*may not support vision*', 'css:aside button.ml-auto.shrink-0', 'gone:*may not support vision*'], ['local-model']),
+  row('send a rebuttal to a suggestion', [R, 'row:suggestion', 'control:send-rebuttal'], 4, [R, 'section:suggestions', 'ptext:Disagree? Reply to this suggestion...', 'typein:Explain why you disagree with this suggestion...|because', 'ptext:Send Rebuttal'], ['suggestion']),
+  row('cancel a rebuttal', [R, 'row:suggestion', 'control:cancel-rebuttal'], 4, [R, 'section:suggestions', 'ptext:Disagree? Reply to this suggestion...', 'ptext:Cancel'], ['suggestion']),
+  row('switch back to Manuscript AI chat', [R, 'section:chat', 'control:chat-mode'], 4, [R, 'section:chat', 'ptext:Agents', 'ptext:Manuscript AI']),
+  row('click a suggestion to find it in the text', [R, 'row:suggestion', 'control:locate'], 4, [R, 'section:suggestions', 'ptext:EXPLAIN_ME', 'expect:selection:Alpha'], ['suggestion', 'outline']),
+  row('insert an advisory suggestion as a note', [R, 'row:suggestion', 'control:insert-note'], 4, [R, 'section:suggestions', 'ptext:Insert note'], ['advisory']),
+  row('dismiss an advisory suggestion', [R, 'row:suggestion', 'control:dismiss'], 4, [R, 'section:suggestions', 'ptext:Dismiss'], ['advisory']),
+  row('click an applied change to find it in the text', [W, 'section:history', 'control:locate'], 6, [W, 'section:history', 'ptext:Alpha → beta gamma', 'expect:selection:beta gamma'], ['history', 'outline']),
+  row('stop an analysis from the top bar', ['topbar:ai', 'item:stop'], 8, ['rail:cite', 'text:Stop'], ['analyzing']),
+  row('confirm the export warning and download', ['topbar:file', 'item:export-confirm'], 8, ['text:Export Markdown', 'text:I Acknowledge — Download']),
+  row('cancel the export warning', ['topbar:file', 'item:export-cancel'], 8, ['text:Export Markdown', 'text:Cancel']),
+  row('close the shortcuts list', ['topbar:overflow', 'item:shortcuts-close'], 8, ['title:Keyboard Shortcuts', 'text:Close']),
+  row('measure my voice from pasted samples', [R, 'section:style', 'control:voice-measure'], 4, [F, 'section:style', 'ptext:Add samples', 'ptext:Measure my voice']),
+  row('cancel adding voice samples', [R, 'section:style', 'control:voice-cancel'], 4, [F, 'section:style', 'ptext:Add samples', 'ptext:Cancel']),
+  row('rebuild the voice profile', [R, 'section:style', 'control:voice-rebuild'], 4, [F, 'section:style', 'ptext:Rebuild'], ['voice-profile']),
+  row('remove the voice profile', [R, 'section:style', 'control:voice-remove'], 4, [F, 'section:style', 'ptext:Remove'], ['voice-profile']),
+  // Editor internals that stay in the Editor: their rows are settled, so a move must edit the row
+  row('click a highlighted passage to open its suggestion', ['rail:cite', 'markclick:', 'ptext:Accept'], undefined, undefined, ['suggestion', 'outline']),
+  row('pick a table size', ['title:Insert table', 'css:#table-picker-portal div[style*="cursor"]#9', 'expect:table:2x3']),
+  row('add a table column before', ['contextmenu:', 'text:*Add column before', 'expect:table:2x3'], undefined, undefined, ['table']),
+  row('add a table column after', ['contextmenu:', 'text:*Add column after', 'expect:table:2x3'], undefined, undefined, ['table']),
+  row('add a table row above', ['contextmenu:', 'text:*Add row above', 'expect:table:3x2'], undefined, undefined, ['table']),
+  row('add a table row below', ['contextmenu:', 'text:*Add row below', 'expect:table:3x2'], undefined, undefined, ['table']),
+  row('delete a table column', ['contextmenu:', 'text:*Delete column', 'expect:table:2x1'], undefined, undefined, ['table']),
+  row('delete a table row', ['contextmenu:', 'text:*Delete row', 'expect:table:1x2'], undefined, undefined, ['table']),
+  row('delete a table', ['contextmenu:', 'text:*Delete table', 'expect:notable'], undefined, undefined, ['table']),
+  row('choose a source in the @ picker', ['key:@', 'text:paper', 'expect:node:citation'], undefined, undefined, ['sources']),
+  row('look up a DOI typed after @', ['key:@', 'type:@10.1000/abc', 'text:Look up DOI via Crossref']),
+  row('look up several DOIs typed after @', ['key:@', 'type:@10.1000/abc1,10.1000/abc2', 'text:Look up 2 DOIs via Crossref']),
+  row('insert a typed DOI with Space', ['key:@', 'type:@10.1000/abc', 'keyhandled: ']),
+  row('insert several typed DOIs with Space', ['key:@', 'type:@10.1000/abc1,10.1000/abc2', 'keyhandled: ']),
+  row('close the @ picker with Escape', ['key:@', 'text:Insert Citation', 'key:Escape', 'gone:Insert Citation']),
+  row('choose the agent for a custom instruction', ['topbar:ai', 'item:instruct-agent'], 8, ['title:Custom instruction for selected text', 'select:Reviewer 2'], ['text-selection']),
+  row('type a custom instruction', ['topbar:ai', 'item:instruct-text'], 8, ['title:Custom instruction for selected text', 'ph:e.g. Make this more concise...'], ['text-selection']),
+  row('read the character count', ['status:chars'], 8, ['text:*chars']),
+  row('read the paragraph count', ['status:paragraphs'], 8, ['text:*paragraphs']),
+  row('resize the side panel', [R, 'css:.cursor-col-resize', 'drag:-100', 'expect:panelwidth:500px']),
+  // Keyboard bindings: independently losable, so each has its own row
+  row('use the restore button on the import message', ['topbar:file', 'item:import-toast-action'], 8, ['importdocx:body-basics.docx', 'css:.toast-enter button', 'text:*Restored the document the import replaced*'], ['saved-doc']),
+  row('save the workspace with Ctrl/Cmd+S', ['keyhandled:Mod+S']),
+  row('analyze with Ctrl/Cmd+Shift+A', ['keyhandled:Mod+Shift+A']),
+  row('show the shortcuts with Ctrl/Cmd+?', ['key:Mod+?', 'text:Ctrl+Shift+A']),
+  row('bold with Ctrl+B', ['key:Ctrl+B', 'expect:bold'], undefined, undefined, ['text-selection']),
+  row('italic with Ctrl+I', ['key:Ctrl+I', 'expect:italic'], undefined, undefined, ['text-selection']),
+  row('underline with Ctrl+U', ['key:Ctrl+U', 'expect:underline'], undefined, undefined, ['text-selection']),
+  row('accept autocomplete with Tab', ['ghost: and more words', 'key:Tab', 'expect:doctext: and more words'], undefined, undefined, ['outline']),
 ];
 
 /** Deliberately not entry points. */
@@ -170,33 +279,56 @@ export const EXCLUDED = [
 
 // ── Resolver ────────────────────────────────────────────────────────────────────────────────────────────────────────────
 const norm = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').trim();
-const matches = (actual: string, want: string) => {
-  const star = (w: string, a: string) => (w.startsWith('*') && w.endsWith('*') && w.length > 1 ? a.includes(w.slice(1, -1)) : w.endsWith('*') ? a.startsWith(w.slice(0, -1)) : w.startsWith('*') ? a.endsWith(w.slice(1)) : a === w);
-  return star(want, actual);
-};
+export const matches = (a: string, w: string) =>
+  w.length > 1 && w.startsWith('*') && w.endsWith('*') ? a.includes(w.slice(1, -1)) : w.endsWith('*') ? a.startsWith(w.slice(0, -1)) : w.startsWith('*') ? a.endsWith(w.slice(1)) : a === w;
 
-/** Hidden by the `hidden` attribute, aria-hidden, inert, inline display/visibility, or a Tailwind `hidden` with no responsive or hover reveal. jsdom has no layout, so zero-size is not detectable. */
+/**
+ * Whether a person could see and use the element. Hidden by: the `hidden` attribute, aria-hidden, inert, inline display/visibility/opacity/pointer-events,
+ * and Tailwind `hidden`, `invisible`, `sr-only`, `opacity-0`, `pointer-events-none`, `w-0`, `h-0`/`max-h-0`/`max-w-0` with `overflow-hidden`, unless the same element
+ * carries a responsive/hover/focus variant that reveals it. jsdom has no layout, so a zero-size box from real CSS (not these classes) is not detectable.
+ */
 export function isShown(el: Element): boolean {
+  const BP: Record<string, number> = { sm: 640, md: 768, lg: 1024, xl: 1280 }; // desktop-first: jsdom's window is 1024 wide
+  const live = (pfx: string) => (pfx in BP ? window.innerWidth >= BP[pfx] : true); // hover and focus variants can happen
   for (let e: Element | null = el; e && e !== document.body; e = e.parentElement) {
-    const s = (e as HTMLElement).style;
+    const st = (e as HTMLElement).style;
     if (e.hasAttribute('hidden') || e.getAttribute('aria-hidden') === 'true' || e.hasAttribute('inert')) return false;
-    if (s?.display === 'none' || s?.visibility === 'hidden') return false;
-    const cls = (e.getAttribute('class') ?? '').split(/\s+/);
-    if (cls.includes('hidden') && !cls.some(c => /^(sm|md|lg|xl|group-hover):(block|flex|inline|inline-flex|grid)/.test(c))) return false;
+    if (st?.display === 'none' || st?.visibility === 'hidden' || st?.opacity === '0' || st?.pointerEvents === 'none') return false;
+    const cls = (e.getAttribute('class') ?? '').split(/\s+/).filter(Boolean);
+    const variants = cls.map(c => /^(sm|md|lg|xl|group-hover|hover|focus|focus-within|group-focus-within):(.+)$/.exec(c)).filter((m): m is RegExpExecArray => !!m).filter(m => live(m[1]));
+    const revealed = (family: RegExp) => variants.some(m => family.test(m[2]));
+    if (variants.some(m => m[1] in BP && m[2] === 'hidden')) return false; // `sm:hidden`: hidden from that width up
+    if (cls.includes('hidden') && !revealed(/^(?:block|flex|inline|inline-block|inline-flex|grid|table)$/)) return false;
+    if (cls.includes('invisible') && !revealed(/^visible$/)) return false;
+    if (cls.includes('sr-only') && !revealed(/^not-sr-only$/)) return false;
+    if (cls.includes('opacity-0') && !revealed(/^opacity-/)) return false;
+    if (cls.includes('pointer-events-none') && !revealed(/^pointer-events-auto$/)) return false;
+    if (cls.includes('w-0') && !revealed(/^w-/)) return false;
+    if (cls.includes('overflow-hidden') && cls.some(c => /^(?:max-h-0|h-0|max-w-0)$/.test(c)) && !revealed(/^(?:max-h|h|max-w)-/)) return false;
   }
   return true;
 }
 
 const innermost = (els: Element[]) => els.filter(e => !els.some(o => o !== e && e.contains(o)));
+const panelEl = () => document.querySelector('aside.u-shell-panel');
+/**
+ * `text:` looks at the whole app EXCEPT the document itself (.ProseMirror), so a heading typed into the editor can never stand in for a control.
+ * `ptext:` looks only inside the open panel. Both take the innermost element whose whole text matches.
+ */
 function candidates(kind: string, arg: string): Element[] {
-  const all = (sel: string) => [...document.querySelectorAll(sel)];
-  const [want, nth] = arg.includes('#') ? [arg.slice(0, arg.lastIndexOf('#')), Number(arg.slice(arg.lastIndexOf('#') + 1))] : [arg, 0];
+  const m = /#(\d+)$/.exec(arg);
+  const want = m ? arg.slice(0, m.index) : arg, nth = m ? Number(m[1]) : 0;
+  const all = (sel: string, root: ParentNode = document) => [...root.querySelectorAll(sel)];
+  const textual = (root: ParentNode) => innermost(all('*', root).filter(e => !/^(SCRIPT|STYLE|OPTION|SVG|PATH|TEXTAREA|INPUT)$/i.test(e.tagName) && !e.closest('.ProseMirror') && matches(norm(e.textContent), want)));
   let found: Element[] = [];
   if (kind === 'title') found = all('[title]').filter(e => matches(e.getAttribute('title')!, want));
   else if (kind === 'ph') found = all('[placeholder]').filter(e => matches(e.getAttribute('placeholder')!, want));
   else if (kind === 'testid') found = all('[data-testid]').filter(e => e.getAttribute('data-testid') === want);
   else if (kind === 'icon') found = all(`svg.lucide-${want}`).map(e => e.closest('button') ?? e);
-  else if (kind === 'text') found = innermost(all('body *').filter(e => !/^(SCRIPT|STYLE|OPTION|SVG|PATH)$/i.test(e.tagName) && matches(norm(e.textContent), want)));
+  else if (kind === 'css') found = all(want);
+  else if (kind === 'select') found = all('select').filter(sel => [...(sel as HTMLSelectElement).options].some(o => matches(norm(o.textContent), want)));
+  else if (kind === 'text') found = textual(document.body);
+  else if (kind === 'ptext') found = panelEl() ? textual(panelEl()!) : [];
   else if (kind === 'nextto') found = innermost(all('button').filter(e => matches(norm(e.textContent), want))).map(e => e.closest('button')!.nextElementSibling).filter((e): e is Element => !!e);
   const shown = found.filter(isShown);
   return nth ? shown.slice(nth - 1, nth) : shown;
@@ -209,10 +341,37 @@ async function waitStep<T>(label: string, fn: () => T | null | undefined | false
 }
 
 const enabled = (el: Element) => !(el.closest('button,input,select,textarea') as HTMLButtonElement | null)?.disabled;
-const click = (el: Element) => fireEvent.click(el);
+/** A real click: some controls act on mousedown (toolbar, table menu, pickers), others on click. */
+const click = (el: Element) => { fireEvent.mouseDown(el); fireEvent.mouseUp(el); fireEvent.click(el); };
 const editor = () => (document.querySelector('.ProseMirror') as any)?.editor;
 const settle = (ms = 150) => act(async () => { await new Promise(r => setTimeout(r, ms)); });
+const plainFile = (spec: string) => new File(['x'], spec, { type: spec.endsWith('.png') ? 'image/png' : 'text/plain' });
+const combo = (c: string, mod: 'ctrl' | 'meta') => {
+  const parts = c.split('+'), key = c.endsWith('+') ? '+' : parts[parts.length - 1];
+  const has = (n: string) => parts.slice(0, -1).includes(n);
+  return { key: key.length === 1 && has('Shift') ? key.toUpperCase() : key.length === 1 && !has('Shift') && /[A-Z]/.test(key) ? key.toLowerCase() : key,
+    ctrlKey: has('Ctrl') || (has('Mod') && mod === 'ctrl'), metaKey: has('Meta') || (has('Mod') && mod === 'meta'), shiftKey: has('Shift') || key === '?', bubbles: true, cancelable: true };
+};
+const tableShape = (ed: any) => { let rows = 0, cols = 0; ed.state.doc.descendants((n: any) => { if (n.type.name === 'table') { rows = n.childCount; cols = n.firstChild?.childCount ?? 0; return false; } return true; }); return rows ? `${rows}x${cols}` : 'none'; };
 
+async function expectation(arg: string) {
+  const [name, ...rest] = arg.split(':'), val = rest.join(':');
+  const check: Record<string, () => boolean> = {
+    table: () => tableShape(editor()) === val, notable: () => tableShape(editor()) === 'none',
+    node: () => { let f = false; editor().state.doc.descendants((n: any) => { if (n.type.name === val) f = true; }); return f; },
+    selection: () => { const { from, to } = editor().state.selection; return from !== to && editor().state.doc.textBetween(from, to, ' ') === val; },
+    cursor: () => editor().state.selection.from === Number(val),
+    bold: () => editor().isActive('bold'), italic: () => editor().isActive('italic'), underline: () => editor().isActive('underline'),
+    doctext: () => editor().state.doc.textContent.includes(val),
+    message: () => JSON.stringify(useAIStore.getState().messages).includes(val),
+    source: () => useSourceStore.getState().sources.some(s => s.name === val),
+    agent: () => candidates('ptext', val).some(b => (b.closest('button')?.className ?? '').includes('text-white')),
+    panelwidth: () => (panelEl()?.firstElementChild as HTMLElement | null)?.style.width === val,
+  };
+  await waitStep(`expect ${arg}`, () => check[name]?.());
+}
+
+let lastDrag = { x: 0 };
 async function step(spec: string, isLast: boolean): Promise<void> {
   const i = spec.indexOf(':');
   const kind = spec.slice(0, i), arg = spec.slice(i + 1);
@@ -220,7 +379,7 @@ async function step(spec: string, isLast: boolean): Promise<void> {
     const name = arg[0].toUpperCase() + arg.slice(1);
     const btn = await waitStep(spec, () => screen.queryAllByRole('button').find(b => (b.getAttribute('aria-label') ?? '').startsWith(`${name} —`)));
     if (btn.getAttribute('aria-pressed') !== 'true') click(btn); // a pressed task is open already; clicking it would close the panel
-    await waitStep(`${spec}: its panel is open and visible`, () => { const a = document.querySelector('aside.u-shell-panel'); return a && isShown(a) && a.getAttribute('data-task') === arg; });
+    await waitStep(`${spec}: its panel is open and visible`, () => { const a = panelEl(); return a && isShown(a) && a.getAttribute('data-task') === arg; });
     return;
   }
   if (kind === 'section' || kind === 'topbar') {
@@ -237,12 +396,55 @@ async function step(spec: string, isLast: boolean): Promise<void> {
     const want = { pages: /^~?\d+ (pp|of \d+)$/, words: /^[\d,]+ words$/, save: /^(Draft|Saved|Auto-saved)$/ }[arg];
     await waitStep(spec, () => want && [...document.querySelectorAll('[role=status] span')].some(s => want.test(norm(s.textContent)) && isShown(s))); return;
   }
-  if (kind === 'key') { fireEvent.keyDown(editor().view.dom, { key: arg }); return; }
-  if (kind === 'fill') {
-    const box = await waitStep(spec, () => candidates('testid', 'chat-input')[0] ?? [...document.querySelectorAll('aside textarea')].find(isShown));
-    fireEvent.change(box, { target: { value: arg } }); return;
+  if (kind === 'key') { fireEvent.keyDown(editor().view.dom, combo(arg, 'ctrl')); await settle(0); return; }
+  if (kind === 'keyhandled') { // the binding fires: the handler took the event (preventDefault), for Ctrl and for Cmd where the app binds either
+    for (const mod of arg.startsWith('Mod+') ? ['ctrl', 'meta'] as const : ['ctrl'] as const) {
+      const delivered = fireEvent.keyDown(editor().view.dom, combo(arg, mod));
+      expect(delivered, `${arg} (${mod}) was not handled`).toBe(false);
+    }
+    return;
+  }
+  if (kind === 'keyin') { const box = await waitStep(spec, () => candidates('css', 'aside textarea')[0]); fireEvent.keyDown(box, { key: arg, bubbles: true }); await settle(0); return; }
+  if (kind === 'fill') { const box = await waitStep(spec, () => candidates('css', 'aside textarea')[0]); fireEvent.change(box, { target: { value: arg } }); return; }
+  if (kind === 'typein') {
+    const [ph, value] = arg.split('|'); const box = await waitStep(spec, () => candidates('ph', ph)[0]);
+    fireEvent.change(box, { target: { value } }); return;
+  }
+  if (kind === 'type') { await act(async () => { editor().commands.insertContent(arg); }); await settle(50); return; }
+  if (kind === 'cursor') { await act(async () => { editor().commands.setTextSelection(Number(arg)); }); return; }
+  if (kind === 'ghost') { const ed = editor(); await act(async () => { ed.view.dispatch(ed.state.tr.setMeta(autocompleteKey, { suggestion: arg })); }); return; }
+  if (kind === 'contextmenu') { await act(async () => { fireEvent.contextMenu(editor().view.dom, { clientX: 5, clientY: 5 }); }); return; }
+  if (kind === 'markclick') {
+    const ed = editor(); ed.view.posAtCoords = () => ({ pos: 9, inside: -1 }); // jsdom has no layout to map a click to a position
+    const mark = await waitStep('a highlighted passage in the text', () => ed.view.dom.querySelector('mark')); click(mark); return;
+  }
+  if (kind === 'dropcss' || kind === 'pastecss') {
+    const [sel, name] = arg.split('|'); const target = await waitStep(spec, () => candidates('css', sel)[0]); const file = plainFile(name);
+    if (kind === 'dropcss') fireEvent.drop(target, { dataTransfer: { files: [file], types: ['Files'] } });
+    else fireEvent.paste(target, { clipboardData: { items: [{ type: file.type, getAsFile: () => file }] } });
+    await settle(50); return;
+  }
+  if (kind === 'drag') { // the resize handle was the previous step's element, located but not clicked: find it again
+    const handle = await waitStep('the resize handle', () => candidates('css', '.cursor-col-resize')[0]);
+    fireEvent.mouseDown(handle, { clientX: 500 }); fireEvent.mouseMove(document, { clientX: 500 + Number(arg) }); fireEvent.mouseUp(document); await settle(0); return;
+  }
+  if (kind === 'importdocx') {
+    const input = await waitStep('the file input', () => document.querySelector('input[type=file][accept*=".docx"]')) as HTMLInputElement;
+    const file = new File([loadDocx(arg)], arg, { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+    fireEvent.change(input, { target: { files: [file] } });
+    const ok = await waitStep('the import review dialog (the real reader ran)', () => screen.queryAllByRole('button').find(b => /^Import( with .*)?$/.test(norm(b.textContent))));
+    click(ok); return;
+  }
+  if (kind === 'count') { const [t, n] = arg.split('='); await waitStep(`${spec} (clicking it changed what the chat will send)`, () => candidates('ptext', t).length === Number(n)); return; }
+  if (kind === 'expect') { await expectation(arg); return; }
+  if (kind === 'gone') { await waitStep(`${spec} disappears`, () => candidates('text', arg).length === 0 && candidates('ptext', arg).length === 0); return; }
+  if (kind === 'select') {
+    const sel = await waitStep(spec, () => candidates('select', arg)[0]) as HTMLSelectElement;
+    if (isLast) { const opt = [...sel.options].find(o => matches(norm(o.textContent), arg))!; fireEvent.change(sel, { target: { value: opt.value } }); await waitStep(`${spec}: the choice took`, () => sel.value === opt.value); }
+    return;
   }
   const el = await waitStep(spec, () => candidates(kind, arg)[0]);
+  if (kind === 'css' && spec.includes('.cursor-col-resize')) return; // handled by the following drag step
   if (!isLast) { click(el); await settle(0); } else expect(enabled(el), `${spec} is disabled`).toBe(true);
 }
 
@@ -253,6 +455,7 @@ const seedBefore = async (seeds: Seed[] = []) => {
     await documentRepository.importDocx(r, { title: 'Second' }); // the second import replaces the first, which leaves a restorable backup
   }
   if (seeds.includes('snapshot')) await db.versionSnapshots.add({ id: 'v1', name: 'Draft 1', timestamp: Date.now(), title: 'T', content: '<p>x</p>', wordCount: 1 });
+  if (seeds.includes('saved-doc')) await documentRepository.save({ title: 'Existing', saveState: 'Saved', docJson: htmlToDoc('<h2>Intro</h2><p>Work the author already did.</p>'), format: createFormat('nih'), comments: [], citationRegistry: {}, citationCounter: 0, figureRegistry: {}, figureCounter: 0, mode: 'manuscript', grantInstructions: '', grantTemplateId: null } as any);
   if (seeds.includes('grant')) {
     const body = Array.from({ length: 700 }, (_, i) => `word${i}`).join(' ');
     await documentRepository.save({
@@ -266,18 +469,25 @@ const POEM = '<h2>Intro</h2><p>Alpha beta gamma delta epsilon zeta eta theta iot
 const STYLE_TEXT = '<h2>Intro</h2>' + '<p>' + Array.from({ length: 14 }, (_, i) => `Moreover, it is important to note that result ${i} is robust; indeed, it underscores a pivotal role, which matters — greatly.`).join(' ') + '</p>';
 const seedAfter = async (seeds: Seed[] = []) => {
   await act(async () => {
+    const ed = editor(); // the text first: highlights are drawn from the suggestions against the text that is there
+    if (seeds.includes('outline') || seeds.includes('text-selection') || seeds.includes('word-selection')) ed.commands.setContent(POEM);
+    if (seeds.includes('style-text')) ed.commands.setContent(STYLE_TEXT);
+    if (seeds.includes('table')) { ed.commands.setContent('<p>Cell text</p>'); ed.commands.insertTable({ rows: 2, cols: 2, withHeaderRow: false }); }
+    if (seeds.includes('advisory')) useAIStore.setState({ suggestions: [{ id: 'adv', originalText: 'Alpha', suggestedText: '', explanation: 'Needs a citation', recommendation: 'Cite a source.', agent: 'reviewer-2', startIndex: 0, endIndex: 5, severity: 'major', kind: 'advisory' } as any] });
+    if (seeds.includes('voice-profile')) {
+      const { profile } = buildProfile('Mine', [Array.from({ length: 700 }, (_, i) => `I measured sample ${i} and it held, so we kept it.`).join(' ')]);
+      useAIStore.setState({ aiSettings: { ...useAIStore.getState().aiSettings, voiceProfile: profile } });
+    }
+    if (seeds.includes('local-model')) useAIStore.setState({ aiSettings: { ...useAIStore.getState().aiSettings, provider: 'local', localModel: 'llama3' } });
     if (seeds.includes('analyzing')) useAIStore.setState({ isAnalyzing: true });
-    if (seeds.includes('suggestion')) useAIStore.setState({ suggestions: [{ id: 's1', originalText: 'Alpha', suggestedText: 'Beta', explanation: 'x', agent: 'editor', startIndex: 0, endIndex: 5, severity: 'minor' } as any] });
-    if (seeds.includes('history')) useAIStore.setState({ history: [{ id: 'h1', timestamp: 1, oldContent: '<p>a</p>', newContent: '<p>b</p>', originalText: 'a', suggestedText: 'b', suggestionId: 's1', agent: 'editor' }] });
+    if (seeds.includes('suggestion')) useAIStore.setState({ suggestions: [{ id: 's1', originalText: 'Alpha', suggestedText: 'Beta', explanation: 'EXPLAIN_ME', agent: 'editor', startIndex: 0, endIndex: 5, severity: 'minor' } as any] });
+    if (seeds.includes('history')) useAIStore.setState({ history: [{ id: 'h1', timestamp: 1, oldContent: '<p>a</p>', newContent: '<p>b</p>', originalText: 'Alpha', suggestedText: 'beta gamma', suggestionId: 's1', agent: 'editor' }] });
     if (seeds.includes('sources')) useSourceStore.setState({ sources: [
       { id: 'p1', name: 'paper.pdf', type: 'pdf', text: 'Body text of the paper', digest: 'dig', abstractText: 'abs' },
       { id: 'a1', name: 'API one', type: 'api', text: 'x', digest: 'dig2', apiMeta: { title: 'T', authors: 'A B', journal: 'J', doi: '10.1/x', abstract: 'abs', year: 2020, score: 1, source: 'PubMed' } },
       { id: 'b1', name: 'refs.bib', type: 'bib', text: '@article{k, title={T}, author={A}, year={2020}, journal={J}}' },
     ] });
     if (seeds.includes('citations')) useDocumentStore.setState({ citationRegistry: { a1: 1 }, citationCounter: 1 });
-    const ed = editor();
-    if (seeds.includes('outline') || seeds.includes('text-selection') || seeds.includes('word-selection')) ed.commands.setContent(POEM);
-    if (seeds.includes('style-text')) ed.commands.setContent(STYLE_TEXT);
     if (seeds.includes('text-selection')) ed.commands.setTextSelection({ from: 8, to: 60 });
     if (seeds.includes('word-selection')) ed.commands.setTextSelection({ from: 8, to: 13 });
     if (seeds.includes('figure')) {
@@ -312,15 +522,79 @@ export async function resolve(steps: string[], seed: Seed[] = []): Promise<true>
 // ── The contract ────────────────────────────────────────────────────────────────────────────────────────────────────────
 const source = (p: string) => readFileSync(p, 'utf8');
 const stepsOf = (e: EntryPoint) => [...e.path, ...(e.now ?? [])];
-/** Titles that name no feature: static notices, readouts, or a part of a control that a row already covers. */
+/** Titles and button labels that name no feature: static notices, readouts, the other state of a toggle, or a part of a control a row already covers. */
 const NOT_A_FEATURE: Record<string, string> = {
   'Manuscript AI Editor': 'logo tooltip', 'VC by Dawid Zyla — github.com/dzyla/manuscriptAI': 'credit link',
   'AI may make mistakes. Researcher is responsible for scientific correctness.': 'static notice', 'Text Zoom': 'readout between the zoom buttons',
   'Manuscript mode — journal-style agents': 'the other half of the mode toggle (row: switch between manuscript and grant mode)',
-  'Remove image': 'chip on an attached chat image (row: attach an image to a chat message)',
+  'Light Mode': 'the other state of the dark-mode toggle (row: toggle dark mode)',
+  'Remove image': 'chip on an attached chat image (rows: drop/paste an image into chat)',
   'Copy to My Templates for editing': 'inside the template picker, which moves whole (row: pick a grant template)',
   'Page limit (blank = none)': 'inside the template picker, which moves whole',
+  'Saved ': 'tooltip on the Restore previous document item (row: restore the previous document)',
+  'Over the ': 'tooltip on Trim (row: trim an over-budget section)',
+  'In section: ': 'tooltip on the section indicator in the stats bar (row: analyze the section the cursor is in)',
+  'Query: ': 'tooltip on a literature-search source card',
+  'Funder instructions active — all agents follow them': 'the other state of the instructions toggle (row: edit grant instructions)',
+  'Analyze "': 'tooltip form of the Analyze Section controls (rows: analyze one section / the section the cursor is in)',
 };
+/** Template titles that start with an expression, so there is no prefix to match; each is covered by the rows named. */
+const TEMPLATE_TITLES: Record<string, string> = {
+  '${action.label} — ${action.mode': 'rows: polish/shorten/sharpen/strengthen/critique/explain the selection',
+  '${ts.title}: ${words}': 'tooltip on a grant budget chip (row: see grant section page budgets)',
+  '${src.name}': 'tooltip on an attached source (row: choose which sources the chat sees)',
+};
+/** Buttons whose only label is an icon (no title, no text): the guard cannot name them, so it counts them. A new one fails until a row covers it (an `icon:` step) and this count moves. */
+const ICON_ONLY_BUTTONS: Record<string, number> = {
+  // App 5: Download menu trigger (its items have rows), Settings, analyze-menu chevron, each agent in that menu (named by its label), the toast action.
+  'src/App.tsx': 5,
+  // Editor 9: mobile toolbar toggle (a phone-width control, `sm:hidden`, not reachable at desktop width by design), bubble Bold/Italic/Underline, synonym chips,
+  // custom-instruction send, figure-question send, table menu items and @-picker sources (each has rows).
+  'src/components/Editor.tsx': 9,
+  // Sidebar 11: tab bar, severity filter toggle and chips, accept/reject on cards, clear-reference-search, trash, source tabs, PDF tabs, agent chips, vision X, send.
+  'src/components/Sidebar.tsx': 11,
+  'src/components/style/StylePanel.tsx': 1, // jump to a flagged sentence
+  'src/components/style/VoiceProfileManager.tsx': 0,
+};
+
+/** The body of the `{...}` that opens at `i` (balanced), or null. */
+const balanced = (src: string, i: number): string | null => {
+  let d = 0;
+  for (let j = i; j < src.length; j++) { if (src[j] === '{') d++; else if (src[j] === '}' && --d === 0) return src.slice(i + 1, j); }
+  return null;
+};
+const literals = (expr: string) => [...expr.matchAll(/'((?:\\'|[^'\n])*)'|"((?:\\"|[^"\n])*)"|`((?:\\`|[^`])*)`/g)].map(m => m[1] ?? m[2] ?? m[3] ?? '').filter(Boolean);
+/** Every title the source can produce: `title="x"`, and each string in `title={ternary ? 'a' : 'b'}` or a template, as an exact title or a prefix before the first ${...}. */
+export function titlesIn(src: string): { raw: string; prefix: string | null; exact: string | null }[] {
+  const out: { raw: string; prefix: string | null; exact: string | null }[] = [];
+  for (const m of src.matchAll(/\btitle="([^"]+)"/g)) out.push({ raw: m[1], prefix: null, exact: m[1] });
+  for (const m of src.matchAll(/\btitle=\{/g)) {
+    const expr = balanced(src, m.index! + m[0].length - 1) ?? '';
+    for (const lit of literals(expr.replace(/[=!]==?\s*(['"`])[^'"`]*\1/g, ''))) out.push(lit.includes('${') ? { raw: lit, prefix: lit.slice(0, lit.indexOf('${')), exact: null } : { raw: lit, prefix: null, exact: lit });
+  }
+  return out;
+}
+/** Each <button> with no title/aria-label: its visible words (static text and the strings inside {...}). */
+export function textOnlyButtons(src: string): { words: string[]; line: number }[] {
+  const out: { words: string[]; line: number }[] = [];
+  for (const m of src.matchAll(/<button\b/g)) {
+    let j = m.index! + 7, d = 0;
+    for (; j < src.length; j++) { const c = src[j]; if (c === '{') d++; else if (c === '}') d--; else if (c === '>' && d === 0) break; }
+    const open = src.slice(m.index!, j);
+    if (/\btitle=|aria-label=/.test(open) || open.endsWith('/')) continue;
+    const close = src.indexOf('</button>', j);
+    const body = src.slice(j + 1, close);
+    const words: string[] = [];
+    for (let k = 0; k < body.length; ) {
+      if (body[k] === '{') { const e = balanced(body, k) ?? ''; if (!/^\s*\/\*/.test(e)) words.push(...literals(e)); k += e.length + 2; }
+      else if (body[k] === '<') { let dd = 0; k++; for (; k < body.length; k++) { if (body[k] === '{') dd++; else if (body[k] === '}') dd--; else if (body[k] === '>' && dd === 0) break; } k++; }
+      else { let e = k; while (e < body.length && body[e] !== '{' && body[e] !== '<') e++; const t = norm(body.slice(k, e)); if (t) words.push(t); k = e; }
+    }
+    out.push({ words: words.filter(w => /^[A-Z][A-Za-z0-9 &?!.…,'—()-]*$/.test(w)), line: src.slice(0, m.index!).split('\n').length });
+  }
+  return out;
+}
+const GUARDED = ['src/App.tsx', 'src/components/Editor.tsx', 'src/components/Sidebar.tsx', 'src/components/style/StylePanel.tsx', 'src/components/style/VoiceProfileManager.tsx'];
 
 describe('the list itself', () => {
   it('covers every rail task', () => {
@@ -338,24 +612,45 @@ describe('the list itself', () => {
       else expect(e.now, `${e.feature} resolves its path now, so it needs no "now"`).toBeUndefined();
     }
   });
-  it('lists every sidebar tab and every literal control title in the surfaces being restructured: nothing exists that no row reaches', () => {
+  it('every sidebar tab has a row', () => {
     const steps = ENTRY_POINTS.flatMap(stepsOf);
-    const coveredTitle = (t: string) => steps.some(st => st.startsWith('title:') && matches(t, st.slice(6)));
     const tabs = new Set([...source('src/components/Sidebar.tsx').matchAll(/activeTab === '([a-z]+)'/g)].map(m => m[1]).filter(t => t !== 'summary'));
     expect([...tabs].sort()).toEqual(['chat', 'history', 'outline', 'sources', 'style', 'suggestions']);
-    // each tab is reached by a step that clicks it (a section step, or the rail that opens it)
     for (const t of ['chat', 'history', 'outline', 'style', 'suggestions']) expect(steps, `tab "${t}" has no row`).toContain(`section:${t}`);
     expect(steps, 'the sources tab has no row').toContain('rail:cite');
-    for (const f of ['src/App.tsx', 'src/components/Editor.tsx', 'src/components/Sidebar.tsx', 'src/components/GrantPanel.tsx', 'src/components/VersionHistoryPopup.tsx']) {
-      for (const m of source(f).matchAll(/\btitle="([^"]+)"/g)) {
-        const t = m[1];
-        if (t.startsWith('Editor width') || t in NOT_A_FEATURE) continue; // editorWidth is in EXCLUDED
-        expect(coveredTitle(t), `${f}: control "${t}" has no row`).toBe(true);
+  });
+  it('every title the surfaces can produce (literal, ternary or template) has a row or a reason', () => {
+    const titleSteps = ENTRY_POINTS.flatMap(stepsOf).filter(st => st.startsWith('title:')).map(st => st.slice(6));
+    const uncovered: string[] = [];
+    for (const f of [...GUARDED, 'src/components/GrantPanel.tsx', 'src/components/VersionHistoryPopup.tsx']) {
+      for (const t of titlesIn(source(f))) {
+        if (t.raw.startsWith('Editor width')) continue; // editorWidth is EXCLUDED
+        if (t.exact !== null && t.exact in NOT_A_FEATURE) continue;
+        if (t.prefix !== null && (t.prefix in NOT_A_FEATURE || t.raw.slice(0, 24) in TEMPLATE_TITLES || Object.keys(TEMPLATE_TITLES).some(k => t.raw.startsWith(k.slice(0, 20))))) continue;
+        const ok = t.exact !== null ? titleSteps.some(v => matches(t.exact!, v)) : t.prefix !== '' && titleSteps.some(v => v.replace(/\*$/, '').startsWith(t.prefix!));
+        if (!ok) uncovered.push(`${f}: "${t.raw}"`);
       }
     }
-    for (const t of ['title={`Align ${a}`}', 'title={`Set width to ${w}`}', 'title={darkMode ?']) {
-      expect(source('src/components/Editor.tsx') + source('src/App.tsx'), t).toContain(t); // dynamic titles covered by rows align/resize a figure, dark mode
+    expect(uncovered, 'controls with a title and no row').toEqual([]);
+  });
+  it('every button that is only text has a row that names its text', () => {
+    // Sees <button> elements in App, Editor, Sidebar and the style panel that carry no title/aria-label. Does NOT see: buttons built by a helper component
+    // (ToolbarButton is title-guarded above), modal contents (Settings, the grant pickers, Post-Drafting, import report, version history), or an icon-only button
+    // with no title (counted below). A reviewer adding a modal button must add the row by hand.
+    const textSteps = ENTRY_POINTS.flatMap(stepsOf).filter(st => /^(p?text|select):/.test(st)).map(st => st.slice(st.indexOf(':') + 1).replace(/#\d+$/, ''));
+    const uncovered: string[] = [];
+    for (const f of GUARDED) {
+      for (const b of textOnlyButtons(source(f))) {
+        if (b.words.length === 0) continue;
+        const named = b.words.some(w => textSteps.some(v => matches(w, v) || matches(v.replace(/^\*|\*$/g, ''), w) || w.includes(v.replace(/^\*|\*$/g, ''))) || w in NOT_A_FEATURE);
+        if (!named) uncovered.push(`${f}:${b.line}: ${b.words.join(' | ')}`);
+      }
     }
+    expect(uncovered, 'text buttons with no row').toEqual([]);
+  });
+  it('icon-only buttons (no title, no text) are counted: a new one must get a row with an icon: step', () => {
+    const counts = Object.fromEntries(GUARDED.map(f => [f, textOnlyButtons(source(f)).filter(b => b.words.length === 0).length]));
+    expect(counts).toEqual(ICON_ONLY_BUTTONS);
   });
   it('every EXCLUDED entry is a deliberate removal with a reason', () => {
     expect(EXCLUDED.map(x => x.feature)).toEqual(['editorWidth (normal/wide/full)', 'second version-history component (VersionHistoryPanel)']);
@@ -372,10 +667,25 @@ describe('the resolver is honest about what a user can reach', () => {
     ['inline display none', '<div style="display:none"><button id="t">x</button></div>'],
     ['inline visibility hidden', '<div style="visibility:hidden"><button id="t">x</button></div>'],
     ['a Tailwind hidden with no reveal', '<div class="hidden"><button id="t">x</button></div>'],
+    ['invisible', '<div class="invisible"><button id="t">x</button></div>'],
+    ['sr-only', '<div class="sr-only"><button id="t">x</button></div>'],
+    ['opacity-0', '<div class="opacity-0"><button id="t">x</button></div>'],
+    ['inline opacity 0', '<div style="opacity:0"><button id="t">x</button></div>'],
+    ['pointer-events-none', '<div class="pointer-events-none"><button id="t">x</button></div>'],
+    ['inline pointer-events none', '<div style="pointer-events:none"><button id="t">x</button></div>'],
+    ['w-0', '<div class="w-0"><button id="t">x</button></div>'],
+    ['max-h-0 with overflow-hidden', '<div class="max-h-0 overflow-hidden"><button id="t">x</button></div>'],
+    ['sm:hidden at desktop width', '<div class="flex sm:hidden"><button id="t">x</button></div>'],
+    ['a reveal only from a wider breakpoint (xl)', '<div class="hidden xl:flex"><button id="t">x</button></div>'],
   ])('a control behind %s is not reachable', (_n, html) => { mk(html); expect(isShown(document.getElementById('t')!)).toBe(false); });
   it.each([
     ['a responsive reveal', '<div class="hidden sm:flex"><button id="t">x</button></div>'],
     ['a hover menu', '<div class="hidden group-hover:block"><button id="t">x</button></div>'],
+    ['a hover-revealed opacity-0', '<div class="opacity-0 hover:opacity-50"><button id="t">x</button></div>'],
+    ['a group-hover-revealed invisible', '<div class="invisible group-hover:visible"><button id="t">x</button></div>'],
+    ['a group-hover-revealed pointer-events-none', '<div class="pointer-events-none group-hover:pointer-events-auto"><button id="t">x</button></div>'],
+    ['a breakpoint reveal that applies at desktop width (lg)', '<div class="hidden lg:flex"><button id="t">x</button></div>'],
+    ['max-h-0 without overflow-hidden', '<div class="max-h-0"><button id="t">x</button></div>'],
   ])('a control behind %s is reachable', (_n, html) => { mk(html); expect(isShown(document.getElementById('t')!)).toBe(true); });
 });
 
