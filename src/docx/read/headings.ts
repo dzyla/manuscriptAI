@@ -148,7 +148,11 @@ const MAX_WORDS_LONG = 30;
 const SIBLING_REACH = 12;
 /** An aim title must be followed by a paragraph at least this long; a contents list is a run of short lines. */
 const MIN_BODY_WORDS = 8;
-/** A gap fill is also admitted if the gap it fills is at most this many paragraphs per step of the numbering across it. */
+/**
+ * A gap fill is also admitted if the gap it fills (heading to heading, so it INCLUDES all the body text in between) is at most
+ * this many paragraphs per step of the numbering across it: 100 for one missing number's two steps being 200, 300 for two missing
+ * numbers, and so on. Beyond that a gap fill is dropped silently: nothing but the missing proposal shows it.
+ */
 const SIBLING_GAP_SPAN = 100;
 
 /**
@@ -432,8 +436,10 @@ function completeNumberedRuns(drafts: ParagraphDraft[], out: HeadingCandidate[],
       const nearestN = ns.reduce((a, b) => (Math.abs(run.get(a)!.index - d.index) <= Math.abs(run.get(b)!.index - d.index) ? a : b));
       const distance = Math.abs(run.get(nearestN)!.index - d.index);
       // A gap fill is admitted on the strength of the sequence it completes: either it is near a bounding member, or the gap as a
-      // whole is no wider than SIBLING_GAP_SPAN per step of the numbering. The second route keeps a heading from being dropped just
-      // because the section before it grew (the reach depends on spacing elsewhere in the run, not on that section's length).
+      // whole is no wider than SIBLING_GAP_SPAN per step of the numbering. The span is measured heading to heading, so it includes
+      // the body text of the sections in between: lengthening them widens it, and once it exceeds the allowance the gap fill is
+      // dropped silently. The second route only moves that cliff from the reach (a dozen or so paragraphs from one neighbour) out to
+      // the allowance, so a few added paragraphs no longer lose the heading.
       let proximity: string | null = distance <= reach ? `${plural(distance, 'paragraph')} from that member (at most ${reach} allowed)` : null;
       if (!proximity && gapFill) {
         const lowerN = Math.max(...ns.filter(n => n < k.n));
@@ -441,7 +447,7 @@ function completeNumberedRuns(drafts: ParagraphDraft[], out: HeadingCandidate[],
         const span = run.get(upperN)!.index - run.get(lowerN)!.index;
         const allowed = SIBLING_GAP_SPAN * (upperN - lowerN);
         if (span <= allowed) {
-          proximity = `it lies in a gap of ${plural(span, 'paragraph')} between ${k.prefix}.${lowerN} and ${k.prefix}.${upperN} (at most ${allowed} allowed for a gap of ${plural(upperN - lowerN, 'step')} in the numbering), though ${plural(distance, 'paragraph')} from the nearest member`;
+          proximity = `it lies in a gap of ${plural(span, 'paragraph')} between ${k.prefix}.${lowerN} and ${k.prefix}.${upperN} (at most ${allowed} allowed: ${SIBLING_GAP_SPAN} per number step, and ${k.prefix}.${lowerN} to ${k.prefix}.${upperN} is ${plural(upperN - lowerN, 'step')}), though ${plural(distance, 'paragraph')} from the nearest member`;
         }
       }
       if (!proximity) continue;

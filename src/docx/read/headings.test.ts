@@ -744,7 +744,7 @@ describe('numbered-sibling completion (R2)', () => {
       // near enough: reported as a distance; far: reported as the gap it completes
       expect(detect(doc(4)).find(c => c.text.startsWith('2.3'))!.evidence.join(' | ')).toMatch(/\d+ paragraphs? from that member \(at most \d+ allowed\)/);
       const far = detect(doc(80, 80)).find(c => c.text.startsWith('2.3'))!.evidence.join(' | ');
-      expect(far).toMatch(/lies in a gap of \d+ paragraphs between 2\.2 and 2\.4 \(at most 200 allowed for a gap of 2 steps in the numbering\)/);
+      expect(far).toMatch(/lies in a gap of \d+ paragraphs between 2\.2 and 2\.4 \(at most 200 allowed: 100 per number step, and 2\.2 to 2\.4 is 2 steps\)/);
       expect(far).not.toMatch(/from that member \(at most/);
       // but a wide enough gap is still refused (the 300-paragraph test above), and an extension never gets this route
       expect(detect(doc(150, 150)).some(c => c.text.startsWith('2.3'))).toBe(false);
