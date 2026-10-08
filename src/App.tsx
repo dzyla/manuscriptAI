@@ -265,6 +265,8 @@ export default function App() {
   // Initialize all stores on mount (loads from Dexie, migrating from localforage if needed)
   useEffect(() => {
     Promise.all([initDocument(), initAI(), initSources()]).then(() => {
+      // First, and outside any toast/banner logic, so nothing below can keep onDocumentReady from ever firing.
+      setLoadSettled(true);
       const { lastLoad } = useDocumentStore.getState();
       // Failed loads and unreadable rows get a persistent banner (rendered from store state below).
       if (lastLoad.recoveredFromBackup) {
@@ -273,10 +275,9 @@ export default function App() {
           : 'Your last save could not be read. Restored the most recent backup. The unreadable save could not be protected and may be replaced by later saves.', 'error');
       }
       // Nothing here may depend on the editor's content. The loaded document reaches the editor as JSON through the
-      // Editor's `pendingDocument` prop (the Editor owns applying it), legacy citation migration happens inside
-      // initialize() before the editor sees the document, and editor-dependent post-load work (figure renumbering)
+      // Editor's `pendingDocument` prop (the Editor owns applying it), legacy citation migration happens in the
+      // repository's legacy-row conversion before the editor sees the document, and editor-dependent post-load work (figure renumbering)
       // runs from the Editor's onDocumentReady, which fires once after the document is in the editor.
-      setLoadSettled(true);
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

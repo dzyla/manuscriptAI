@@ -116,7 +116,43 @@ describe('loading the document as JSON', () => {
     expect(kinds(docJson)).toContain('citation');
     expect(pendingDocument).toEqual(docJson);
     expect(content).toContain('data-citation-node');
-    expect(saveState).toBe('Draft'); // the stored row is still unmigrated, so it must be saved
+    // The repository migrated while converting the legacy row, so the stored row is already migrated: no Draft needed.
+    expect(saveState).toBe('Saved');
+    const stored = await db.documents.get('current');
+    expect(JSON.stringify(stored?.docJson)).toContain('"type":"citation"');
+  });
+
+  it('a second initialize() (dev StrictMode) of a migrated legacy row yields the same migrated document', async () => {
+    await db.documents.put({
+      id: 'current', title: 'Legacy', content: '<p>Prior work [1] showed this [2].</p>',
+      saveState: 'Saved', citationRegistry: { 'src-a': 1, 'src-b': 2 }, citationCounter: 2, figureRegistry: {}, figureCounter: 0, updatedAt: 1,
+    } as never);
+    await useDocumentStore.getState().initialize();
+    const first = useDocumentStore.getState().pendingDocument;
+    await useDocumentStore.getState().initialize();
+    expect(useDocumentStore.getState().pendingDocument).toEqual(first);
+  });
+
+  it('a v3 row with [N] text, a non-empty registry and ooxml provenance is NOT migrated through HTML', async () => {
+    const v3 = normalizeDoc({
+      type: 'doc',
+      content: [{
+        type: 'paragraph',
+        attrs: { ooxml: { blockId: 'b1', sourceHash: 'deadbeef' } },
+        content: [{ type: 'text', text: 'All citation nodes were deleted but the text says [1] and [2].' }],
+      }],
+    });
+    await db.documents.put({
+      id: 'current', title: 'Imported', docJson: v3, schemaVersion: 3,
+      saveState: 'Saved', citationRegistry: { 'src-a': 1, 'src-b': 2 }, citationCounter: 2, figureRegistry: {}, figureCounter: 0, updatedAt: 1,
+    });
+    await useDocumentStore.getState().initialize();
+    const { docJson, pendingDocument, saveState } = useDocumentStore.getState();
+    expect(docJson).toEqual(v3);
+    expect(pendingDocument).toEqual(v3);
+    expect(docJson?.content?.[0].attrs?.ooxml).toEqual({ blockId: 'b1', sourceHash: 'deadbeef' });
+    expect(JSON.stringify(docJson)).not.toContain('"type":"citation"');
+    expect(saveState).toBe('Saved');
   });
 
   it('a document that already has citation nodes is not re-migrated and keeps its saved state', async () => {

@@ -50,6 +50,13 @@ export interface DocumentRepository {
 export interface RepositoryDeps {
   htmlToDoc(html: string): JSONContent;
   isValidDoc(doc: unknown): boolean;
+  /**
+   * Rewrite legacy HTML (before it is converted) using the row's citation registry, e.g. plain "[N]" text to
+   * citation nodes. Applied ONLY to genuinely legacy rows (no docJson): an HTML round trip would drop hidden
+   * attributes (ooxml provenance, style ids) from a v3 or DOCX-imported document. Because it runs inside the
+   * legacy conversion, the migrated document is what gets pinned/saved, so it happens exactly once.
+   */
+  migrateLegacyHtml?(html: string, citationRegistry: Record<string, number>): string;
   resolver?: AssetUrlResolver;
   fetchBytes?: (url: string) => Promise<{ mime: string; data: ArrayBuffer }>;
   maxBackups?: number;
@@ -74,7 +81,9 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
     if (row.docJson !== undefined) {
       docJson = deps.isValidDoc(row.docJson) ? row.docJson : null;
     } else if (typeof row.content === 'string') {
-      docJson = deps.htmlToDoc(row.content);
+      docJson = deps.htmlToDoc(
+        deps.migrateLegacyHtml ? deps.migrateLegacyHtml(row.content, row.citationRegistry ?? {}) : row.content,
+      );
       fromHtml = true;
     }
     if (!docJson) return null;

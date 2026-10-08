@@ -7,7 +7,7 @@ import { migrateLegacyCitations } from '../utils/migrateCitations';
 import { createFormat } from '../services/formatPresets';
 import type { CommentThread, DocFormat, DocumentMode } from '../types';
 
-export const documentRepository = createDexieRepository(db, { htmlToDoc, isValidDoc });
+export const documentRepository = createDexieRepository(db, { htmlToDoc, isValidDoc, migrateLegacyHtml: migrateLegacyCitations });
 
 interface DocumentState {
   title: string;
@@ -246,18 +246,11 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     try {
       if (result.doc) {
         const d = result.doc;
-        // Legacy "[N]" text citations become citation nodes HERE, before the editor ever sees the document, so no
-        // ordering between the editor and the init promise can revert it. Same trigger and function as the old
-        // App-side migration (registry non-empty, no citation nodes yet).
-        let docJson = d.docJson;
-        let content = docToHtml(docJson);
-        let saveState = d.saveState;
-        const migratedHtml = migrateLegacyCitations(content, d.citationRegistry);
-        if (migratedHtml !== content) {
-          docJson = htmlToDoc(migratedHtml);
-          content = docToHtml(docJson);
-          saveState = 'Draft'; // the stored row still holds the unmigrated text
-        }
+        // Legacy "[N]" text citations were already turned into citation nodes by the repository's legacy-row
+        // conversion (migrateLegacyHtml), before the editor or the stored row ever saw this document, and only
+        // for genuinely legacy rows: v3 / DOCX-imported documents are never round-tripped through HTML here.
+        const docJson = d.docJson;
+        const content = docToHtml(docJson);
         set({
           title: d.title,
           content,
@@ -266,7 +259,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
           pendingDocument: docJson,
           format: d.format,
           comments: d.comments,
-          saveState,
+          saveState: d.saveState,
           citationRegistry: d.citationRegistry,
           citationCounter: d.citationCounter,
           figureRegistry: d.figureRegistry,
