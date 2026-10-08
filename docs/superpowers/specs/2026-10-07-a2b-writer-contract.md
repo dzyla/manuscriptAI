@@ -146,8 +146,8 @@ applied until accepted. An accepted candidate is converted in place by `applyHea
 `styleId: null`, `ooxml` unchanged. Its hash no longer equals `sourceHash` (the type and level are hashed), so it reads as **edited**:
 rebuild it, starting from the original `<w:pPr>` (3.2). Because `styleId` is null, the heading is not tied to any Word style: the
 writer **must** emit `w:pStyle` for level N from the style the app calls `headingN`, using the mapping in section 10 (the document's
-own Word id if the document defines one, else a new definition for the backfilled `headingN`). A heading must not be emitted with
-only inline bold and size. An unaccepted candidate leaves the paragraph a paragraph, untouched and verbatim.
+own Word id if the document defines one, else a new definition for the backfilled `headingN`). A heading that does have a `styleId`
+(one read from a Word heading style) uses that style the same way. A heading must not be emitted with only inline bold and size. An unaccepted candidate leaves the paragraph a paragraph, untouched and verbatim.
 
 A numbered Word heading loses its visible number in the editor (recorded as `complexNumbering`): never regenerate a heading that
 carries `w:numPr` from the node alone; reuse its `<w:pPr>`.
@@ -221,7 +221,8 @@ properties. If a feature ever lets the author edit borders, shading, row height 
 versioned, section 2) in the same change.
 
 Visible consequence, accepted: `tcPr` and `trPr` stay by POSITION, so swapping two identical-shaped rows moves the content and not
-the formatting. A shaded totals row swapped with a plain row leaves the shading on the wrong row.
+the formatting. A shaded totals row swapped with a plain row leaves the shading on the wrong row. (The content-identity inheritance of
+5.3 would fix this and may be used here too; A2a does not require it.)
 
 ### 5.3 Structure changed: `isTableShellUnchanged(table)` is false
 
@@ -305,7 +306,7 @@ pruned) and returns:
   deleted, or moved away). **Apply strips in DESCENDING `drawingIndex` order** within a host (the plan is already so ordered), or
   snapshot the host's drawing list before removing anything: splicing one at a time shifts every later ordinal, and an ascending
   sweep strips the wrong pictures. A host that is rebuilt needs no strip: nothing is carried over.
-- `emit`: write the image from `fragments[fragmentId]` (the `<w:r>` with the whole drawing) at its place in the model: `copy` (pasted;
+- `emit`: write the image from `fragments[fragmentId]` (the `<w:r>` with the whole drawing) at its place in the model, inside a `<w:p>` of its own (an image is a block in the model): `copy` (pasted;
   its `fragmentId` is in no record), `moved` (away from its host; the matching `strip` removes it from the old host), `host-edited`
   (still in place but its host is edited and rebuilt: put the run back INTO that host), `edited` (see 6.3).
 - An image node whose host is untouched and in place, with an unchanged `sourceHash`, produces nothing: it is already in the host.
@@ -346,7 +347,9 @@ document), in a `w:r` in its own `w:p`. The same fallback serves a picture whose
 A stand-in (a figure that is a paragraph of its own) owns its paragraph's original XML. While untouched, re-emit it verbatim. Once
 edited, **patch that `<w:p>`** (replace the run holding the drawing with the fragment's run, change `wp:extent`, ...); never rebuild it
 from `<w:pPr>` plus the run. The bookmarks around a figure (cross-reference targets) and anything else in that paragraph exist only
-in the original XML: the bookmark atoms of a figure paragraph are deliberately not in the model.
+in the original XML: the bookmark atoms of a figure paragraph are deliberately not in the model. A stand-in is NOT in
+`planLiftedDrawings` (it has no host); its own `isBlockUntouched` says whether it was edited, and the edit is patched into the `<w:p>`
+from the same attributes as 6.3, including `assetId` (6.4).
 
 ### 6.7 Where a surviving run goes in a REBUILT host (known wrong for some inline pictures)
 
@@ -514,6 +517,9 @@ An export of an unedited import must reproduce these. Do not put text from eithe
 | Review state | 45 tracked changes (32 ins/del + 13 formatting), 52 comments (152 anchors), 8 warnings | 22 citations + 1 bibliography (94 field pieces), 4 warnings |
 | Word highlight marks | 34 marks in 22 paragraphs | 30 hex run shadings |
 | Preservation | 11 rels used | 6 rels used (3 for header and footer) |
+
+`highlight` is a mark in the model (Word's `w:highlight` and a run-level `w:shd` fill both read into it); the AI suggestion highlights are editor
+decorations and never in the model, so there is nothing to filter at export.
 
 The acceptance matrix is spec 8.3. "Untouched Word DOCX to export: byte-identical blocks for all paragraphs, no Word repair, counts
 equal" is the first row, and is only achievable if section 2 holds.
