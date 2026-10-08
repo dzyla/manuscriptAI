@@ -3,7 +3,7 @@ import type { ManuscriptDb } from './manuscriptDb';
 import type { BackupRow, CommentThread, DocFormat, DocumentMode, DocumentRow, DocxPackageRow } from '../types';
 import { prepareAssets, hydrateAssets, collectAssetIds, liveAssetIds, type AssetUrlResolver } from './assetStore';
 import { stableStringify } from '../docx/preserve/hash';
-import { collectFragmentIds, pruneFragments } from '../docx/preserve/xml';
+import { collectFragmentIds, pruneFragments } from '../docx/preserve/refs';
 import { createFormat } from '../services/formatPresets';
 
 export interface LoadedDocument {

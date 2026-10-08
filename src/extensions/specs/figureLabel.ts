@@ -1,23 +1,4 @@
-// src/extensions/FigureLabel.tsx
 import { Node, mergeAttributes } from '@tiptap/core';
-import { ReactNodeViewRenderer, NodeViewWrapper } from '@tiptap/react';
-
-function FigureLabelView({ node }: { node: any }) {
-  const num: number = node.attrs.num ?? 1;
-  const figureId: string = node.attrs.figureId ?? '';
-  return (
-    <NodeViewWrapper
-      as="span"
-      data-figure-label=""
-      data-figure-id={figureId}
-      data-figure-num={String(num)}
-      className="figure-label"
-      contentEditable={false}
-    >
-      Figure {num}
-    </NodeViewWrapper>
-  );
-}
 
 declare module '@tiptap/core' {
   interface Commands<ReturnType> {
@@ -28,7 +9,7 @@ declare module '@tiptap/core' {
   }
 }
 
-export const FigureLabel = Node.create({
+export const FigureLabelSpec = Node.create({
   name: 'figureLabel',
   group: 'inline',
   inline: true,
@@ -66,10 +47,6 @@ export const FigureLabel = Node.create({
       mergeAttributes(HTMLAttributes, { 'data-figure-label': '' }),
       `Figure ${num}`,
     ];
-  },
-
-  addNodeView() {
-    return ReactNodeViewRenderer(FigureLabelView);
   },
 
   addCommands() {

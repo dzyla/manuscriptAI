@@ -1,6 +1,5 @@
 import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
-import type { JSONContent } from '@tiptap/core';
-import { REL_NS, type Fragment, type PreservationStore } from './types';
+import { REL_NS, type Fragment } from './types';
 
 const XMLNS_NS = 'http://www.w3.org/2000/xmlns/';
 
@@ -92,20 +91,4 @@ export function allocateRelIds(needed: string[], taken: Set<string>): Record<str
   return out;
 }
 
-export function collectFragmentIds(doc: JSONContent): Set<string> {
-  const ids = new Set<string>();
-  const walk = (n: JSONContent) => {
-    if ((n.type === 'opaqueInline' || n.type === 'opaqueBlock') && typeof n.attrs?.fragmentId === 'string') {
-      ids.add(n.attrs.fragmentId);
-    }
-    n.content?.forEach(walk);
-  };
-  walk(doc);
-  return ids;
-}
-
-export function pruneFragments(store: PreservationStore, referenced: Set<string>): PreservationStore {
-  const fragments: PreservationStore['fragments'] = {};
-  for (const [id, f] of Object.entries(store.fragments)) if (referenced.has(id)) fragments[id] = f;
-  return { ...store, fragments };
-}
+export { collectFragmentIds, pruneFragments } from './refs';

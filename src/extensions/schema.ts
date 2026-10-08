@@ -1,35 +1,29 @@
 import { generateHTML, generateJSON, getSchema, type Extensions, type JSONContent } from '@tiptap/core';
 import type { Schema } from '@tiptap/pm/model';
-import StarterKit from '@tiptap/starter-kit';
-import Highlight from '@tiptap/extension-highlight';
-import TextAlign from '@tiptap/extension-text-align';
-import { TableKit } from '@tiptap/extension-table';
-import { ResizableImage } from './ResizableImage';
-import { CitationNode } from './CitationNode';
-import { FigureLabel } from './FigureLabel';
-import { OpaqueInline, OpaqueBlock } from './preserve/OpaqueNodes';
-import { OoxmlProvenance } from './preserve/OoxmlProvenance';
+import { ReactNodeViewRenderer } from '@tiptap/react';
+import { getSpecExtensions } from './schemaSpecs';
+import { ResizableImageView } from './views/ResizableImageView';
+import { CitationView } from './views/CitationView';
+import { FigureLabelView } from './views/FigureLabelView';
+
+const VIEWS: Record<string, () => unknown> = {
+  resizableImage: () => ReactNodeViewRenderer(ResizableImageView),
+  citation: () => ReactNodeViewRenderer(CitationView),
+  figureLabel: () => ReactNodeViewRenderer(FigureLabelView),
+};
 
 /**
- * The document schema, shared by the live editor and headless conversion.
+ * The editor schema: the pure specs (schemaSpecs.ts) plus their React node views.
  * Interactive-only extensions (placeholder, autocomplete, grammar) are added by Editor.tsx.
  */
 export function getSchemaExtensions(): Extensions {
-  return [
-    StarterKit.configure({
-      heading: { levels: [1, 2, 3] },
-      link: { openOnClick: false },
-    }),
-    Highlight.configure({ multicolor: true }),
-    TextAlign.configure({ types: ['heading', 'paragraph'] }),
-    TableKit.configure({ table: { resizable: true } }),
-    ResizableImage,
-    CitationNode,
-    FigureLabel,
-    OpaqueInline,
-    OpaqueBlock,
-    OoxmlProvenance,
-  ];
+  return getSpecExtensions().map(ext => {
+    const name = (ext as { name?: string }).name ?? '';
+    const view = VIEWS[name];
+    return view
+      ? (ext as unknown as { extend: (c: object) => Extensions[number] }).extend({ addNodeView: view })
+      : ext;
+  });
 }
 
 let schemaCache: Schema | null = null;
