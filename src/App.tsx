@@ -4,9 +4,7 @@ import Sidebar from './components/Sidebar';
 import { AppShell } from './components/shell/AppShell';
 import { StatusBar } from './components/shell/StatusBar';
 import type { RailTask } from './components/shell/Rail';
-import { estimatePages } from './services/pagination';
-import { styleDistance } from './services/proseAudit/score';
-import { activeSummary } from './services/proseAudit/profile';
+import { TASK_TAB, TAB_TASK, type SidebarTab, documentPageLimit, voiceFigure, usePageEstimate } from './components/shell/shellLogic';
 import SettingsModal from './components/SettingsModal';
 import PostDraftingView from './components/PostDraftingView';
 import VersionHistoryPopup from './components/VersionHistoryPopup';
@@ -60,13 +58,6 @@ function AgentIcon({ agent, size = 12 }: { agent: AgentType; size?: number }) {
  */
 const U_SHELL_LEGACY_PANEL = true;
 
-const TASK_TAB: Record<RailTask, 'outline' | 'sources' | 'suggestions' | 'style'> = {
-  write: 'outline', cite: 'sources', review: 'suggestions', format: 'style',
-};
-const TAB_TASK: Record<'chat' | 'suggestions' | 'history' | 'sources' | 'outline' | 'style', RailTask> = {
-  chat: 'review', suggestions: 'review', history: 'write', outline: 'write', sources: 'cite', style: 'format',
-};
-
 export default function App() {
   // ─── Zustand stores ────────────────────────────────────────────────────────
   const {
@@ -116,7 +107,11 @@ export default function App() {
   const [darkMode, setDarkMode] = useState(false);
   const [showAnalyzeMenu, setShowAnalyzeMenu] = useState(false);
   const analyzeMenuRef = useRef<HTMLDivElement>(null);
-  const [sidebarTab, setSidebarTab] = useState<'chat' | 'suggestions' | 'history' | 'sources' | 'outline' | 'style'>('chat');
+  const [sidebarTab, setSidebarTab] = useState<SidebarTab>('chat');
+  // Rail and tab move together, one way: the legacy call sites below reveal a tab through openTab, which also
+  // opens its rail task. Closing the rail never touches the tab.
+  const [railTask, setRailTask] = useState<RailTask | null>(TAB_TASK['chat']);
+  const openTab = useCallback((tab: SidebarTab) => { setSidebarTab(tab); setRailTask(TAB_TASK[tab]); }, []);
   // Style audit (sub-project H). `text` is the exact editor text the metrics were computed from, so
   // sentence offsets are only ever applied to a document that still matches (see styleSentences below).
   const [styleAudit, setStyleAudit] = useState<{ metrics: AuditMetrics; text: string } | null>(null);
@@ -124,8 +119,6 @@ export default function App() {
   const [rewritingId, setRewritingId] = useState<string | null>(null);
   const rewriteAbort = useRef<AbortController | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(400);
-  // One rail task open at a time; null closes the panel. Starts on Review, where the sidebar always opened.
-  const [railTask, setRailTask] = useState<RailTask | null>('review');
   const [zoom, setZoom] = useState(100);
   const [editorWidth, setEditorWidth] = useState<'normal' | 'wide' | 'full'>('normal');
   const [currentAgent, setCurrentAgent] = useState<AgentType>('manager');
@@ -166,7 +159,7 @@ export default function App() {
         category: 'structure',
         section: sectionTitle,
       }]);
-      setSidebarTab('suggestions');
+      openTab('suggestions');
       showToast(`Trim ready for "${sectionTitle}" — review in Suggestions`, 'success');
     } catch (e) {
       showToast(`Trim failed: ${e instanceof Error ? e.message : 'Unknown error'}`, 'error');
@@ -685,7 +678,7 @@ export default function App() {
       ? `${prompt}\n\nContext from the manuscript around this figure:\n"""\n${contextText.trim()}\n"""`
       : prompt;
     handleSendMessage(fullPrompt, 'manuscript-ai', undefined, [img]);
-    setSidebarTab('chat');
+    openTab('chat');
   };
 
   const handleAnalyzeSection = async (sectionText: string, sectionTitle: string) => {
@@ -697,7 +690,7 @@ export default function App() {
       showToast('Bibliography appended to manuscript', 'success');
       return;
     }
-    setSidebarTab('chat');
+    openTab('chat');
     // If called from the Outline tab (no text), extract text from the editor
     const textToAnalyze = sectionText || (() => {
       const html = editorRef.current?.getHTML() || content;
@@ -772,7 +765,7 @@ export default function App() {
       showToast('Select at least a few words to search for similar manuscripts.', 'info');
       return;
     }
-    setSidebarTab('sources');
+    openTab('sources');
     showToast('Searching for similar manuscripts…', 'info');
     searchSimilarManuscripts(query, 5)
       .then(results => {
@@ -804,10 +797,10 @@ export default function App() {
     );
     if (digestedSources.length === 0) {
       showToast('Upload and digest PDF sources first to verify claims against literature.', 'info');
-      setSidebarTab('sources');
+      openTab('sources');
       return;
     }
-    setSidebarTab('chat');
+    openTab('chat');
     const userMsg: Message = { id: Date.now().toString(), role: 'user', content: `Verify this claim against uploaded sources:\n"${selectedText}"` };
     addMessage(userMsg);
     setIsAnalyzing(true);
@@ -923,7 +916,7 @@ export default function App() {
     const fullText = (editorRef.current?.getPlainText() || stripHtml(content));
     
     // Switch sidebar to chat to show the reply
-    setSidebarTab('chat');
+    openTab('chat');
     
     // Add to chat as user message
     const userMsg: Message = {
@@ -987,7 +980,7 @@ export default function App() {
         section: 'Transform',
       };
       addSuggestions([suggestion]);
-      setSidebarTab('suggestions');
+      openTab('suggestions');
       showToast('Suggestion ready — review in Suggestions tab', 'success');
     } catch (error) {
       showToast(`Error: ${error instanceof Error ? error.message : 'Unknown'}`, 'error');
@@ -1015,7 +1008,7 @@ export default function App() {
         section: 'Rewrite',
       };
       addSuggestions([suggestion]);
-      setSidebarTab('suggestions');
+      openTab('suggestions');
       setHighlightedSuggestionId(suggestion.id);
       setTimeout(() => setHighlightedSuggestionId(null), 2000);
       showToast('Rewrite suggestion ready — accept or reject in Review tab', 'success');
@@ -1040,14 +1033,14 @@ export default function App() {
     };
     addMessage(userMsg);
     addMessage(assistantMsg);
-    setSidebarTab('chat');
+    openTab('chat');
     showToast(`Literature analysis of "${sourceName}" ready`, 'success');
   };
 
   // Manuscript Summary & Big Gaps — high-level review
   const handleManuscriptSummary = async () => {
     setIsAnalyzing(true);
-    setSidebarTab('chat');
+    openTab('chat');
     setAnalysisProgress({ agent: 'Generating manuscript summary...', total: 1, done: 0 });
     
     const userMsg: Message = {
@@ -1291,34 +1284,27 @@ export default function App() {
       replaceWithHtml(snapshot.title, html);
       editorRef.current?.setContent(html);
       showToast(`Restored snapshot: "${snapshot.name}"`, 'success');
-      setSidebarTab('chat');
+      openTab('chat');
     } catch (err) {
       console.error('Snapshot restore failed', err);
       showToast('Could not restore this snapshot', 'error');
     }
   };
 
-  // Legacy code paths call setSidebarTab to reveal a tab; keep the rail in step so the panel is visible.
-  useEffect(() => { if (U_SHELL_LEGACY_PANEL) setRailTask(TAB_TASK[sidebarTab]); }, [sidebarTab]);
   const handleRailSelect = useCallback((t: RailTask) => {
-    setRailTask(cur => (cur === t ? null : t));
+    if (railTask === t) { setRailTask(null); return; } // closing leaves the tab alone
+    setRailTask(t);
     if (U_SHELL_LEGACY_PANEL) setSidebarTab(TASK_TAB[t]);
-  }, []);
+  }, [railTask]);
 
-  // Deferred so typing is never blocked by a whole-document walk; memoised on the document and format only.
-  const deferredDoc = useDeferredValue(docJson);
-  const pageEstimate = useMemo(() => estimatePages(deferredDoc, format ?? null), [deferredDoc, format]);
-  const limitPages = useMemo(() => {
-    if (mode !== 'grant') return null;
-    const total = (getGrantTemplate(grantTemplateId)?.sections ?? []).reduce((n, s) => n + (s.pageLimit ?? 0), 0);
-    return total > 0 ? total : null;
-  }, [mode, grantTemplateId]);
+  const pageEstimate = usePageEstimate(docJson, format);
+  const limitPages = documentPageLimit(mode, grantTemplateId);
   const voiceProfile = aiSettings.voiceProfile;
-  const voiceDistance = useMemo(() => {
-    if (!styleAudit) return null;
-    const { summary, isGeneric } = activeSummary(voiceProfile);
-    return isGeneric ? null : Math.round(styleDistance(styleAudit.metrics.summary, summary).score);
-  }, [styleAudit, voiceProfile]);
+  const currentText = useMemo(() => editorRef.current?.getPlainText(), [docJson]); // eslint-disable-line react-hooks/exhaustive-deps
+  const voiceDistance = useMemo(
+    () => voiceFigure(styleAudit, currentText, voiceProfile),
+    [styleAudit, currentText, voiceProfile],
+  );
 
   const wordCount = stripHtml(content).split(/\s+/).filter(w => w.length > 0).length;
 
@@ -1410,6 +1396,7 @@ export default function App() {
       {/* Main Content */}
       <AppShell
         hideChrome={isDistractionFree}
+        keepPanelMounted={U_SHELL_LEGACY_PANEL}
         active={railTask}
         badges={{ review: suggestions.length }}
         onSelect={handleRailSelect}
@@ -1681,7 +1668,7 @@ export default function App() {
             highlightedSuggestionId={highlightedSuggestionId}
             analysisProgress={analysisProgress}
             activeTabOverride={sidebarTab}
-            onTabChange={setSidebarTab}
+            onTabChange={openTab}
             stylePanel={{
               metrics: styleAudit?.metrics ?? null,
               onJumpToSentence: handleStyleJump,

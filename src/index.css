@@ -485,3 +485,4 @@ mark {
 @media (max-width: 767px) {
   .u-shell-panel { position: absolute; top: 0; bottom: 0; left: 44px; right: 0; z-index: 30; background: var(--surface-1); border-right: 0; }
 }
+.u-shell-panel[hidden] { display: none; }
