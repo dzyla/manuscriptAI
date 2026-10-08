@@ -257,6 +257,8 @@ export interface BackupRow {
   row: DocumentRow;
   /** An unreadable current row preserved for forensics; never trimmed, never a recovery candidate. */
   quarantined?: true;
+  /** The pre-migration legacy row; never trimmed, but (unlike quarantined) a valid recovery candidate. */
+  pinned?: true;
 }
 
 export interface SourceRow extends ManuscriptSource {
