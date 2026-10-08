@@ -150,3 +150,70 @@ describe('ranges', () => {
     expect(checkRewrite('We ran 5-10 trials in the first pass; the protocol was then fixed.', 'The first pass used 5 to 10 trials. We then fixed the protocol.').ok).toBe(true);
   });
 });
+
+describe('guards: a fact that changes must not pass (round 1)', () => {
+  const bad = (o: string, r: string, re: RegExp) => {
+    const c = checkRewrite(o, r);
+    expect(c.ok).toBe(false);
+    expect(c.reasons.join(' ')).toMatch(re);
+  };
+  it('counts occurrences: "5 mice and 5 rats" -> "5 mice and rats"', () => {
+    bad('We housed 5 mice and 5 rats in separate cages; both groups were fed ad libitum.', 'We housed 5 mice and rats in separate cages. Both groups were fed ad libitum.', /5 appears 2 times/);
+  });
+  it('catches a changed superscript exponent', () => {
+    bad('We seeded 1×10⁶ cells per well; the plates were then incubated overnight.', 'We seeded 1×10⁵ cells per well. The plates were then incubated overnight.', /number 6|introduces the number 5/);
+    expect(checkRewrite('We seeded 1×10⁶ cells per well; the plates were then incubated overnight.', 'We seeded 1×10^6 cells per well. The plates were then incubated overnight.').ok).toBe(true);
+  });
+  it('catches an inverted ratio', () => {
+    bad('The ratio was 1:2 in treated cells; controls were not diluted at all here.', 'The ratio was 2:1 in treated cells. Controls were not diluted at all here.', /ratio 1:2/);
+  });
+  it('catches a lost minus sign, ASCII or U+2212', () => {
+    bad('The shift was -3 mV in the mutant; the wild type did not move at all.', 'The shift was 3 mV in the mutant. The wild type did not move at all.', /sign of -3/);
+    bad('The shift was −3 mV in the mutant; the wild type did not move at all.', 'The shift was 3 mV in the mutant. The wild type did not move at all.', /sign of -3/);
+  });
+  it('catches lower-then-upper names such as mTOR and cGAS', () => {
+    bad('mTOR rather than cGAS signalling explains the response seen in these cells.', 'Signalling explains the response seen in these cells.', /mTOR/);
+    bad('mTOR rather than cGAS signalling explains the response seen in these cells.', 'The mTOR signalling explains the response seen in these cells.', /cGAS/);
+  });
+  it('catches an invented citation marker and a duplicated one', () => {
+    bad(original, 'Barrier height selects the functional state. We measured 42 complexes at pH 5.5 [3][7].', /citation \[7\] that the original does not/);
+    bad(original, 'Barrier height selects the functional state [3]. We measured 42 complexes at pH 5.5 [3].', /citation \[3\] that the original does not/);
+  });
+  it('catches an invented number', () => {
+    bad(original, 'Barrier height selects the functional state. We measured 42 complexes at pH 5.5 in 3 runs [3].', /introduces the number 3\b/);
+  });
+  it('compares markers as a multiset, in any order', () => {
+    const o = 'First claim [2] holds; second claim [3-5] holds as well in these cells.';
+    expect(checkRewrite(o, 'Second claim [3-5] holds. First claim [2] holds as well in these cells.').ok).toBe(true);
+    bad(o, 'First claim [2] holds. Second claim [3, 5] holds as well in these cells.', /\[3-5\] is missing/);
+  });
+  it('accepts a spaced or en-dash range marker as the same marker', () => {
+    const o = 'First claim holds [3-5]; second claim holds as well in these cells.';
+    expect(checkRewrite(o, 'First claim holds [3–5]. Second claim holds as well in these cells.').ok).toBe(true);
+  });
+  // Accepted fail-safe false rejections (cost a retry and a flag, never a wrong apply): "45%" -> "45 percent",
+  // "Egfr" vs "EGFR", "1,200" -> "1.200", and a thin-space thousands separator.
+});
+
+describe('guards: tell rules each pinned on their own (round 1)', () => {
+  const filler = (n: number) => Array.from({ length: n }, (_, i) => `w${i}`).join(' ');
+  it('rejects a rewrite that removes three of four strong tells and keeps one, naming it', () => {
+    const o = 'The state is selected kinetically rather than thermodynamically; the effect is what we saw, which is clear in all six runs. It is not a trap but a route.';
+    const r = checkRewrite(o, 'Kinetics select the state rather than thermodynamics. We saw the effect in all six runs. It is a route.');
+    expect(r.ok).toBe(false);
+    expect(r.reasons.join(' ')).toMatch(/still contains "rather than"/);
+  });
+  it('rejects when the weighted tell score is not lower even though the sentence got much shorter', () => {
+    const o = `Notably, ${filler(40)} held in the assay.`;
+    const r = checkRewrite(o, 'Notably, the assay held.');
+    expect(r.ok).toBe(false);
+    expect(r.reasons.join(' ')).toMatch(/style score/);
+  });
+  it('rejects when tells fell slightly but the sentence got longer, so worst severity did not drop', () => {
+    const o = `We tested alpha, beta and gamma ${filler(30)} in the assay.`;
+    const longer = `We tested several different agents ${filler(30)} in the assay under ordinary conditions at room temperature.`;
+    const r = checkRewrite(o, longer);
+    expect(r.ok).toBe(false);
+    expect(r.reasons.join(' ')).toMatch(/style score/);
+  });
+});

@@ -74,3 +74,63 @@ describe('rewriteSentence', () => {
     expect(mock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('rewriteSentence: round-1 pins', () => {
+  const prof = (meanWords: number) => ({
+    id: 'v', name: 'mine', createdAt: 0, sampleWords: 2000,
+    summary: { sentences: 10, meanWords, pctOver35: 1, lengthCv: 0.5, counts: {}, rates: {} },
+    exampleSentences: [],
+  });
+
+  it('an en-dash reply passes end to end, unflagged and unmangled (the lint used to turn H1–H3 into "H1, H3")', async () => {
+    const o = 'We used 10–20 nM ligand against H1–H3 [3–5]; the signal rather than the noise decided the call.';
+    const reply = 'We used 10–20 nM ligand against H1–H3 [3–5]. The signal decided the call.';
+    mock.mockResolvedValueOnce(reply);
+    const r = await rewriteSentence({ sentence: o, settings });
+    expect(r).toEqual({ text: reply, retried: false, warnings: [] });
+  });
+
+  it('does not let lint re-append dropped citations: a reply with none is flagged, not silently repaired', async () => {
+    const reply = 'Kinetics select the state. We measured 42 complexes at pH 5.5.';
+    mock.mockResolvedValue(reply);
+    const r = await rewriteSentence({ sentence, settings });
+    expect(r.text).toBe(reply);
+    expect(r.warnings.join(' ')).toMatch(/\[3\] is missing/);
+  });
+
+  it('collapses a multi-line reply to one line (a newline would become a hard break in the editor)', async () => {
+    mock.mockResolvedValueOnce('Kinetics select the state.\nWe measured 42 complexes at pH 5.5 [3].');
+    const r = await rewriteSentence({ sentence, settings });
+    expect(r.text).toBe('Kinetics select the state. We measured 42 complexes at pH 5.5 [3].');
+    expect(r.text).not.toMatch(/\n/);
+  });
+
+  it('returns the attempt with fewer failed guards, whichever order they come in', async () => {
+    const twoReasons = 'Kinetics select the state. We measured complexes at pH 5.5.';
+    const oneReason = 'Kinetics select the state. We measured complexes at pH 5.5 [3].';
+    mock.mockResolvedValueOnce(twoReasons).mockResolvedValueOnce(oneReason);
+    expect((await rewriteSentence({ sentence, settings })).text).toBe(oneReason);
+    mock.mockReset();
+    mock.mockResolvedValueOnce(oneReason).mockResolvedValueOnce(twoReasons);
+    expect((await rewriteSentence({ sentence, settings })).text).toBe(oneReason);
+  });
+
+  it('on a tie returns the second attempt', async () => {
+    const a = 'Kinetics select the state. We measured complexes at pH 5.5 [3].';
+    const b = 'Kinetics decide the state. We measured complexes at pH 5.5 [3].';
+    mock.mockResolvedValueOnce(a).mockResolvedValueOnce(b);
+    expect((await rewriteSentence({ sentence, settings })).text).toBe(b);
+  });
+
+  it('targets the profile mean sentence length, floors it at 10 and defaults to 18', async () => {
+    mock.mockResolvedValue(good);
+    await rewriteSentence({ sentence, settings, profile: prof(23.4) });
+    expect(mock.mock.calls[0][0]).toMatch(/about 23 words/);
+    mock.mockClear();
+    await rewriteSentence({ sentence, settings, profile: prof(4) });
+    expect(mock.mock.calls[0][0]).toMatch(/about 10 words/);
+    mock.mockClear();
+    await rewriteSentence({ sentence, settings });
+    expect(mock.mock.calls[0][0]).toMatch(/about 18 words/);
+  });
+});

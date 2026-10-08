@@ -4,6 +4,8 @@ import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { Fragment, type Node as PMNode } from '@tiptap/pm/model';
 import { flattenDoc, flatSpanToPm } from '../utils/textMatch';
 import { auditText } from '../services/proseAudit/metrics';
+import { compareMarkers, markerTokens } from '../services/proseAudit/markers';
+import { formatCitationGroup } from '../utils/citationFormat';
 import type { AuditMetrics, SentenceAudit } from '../types';
 
 export interface StyleHighlightsOptions {
@@ -166,11 +168,13 @@ export const StyleHighlights = Extension.create<StyleHighlightsOptions, { enable
  *   boundary (e.g. stale offsets) is rejected rather than merging blocks.
  * - Multi-line text is rejected when the target block cannot hold a hardBreak (e.g. a code
  *   block); single-line text is still allowed there.
+ * - `atoms` (citation nodes taken from the replaced range) are re-emitted, in place of plain text, for each marker in
+ *   `text` whose display equals an unused atom's display; the atom keeps its own marks and attrs. Typed text that matches no atom stays text.
  * - One transaction, so one undo step. It does not move focus; the caller decides.
  * - Returns false and changes nothing for a non-integer, out-of-bounds, empty or cross-block
  *   range, for multi-line text the block cannot hold, and for empty text (so this cannot be used to delete a range).
  */
-export function replaceRangeWithText(editor: Editor, from: number, to: number, text: string): boolean {
+export function replaceRangeWithText(editor: Editor, from: number, to: number, text: string, atoms?: PMNode[]): boolean {
   const size = editor.state.doc.content.size;
   if (!Number.isInteger(from) || !Number.isInteger(to)) return false;
   if (from < 0 || to > size || to <= from) return false;
@@ -189,9 +193,19 @@ export function replaceRangeWithText(editor: Editor, from: number, to: number, t
     const { doc } = tr;
     const marks = doc.resolve(from).marksAcross(doc.resolve(to)) ?? [];
     const nodes: PMNode[] = [];
+    const pool = atoms ? [...atoms] : [];
+    const pushText = (t: string) => { if (t) nodes.push(schema.text(t, marks)); };
     lines.forEach((line, i) => {
       if (i > 0) nodes.push(schema.nodes.hardBreak.create(null, null, marks.filter(m => schema.nodes.hardBreak.allowsMarkType(m.type))));
-      if (line) nodes.push(schema.text(line, marks));
+      let last = 0;
+      for (const tok of pool.length ? markerTokens(line) : []) {
+        const k = pool.findIndex(a => formatCitationGroup(a.attrs.nums ?? []) === tok.norm);
+        if (k < 0) continue;
+        pushText(line.slice(last, tok.index));
+        nodes.push(pool.splice(k, 1)[0]);
+        last = tok.index + tok.raw.length;
+      }
+      pushText(line.slice(last));
     });
     const fragment = Fragment.from(nodes);
     try {
@@ -208,15 +222,17 @@ export function replaceRangeWithText(editor: Editor, from: number, to: number, t
 }
 
 export type FlatSentenceTarget =
-  | { ok: true; from: number; to: number; citations: number }
-  | { ok: false; reason: 'stale' | 'unmappable' | 'hard-break' };
+  | { ok: true; from: number; to: number; citations: number; atoms: PMNode[] }
+  | { ok: false; reason: 'stale' | 'unmappable' | 'hard-break' | 'empty-citation' | 'inline-node' | 'citations' };
 
 /**
  * Resolve a sentence given as getPlainText() offsets to document positions, but only if the
  * document still reads `expected` there (the sentence may have been edited while the model ran).
- * A sentence that spans a hard break is refused: the flat text has no separator at a break, so
- * the text the model saw ("line oneline two") is not what the reader sees.
- * `citations` counts citation atoms inside the span; replacing them turns them into plain "[N]" text.
+ * Refused, because the flat text does not describe what the span really holds:
+ *  - a hard break (the flat text has no separator at a break),
+ *  - a citation atom with no numbers (it renders as '' so neither the model nor the guards can see it),
+ *  - any other inline non-text node, such as an inline image (flattenDoc skips it, and replacing the span would delete it).
+ * `atoms` are the citation nodes in the span, in document order; `replaceFlatSentence` puts them back.
  */
 export function resolveFlatSentence(editor: Editor, start: number, end: number, expected: string): FlatSentenceTarget {
   const doc = editor.state.doc;
@@ -225,20 +241,28 @@ export function resolveFlatSentence(editor: Editor, start: number, end: number, 
   if (flat.text.slice(start, end) !== expected) return { ok: false, reason: 'stale' };
   const span = flatSpanToPm(flat, start, end);
   if (!span) return { ok: false, reason: 'unmappable' };
-  let hardBreak = false;
-  let citations = 0;
+  let reason: 'hard-break' | 'empty-citation' | 'inline-node' | null = null;
+  const atoms: PMNode[] = [];
   doc.nodesBetween(span.from, span.to, node => {
-    if (node.type.name === 'hardBreak') hardBreak = true;
-    if (node.type.name === 'citation') citations++;
+    if (node.type.name === 'hardBreak') reason ??= 'hard-break';
+    else if (node.type.name === 'citation') {
+      if (!formatCitationGroup(node.attrs.nums ?? [])) reason ??= 'empty-citation';
+      atoms.push(node);
+    } else if (node.isInline && !node.isText) reason ??= 'inline-node';
     return true;
   });
-  if (hardBreak) return { ok: false, reason: 'hard-break' };
-  return { ok: true, from: span.from, to: span.to, citations };
+  if (reason) return { ok: false, reason };
+  return { ok: true, from: span.from, to: span.to, citations: atoms.length, atoms };
 }
 
-/** Replace exactly one sentence (offsets plus the text it must still read) in a single undoable transaction. */
+/**
+ * Replace exactly one sentence (offsets plus the text it must still read) in a single undoable transaction.
+ * The citation markers of `text` must equal those of `expected` as a multiset (order is free: a sentence split may reorder
+ * them); otherwise nothing is applied. Each marker that matches a citation atom of the original is emitted as that atom.
+ */
 export function replaceFlatSentence(editor: Editor, start: number, end: number, expected: string, text: string): FlatSentenceTarget {
   const target = resolveFlatSentence(editor, start, end, expected);
   if (!target.ok) return target;
-  return replaceRangeWithText(editor, target.from, target.to, text) ? target : { ok: false, reason: 'unmappable' };
+  if (!compareMarkers(expected, text).ok) return { ok: false, reason: 'citations' };
+  return replaceRangeWithText(editor, target.from, target.to, text, target.atoms) ? target : { ok: false, reason: 'unmappable' };
 }

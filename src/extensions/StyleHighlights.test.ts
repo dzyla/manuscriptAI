@@ -416,7 +416,7 @@ describe('replaceFlatSentence on imported (provenance-stamped) paragraphs', () =
   it('is one undo step that restores the untouched paragraph exactly', () => {
     const e = mkDoc(stamped([S1, 'Other paragraph here.']));
     const start = flattenDoc(e.state.doc).text.indexOf(S1);
-    replaceFlatSentence(e, start, start + S1.length, S1, 'Kinetics select the state.');
+    replaceFlatSentence(e, start, start + S1.length, S1, 'Kinetics select the state [3].');
     expect(isBlockUntouched(blocks(e)[0])).toBe(false);
     e.commands.undo();
     expect(blocks(e).every(isBlockUntouched)).toBe(true);
@@ -462,7 +462,7 @@ describe('replaceFlatSentence on imported (provenance-stamped) paragraphs', () =
     e.destroy();
   });
 
-  it('counts citation atoms inside the span', () => {
+  it('counts citation atoms inside the span (legacy name; atoms are covered below)', () => {
     const e = mkDoc(htmlBlocks('<p>The receptor binds the protein <span data-citation-node="" data-source-ids="s1" data-nums="1">[1]</span>; affinity was nanomolar.</p>'));
     const flat = flattenDoc(e.state.doc).text;
     const r = resolveFlatSentence(e, 0, flat.length, flat);
@@ -474,3 +474,65 @@ describe('replaceFlatSentence on imported (provenance-stamped) paragraphs', () =
 function htmlBlocks(html: string): JSONContent[] {
   return htmlToDoc(html).content!;
 }
+
+describe('replaceFlatSentence keeps citation atoms', () => {
+  const cite = (nums: string, extra = '') => `<span data-citation-node="" data-source-ids="${nums.split(',').map(n => 's' + n).join(',')}" data-nums="${nums}"${extra}>[${nums}]</span>`;
+  const mk = (html: string) => new Editor({ extensions: [...getSchemaExtensions(), StyleHighlights.configure({ getEnabled: () => true, getSentences: () => [] })], content: htmlToDoc(html) });
+  const text = (e: Editor) => flattenDoc(e.state.doc).text;
+  const citations = (e: Editor) => { const out: number[][] = []; e.state.doc.descendants(n => { if (n.type.name === 'citation') out.push(n.attrs.nums); return true; }); return out; };
+  const apply = (e: Editor, rewrite: string) => { const t = text(e); return replaceFlatSentence(e, 0, t.length, t, rewrite); };
+
+  it('re-emits the original atom (with its sourceIds) instead of plain text', () => {
+    const e = mk(`<p>The receptor binds the protein ${cite('1')}; affinity was nanomolar in this assay.</p>`);
+    const before = JSON.stringify(e.state.doc.toJSON());
+    expect(apply(e, 'The receptor binds the protein. Affinity was nanomolar in this assay [1].').ok).toBe(true);
+    expect(citations(e)).toEqual([[1]]);
+    let ids: string[] = [];
+    e.state.doc.descendants(n => { if (n.type.name === 'citation') ids = n.attrs.sourceIds; return true; });
+    expect(ids).toEqual(['s1']);
+    expect(text(e)).toBe('The receptor binds the protein. Affinity was nanomolar in this assay [1].');
+    e.commands.undo();
+    expect(JSON.stringify(e.state.doc.toJSON())).toBe(before);
+    e.destroy();
+  });
+
+  it('matches by display, in any order, and a typed marker stays text', () => {
+    const e = mk(`<p>First claim ${cite('2,3')} and a typed marker [9] then second claim ${cite('5')}.</p>`);
+    expect(citations(e)).toEqual([[2, 3], [5]]);
+    expect(apply(e, 'Second claim [5]. First claim [2-3] and a typed marker [9].').ok).toBe(true);
+    expect(citations(e)).toEqual([[5], [2, 3]]);
+    expect(text(e)).toContain('typed marker [9].');
+    e.destroy();
+  });
+
+  it('refuses a rewrite whose markers differ as a multiset, changing nothing', () => {
+    const e = mk(`<p>One claim ${cite('3')} and another claim ${cite('4')} hold here.</p>`);
+    const before = JSON.stringify(e.state.doc.toJSON());
+    for (const bad of ['One claim and another claim hold here.', 'One claim [3] and another claim hold here.', 'One claim [3][3] and another claim [4] hold here.', 'One claim [3] and another [4] [7] hold here.', 'One claim [3,4] hold here.']) {
+      expect(apply(e, bad)).toEqual({ ok: false, reason: 'citations' });
+    }
+    expect(JSON.stringify(e.state.doc.toJSON())).toBe(before);
+    e.destroy();
+  });
+
+  it('refuses a span holding an atom with no numbers (invisible to the model) or an inline image', () => {
+    const e = mk(`<p>Before the empty one <span data-citation-node="" data-source-ids="" data-nums=""></span> after it.</p>`);
+    const t = text(e);
+    expect(resolveFlatSentence(e, 0, t.length, t)).toEqual({ ok: false, reason: 'empty-citation' });
+    e.destroy();
+    // figureLabel is an inline atom that flattenDoc skips: replacing the span would delete it silently.
+    const e2 = mk('<p>See the plot <span data-figure-label="" data-figure-id="f1" data-figure-num="1"></span> for the effect in this sentence.</p>');
+    const t2 = text(e2);
+    expect(resolveFlatSentence(e2, 0, t2.length, t2)).toEqual({ ok: false, reason: 'inline-node' });
+    e2.destroy();
+  });
+
+  it('keeps the marks around the atoms', () => {
+    const e = mk(`<p><strong>Bold claim ${cite('1')} here and more words follow.</strong></p>`);
+    expect(apply(e, 'Bold claim here [1] and more words follow.').ok).toBe(true);
+    const texts: { text?: string; marks?: unknown[] }[] = [];
+    e.state.doc.descendants(n => { if (n.isText) texts.push({ text: n.text, marks: n.marks.map(m => m.type.name) }); return true; });
+    expect(texts.every(t => (t.marks as string[]).includes('bold'))).toBe(true);
+    e.destroy();
+  });
+});

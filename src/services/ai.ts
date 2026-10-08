@@ -1069,7 +1069,9 @@ export function lintSuggestedText(suggested: string, original: string): string {
   let out = suggested;
 
   // No em/en dashes. Spaced dash → comma; tight dash → comma too (usually fine).
-  out = out.replace(/\s*[—–]\s*/g, ', ');
+  // EXCEPT a tight en dash with a digit on either side: that is a numeric/label range
+  // ("10–20 nM", "H1–H3", "[3–5]"), and a comma there changes the fact ("H1, H3" drops H2).
+  out = out.replace(/(?<=\d)–(?=[\w[])|(?<=[\w\]])–(?=\d)/g, '\u0001').replace(/\s*[—–]\s*/g, ', ').replace(/\u0001/g, '–');
   // Clean the artifacts the replacement can create.
   out = out.replace(/,\s*,/g, ',').replace(/\s+([,.;:])/g, '$1').replace(/\s{2,}/g, ' ').trim();
 

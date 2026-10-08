@@ -1,29 +1,55 @@
 import { callLLM, stripThinkingBlocks, lintSuggestedText } from '../ai';
 import { auditText } from './metrics';
 import { TELL_PATTERNS, PATTERN_NAMES, countMatches } from './patterns';
+import { compareMarkers, markerTokens } from './markers';
 import type { AISettings, VoiceProfile } from '../../types';
 
 const SYSTEM =
   'You rewrite single sentences of scientific prose in the author\'s own voice. You return only the rewritten sentence or sentences, with no preamble, no quotation marks and no explanation.';
 
+// "one" is left out: "one of the" would satisfy a dropped 1.
 const NUMBER_WORDS: Record<string, string> = {
-  zero: '0', one: '1', two: '2', three: '3', four: '4', five: '5', six: '6', seven: '7', eight: '8', nine: '9', ten: '10',
+  zero: '0', two: '2', three: '3', four: '4', five: '5', six: '6', seven: '7', eight: '8', nine: '9', ten: '10',
   eleven: '11', twelve: '12', thirteen: '13', fourteen: '14', fifteen: '15', sixteen: '16', seventeen: '17', eighteen: '18',
   nineteen: '19', twenty: '20',
 };
 
-const NUMBER_RE = /\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?/g;
+const SUPERSCRIPT: Record<string, string> = { '⁰': '0', '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5', '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9', '₀': '0', '₁': '1', '₂': '2', '₃': '3', '₄': '4', '₅': '5', '₆': '6', '₇': '7', '₈': '8', '₉': '9' };
 
-/** Numbers as plain digit strings, so 1,200 and 1200 compare equal. */
-function numericTokens(text: string): string[] {
-  return (text.match(NUMBER_RE) ?? []).map(n => n.replace(/,/g, ''));
+/** Superscripts become "^6" (so 10⁶ equals 10^6 and 10⁵ does not), subscript digits become plain digits, U+2212 becomes "-". */
+function normalizeNumeric(text: string): string {
+  return text
+    .replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹]+/g, m => '^' + [...m].map(c => SUPERSCRIPT[c]).join(''))
+    .replace(/[₀₁₂₃₄₅₆₇₈₉]+/g, m => [...m].map(c => SUPERSCRIPT[c]).join(''))
+    .replace(/−/g, '-');
 }
 
-/** Numbers in the rewrite, where a spelled-out count ("three") also counts as the digit. */
-function numbersInRewrite(text: string): Set<string> {
-  const out = new Set(numericTokens(text));
-  for (const w of text.toLowerCase().match(/[a-z]+/g) ?? []) if (NUMBER_WORDS[w]) out.add(NUMBER_WORDS[w]);
-  return out;
+const NUMBER_RE = /\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?/g;
+
+/** Numbers as plain digit strings, one entry per occurrence, so 1,200 and 1200 compare equal. */
+function numericTokens(text: string): string[] {
+  return (normalizeNumeric(text).match(NUMBER_RE) ?? []).map(n => n.replace(/,/g, ''));
+}
+
+function countOf(items: string[]): Map<string, number> {
+  const m = new Map<string, number>();
+  for (const i of items) m.set(i, (m.get(i) ?? 0) + 1);
+  return m;
+}
+
+/** Digit tokens and spelled-out counts ("three") in the rewrite, with multiplicity. */
+function numbersInRewrite(text: string): Map<string, number> {
+  const items = numericTokens(text);
+  for (const w of text.toLowerCase().match(/[a-z]+/g) ?? []) if (NUMBER_WORDS[w]) items.push(NUMBER_WORDS[w]);
+  return countOf(items);
+}
+
+/** Ratios and fractions (1:2, 3/4) must keep their order; a signed number (-3) must keep its sign. */
+function ratios(text: string): string[] {
+  return (normalizeNumeric(text).match(/\d+(?:\.\d+)?\s*[:/]\s*\d+(?:\.\d+)?/g) ?? []).map(r => r.replace(/\s+/g, ''));
+}
+function signedNumbers(text: string): string[] {
+  return normalizeNumeric(text).match(/(?<![\w.\])])-\d+(?:\.\d+)?/g) ?? [];
 }
 
 // Abbreviations only. Spelled-out units ("2 hours" for "2 h") are legitimate rewrites, so time units are left to the number check.
@@ -35,10 +61,6 @@ function numberUnitPairs(text: string): string[] {
   return [...text.matchAll(NUMBER_UNIT_RE)].map(m => `${m[1]}${m[2]}`);
 }
 
-function citationMarkers(text: string): string[] {
-  return text.match(/\[\d+(?:\s*[,;–-]\s*\d+)*\]/g) ?? [];
-}
-
 const RANGE_RE = /\b([A-Za-z]*\d+(?:\.\d+)?)\s*[–-]\s*([A-Za-z]*\d+(?:\.\d+)?)\b/g;
 
 /** "H1–H3" and "5-10" as one normalized token each: a range must not collapse into its endpoints ("H1, H3" drops H2). */
@@ -46,9 +68,16 @@ function ranges(text: string): string[] {
   return [...text.matchAll(RANGE_RE)].map(m => `${m[1]}-${m[2]}`);
 }
 
-/** Gene, protein and reagent names: all-caps runs or letters followed by digits (TP53, EGFR, IL-6, p53). */
+/** Gene, protein and reagent names: all-caps runs, letters followed by digits (TP53, EGFR, IL-6, p53), and lower-then-upper (mTOR, cGAS, mRNA). */
 function identifiers(text: string): string[] {
-  return text.match(/\b(?:[A-Z]{2,}[A-Za-z0-9-]*|[A-Za-z]+\d[A-Za-z0-9-]*)\b/g) ?? [];
+  return text.match(/\b(?:[A-Z]{2,}[A-Za-z0-9-]*|[a-z]+[A-Z][A-Za-z0-9-]*|[A-Za-z]+\d[A-Za-z0-9-]*)\b/g) ?? [];
+}
+
+/** The text with every citation marker removed, so a marker's digits are not mistaken for data. */
+function stripMarkers(t: string): string {
+  let out = t;
+  for (const m of [...markerTokens(t)].reverse()) out = out.slice(0, m.index) + ' ' + out.slice(m.index + m.raw.length);
+  return out;
 }
 
 const words = (t: string) => t.split(/\s+/).filter(Boolean).length;
@@ -113,23 +142,38 @@ export function checkRewrite(original: string, rewrite: string): { ok: boolean; 
   if (!text) return { ok: false, reasons: ['The rewrite is empty.'] };
   if (text === squash(original)) return { ok: false, reasons: ['The rewrite is identical to the original.'] };
 
-  const haveNumbers = numbersInRewrite(text);
-  for (const n of new Set(numericTokens(original))) {
-    if (!haveNumbers.has(n)) reasons.push(`The number ${n} is missing from the rewrite.`);
+  // Digits inside citation markers belong to the marker check below, not to the number checks.
+  const o2 = stripMarkers(original);
+  const t2 = stripMarkers(text);
+  const haveNumbers = numbersInRewrite(t2);
+  const origNumbers = countOf(numericTokens(o2));
+  for (const [n, c] of origNumbers) {
+    const have = haveNumbers.get(n) ?? 0;
+    if (have === 0) reasons.push(`The number ${n} is missing from the rewrite.`);
+    else if (have < c) reasons.push(`The number ${n} appears ${c} times in the original but ${have} in the rewrite.`);
   }
-  const haveUnits = numberUnitPairs(text);
-  for (const u of new Set(numberUnitPairs(original))) {
+  const rewriteDigits = countOf(numericTokens(t2));
+  for (const n of rewriteDigits.keys()) {
+    if (!origNumbers.has(n)) reasons.push(`The rewrite introduces the number ${n}, which is not in the original.`);
+  }
+  const haveUnits = numberUnitPairs(t2);
+  for (const u of new Set(numberUnitPairs(o2))) {
     if (!haveUnits.includes(u) && haveNumbers.has(u.match(/^[\d.]+/)![0])) {
       reasons.push(`The unit in "${u}" is missing or detached from its number.`);
     }
   }
-  const haveRanges = ranges(text);
-  for (const r of new Set(ranges(original))) {
-    if (!haveRanges.includes(r) && !text.includes(r.replace('-', ' to '))) reasons.push(`The range ${r} is missing or was split into its endpoints.`);
+  const haveRatios = ratios(t2);
+  for (const r of new Set(ratios(o2))) if (!haveRatios.includes(r)) reasons.push(`The ratio ${r} is missing or inverted.`);
+  const haveSigned = signedNumbers(t2);
+  for (const n of new Set(signedNumbers(o2))) if (!haveSigned.includes(n)) reasons.push(`The sign of ${n} was lost.`);
+  const haveRanges = ranges(t2);
+  for (const r of new Set(ranges(o2))) {
+    if (!haveRanges.includes(r) && !t2.includes(r.replace('-', ' to '))) reasons.push(`The range ${r} is missing or was split into its endpoints.`);
   }
-  for (const c of new Set(citationMarkers(original))) {
-    if (!text.includes(c)) reasons.push(`The citation ${c} is missing from the rewrite.`);
-  }
+  // Citation markers compare as a multiset: dropped, duplicated, invented and merged markers all differ.
+  const cites = compareMarkers(original, text);
+  for (const c of cites.missing) reasons.push(`The citation ${c} is missing from the rewrite.`);
+  for (const c of cites.extra) reasons.push(`The rewrite has a citation ${c} that the original does not.`);
   for (const id of new Set(identifiers(original))) {
     if (!text.includes(id)) reasons.push(`The name ${id} is missing from the rewrite.`);
   }
@@ -149,14 +193,19 @@ export function checkRewrite(original: string, rewrite: string): { ok: boolean; 
   return { ok: reasons.length === 0, reasons };
 }
 
-function cleanReply(raw: string, original: string): string {
+/**
+ * Lint the reply for the house dash rule only. The original is passed as '' on purpose: with the original,
+ * lintSuggestedText re-appends citation markers the model dropped, at an arbitrary position and before the
+ * guards run, so a rewrite that lost every citation would pass unflagged.
+ */
+function cleanReply(raw: string): string {
   const stripped = stripThinkingBlocks(raw)
     .replace(/^\s*(?:rewritten sentence|rewrite|sentence)\s*:\s*/i, '')
     .replace(/\s*\n+\s*/g, ' ')
     .trim()
     .replace(/^["'“‘]+|["'”’]+$/g, '')
     .trim();
-  return stripped ? lintSuggestedText(stripped, original) : '';
+  return stripped ? lintSuggestedText(stripped, '') : '';
 }
 
 export async function rewriteSentence(args: {
@@ -174,7 +223,7 @@ export async function rewriteSentence(args: {
     if (args.signal?.aborted) throw new DOMException('Rewrite cancelled', 'AbortError');
     const prompt = extra ? `${base}\n\nYour previous attempt was rejected: ${extra}\nWrite it again and fix that.` : base;
     const raw = await callLLM(prompt, args.settings, SYSTEM, false, undefined, args.signal, 400);
-    const text = cleanReply(raw, args.sentence);
+    const text = cleanReply(raw);
     return { text, check: checkRewrite(args.sentence, text) };
   };
 
