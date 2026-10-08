@@ -29,7 +29,7 @@ import { analyzeText, isAdvisoryAgent } from '../../src/services/ai';
 import { normalizeForMatch } from '../../src/utils/textMatch';
 import type { AISettings, AgentType, Suggestion } from '../../src/types';
 import { FIXTURE_MANUSCRIPT, SEEDS } from './fixture';
-import { runQualityChecks } from './checks';
+import { runQualityChecks, runRewriteChecks } from './checks';
 
 function buildSettings(): AISettings {
   const provider = (process.env.EVAL_PROVIDER || 'local') as AISettings['provider'];
@@ -105,6 +105,8 @@ async function main() {
   if (process.env.EVAL_SKIP_CHECKS !== '1') {
     try { await runQualityChecks(settings); }
     catch (e) { console.log(`quality checks ERROR: ${e instanceof Error ? e.message : e}`); }
+    try { await runRewriteChecks(settings); }
+    catch (e) { console.log(`rewrite checks ERROR: ${e instanceof Error ? e.message : e}`); }
   }
 }
 

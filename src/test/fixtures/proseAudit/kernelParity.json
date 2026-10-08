@@ -1,0 +1,28 @@
+{
+  "text": "It was observed by us that tumor cells died rapidly following exposure to compound X. This is well established in the literature. Cancer is a disease that affects 10 million people. In order to characterize this effect, we performed an analysis of cell viability across many samples.\n\nCells were treated with compound X. Viability was measured. We used a t-test. The experiment was performed and the data were collected by the team over a period of time. RNA was extracted using standard methods, and qPCR was carried out on all samples.\n\nTreatment significantly improved survival. The results prove that compound X is the gold standard for cancer therapy. Viability increased by a lot (p < 0.05). Of note, the treated group showed a mean of 42 while, importantly, the control group was much lower. In the abstract we reported that survival increased by 30%, but here the increase was 50%.\n\nOur findings are very important and could potentially possibly suggest a new avenue. This proves that compound X will cure cancer in humans. The mechanism, which is complex, remains to be determined \u2014 but the implications are clear.",
+  "metrics": {
+    "sentences": 16,
+    "mean_sentence_words": 11.6,
+    "pct_over_35_words": 0.0,
+    "rather than": 0,
+    "rather than_per100": 0.0,
+    "not X but/instead": 0,
+    "not X but/instead_per100": 0.0,
+    "instead of": 0,
+    "instead of_per100": 0.0,
+    "is what cleft": 0,
+    "is what cleft_per100": 0.0,
+    "which is appositive": 1,
+    "which is appositive_per100": 6.2,
+    "initial Because": 0,
+    "initial Because_per100": 0.0,
+    "This/That anaphora": 1,
+    "This/That anaphora_per100": 6.2,
+    "semicolon": 0,
+    "semicolon_per100": 0.0,
+    "tricolon": 0,
+    "tricolon_per100": 0.0,
+    "throat-clearing": 0,
+    "throat-clearing_per100": 0.0
+  }
+}

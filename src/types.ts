@@ -64,6 +64,8 @@ export interface AISettings {
   recallPass?: boolean;
   customPrompts?: Partial<Record<AgentType, string>>;
   zotero?: ZoteroSettings;
+  /** The author's measured writing style, built from their own samples (sub-project H). */
+  voiceProfile?: VoiceProfile;
 }
 
 export interface Suggestion {
@@ -211,6 +213,44 @@ export interface ResolvedStyle {
   spaceAfterPt: number;
   indent: { leftIn: number; firstLineIn: number; hangingIn: number };
   align: 'left' | 'center' | 'right' | 'justify';
+}
+
+// ─── Prose style audit (sub-project H) ────────────────────────────────────────
+
+export interface SentenceAudit {
+  start: number;
+  end: number;
+  words: number;
+  tells: string[];
+  /** ranking score: words + 8 × weighted tell count (weights and non-kernel patterns included) */
+  severity: number;
+}
+
+export interface AuditSummary {
+  sentences: number;
+  meanWords: number;
+  pctOver35: number;
+  /** coefficient of variation of sentence length — uniformity is itself a tell */
+  lengthCv: number;
+  counts: Record<string, number>;
+  /** occurrences per 100 sentences */
+  rates: Record<string, number>;
+}
+
+export interface AuditMetrics {
+  summary: AuditSummary;
+  sentences: SentenceAudit[];
+  sections: { title: string; summary: AuditSummary }[];
+}
+
+export interface VoiceProfile {
+  id: string;
+  name: string;
+  createdAt: number;
+  sampleWords: number;
+  summary: AuditSummary;
+  /** short representative sentences, used as few-shot style examples when rewriting */
+  exampleSentences: string[];
 }
 
 // ─── Dexie row types ──────────────────────────────────────────────────────────

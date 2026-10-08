@@ -443,6 +443,12 @@ mark {
 }
 .opaque-chip.opaque-block { display: block; margin: 0.25em 0; text-align: center; }
 
+/* Style audit highlights (decorations only — never written into the document) */
+.style-tell { border-bottom: 2px solid transparent; border-radius: 2px; }
+.style-tell-low { background: rgba(250, 204, 21, 0.14); border-bottom-color: rgba(250, 204, 21, 0.5); }
+.style-tell-mid { background: rgba(249, 115, 22, 0.16); border-bottom-color: rgba(249, 115, 22, 0.55); }
+.style-tell-high { background: rgba(239, 68, 68, 0.16); border-bottom-color: rgba(239, 68, 68, 0.6); }
+
 /* Hard page break (w:br w:type="page") imported from DOCX */
 .page-break {
   display: block;

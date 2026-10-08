@@ -44,6 +44,15 @@ describe('lintSuggestedText', () => {
   it('removes em and en dashes', () => {
     expect(lintSuggestedText('the result — robust — held', 'orig')).not.toMatch(/[—–]/);
   });
+  it('keeps a tight en dash between numbers: it is a range, not the em-dash tell', () => {
+    expect(lintSuggestedText('We used 10–20 nM ligand against H1–H3 [3–5].', 'orig')).toBe('We used 10–20 nM ligand against H1–H3 [3–5].');
+  });
+  it('keeps a tight en dash when only the right side is a digit (label-to-number range)', () => {
+    expect(lintSuggestedText('See panels A–5 and [3]–5 here.', 'orig')).toBe('See panels A–5 and [3]–5 here.');
+  });
+  it('still replaces spaced and em dashes and tight dashes between words', () => {
+    expect(lintSuggestedText('The result – robust—held, Smith–Jones agree.', 'orig')).not.toMatch(/[—–]/);
+  });
   it('re-appends a citation marker the model dropped from the original', () => {
     const out = lintSuggestedText('We observed cell death.', 'It was observed that cells died [3].');
     expect(out).toContain('[3]');

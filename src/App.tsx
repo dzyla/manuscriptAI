@@ -8,13 +8,16 @@ import ImportReportDialog, { ImportProgressDialog } from './components/ImportRep
 import { titleFromFileName } from './services/docxImport';
 import { useDocxImport } from './hooks/useDocxImport';
 import { textToHtml } from './utils/textImport';
-import { AgentType, Message, Suggestion, HistoryItem, AISettings, ManuscriptSource, AttachedImage, VersionSnapshot } from './types';
+import { AuditMetrics, SentenceAudit, AgentType, Message, Suggestion, HistoryItem, AISettings, ManuscriptSource, AttachedImage, VersionSnapshot } from './types';
 import { searchSimilarManuscripts } from './services/manuscriptSearch';
 import { expandCitationNums, formatCitationGroup, mergeAdjacentCitations } from './services/citations';
 import { analyzeText, chatWithAgent, chatWithManuscript, resolveConflicts, runJudgeAgent, verifySuggestions, dedupeAdvisories, rebutSuggestion, manuscriptSummary, rewriteSection, transformWithInstruction, analyzeSourceAgainstManuscript, verifyClaimAgainstSources, AGENT_INFO, AGENT_ICONS, estimateTokens } from './services/ai';
 import { detectorSuggestions } from './services/detectors';
 import { buildReviewNote } from './utils/reviewNotes';
 import { findTextSpan } from './utils/textMatch';
+import { auditText } from './services/proseAudit/metrics';
+import { performStyleRewrite } from './components/style/styleRewrite';
+import { sentencesToDraw, auditMatchesDoc } from './components/style/styleSync';
 import { setDocumentContext, trimSectionToLimit, type AgentTool } from './services/ai';
 import { GrantTemplatePicker, GrantInstructionsModal, GrantToolbar } from './components/GrantPanel';
 import { loadCustomTemplates, getGrantTemplate, WORDS_PER_PAGE, type GrantTemplate } from './services/grantTemplates';
@@ -94,7 +97,13 @@ export default function App() {
   const [darkMode, setDarkMode] = useState(false);
   const [showAnalyzeMenu, setShowAnalyzeMenu] = useState(false);
   const analyzeMenuRef = useRef<HTMLDivElement>(null);
-  const [sidebarTab, setSidebarTab] = useState<'chat' | 'suggestions' | 'history' | 'sources' | 'outline'>('chat');
+  const [sidebarTab, setSidebarTab] = useState<'chat' | 'suggestions' | 'history' | 'sources' | 'outline' | 'style'>('chat');
+  // Style audit (sub-project H). `text` is the exact editor text the metrics were computed from, so
+  // sentence offsets are only ever applied to a document that still matches (see styleSentences below).
+  const [styleAudit, setStyleAudit] = useState<{ metrics: AuditMetrics; text: string } | null>(null);
+  const [drawStyleHighlights, setDrawStyleHighlights] = useState(false);
+  const [rewritingId, setRewritingId] = useState<string | null>(null);
+  const rewriteAbort = useRef<AbortController | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(400);
   const [zoom, setZoom] = useState(100);
   const [editorWidth, setEditorWidth] = useState<'normal' | 'wide' | 'full'>('normal');
@@ -270,6 +279,50 @@ export default function App() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ─── Style audit wiring (sub-project H) ────────────────────────────────────
+  // The editor only audits (and reports) while its style plugin is enabled, so the plugin is on whenever
+  // the Style tab is open or highlights are shown. Highlights themselves are drawn only when the user opts in.
+  const styleAuditOn = sidebarTab === 'style' || drawStyleHighlights;
+
+  // The plugin reports on edits only; run one audit when metrics are switched on so the panel is
+  // populated immediately instead of after the first keystroke.
+  useEffect(() => {
+    if (!styleAuditOn || !editorRef.current) return;
+    const text = editorRef.current.getPlainText();
+    setStyleAudit({ metrics: auditText(text), text });
+  }, [styleAuditOn]);
+
+  // Reports arrive from the editor's debounce timer immediately after it audited the document, so the
+  // editor text read here is the audited text.
+  const handleStyleAudit = useCallback((metrics: AuditMetrics) => {
+    setStyleAudit({ metrics, text: editorRef.current?.getPlainText() ?? '' });
+  }, []);
+
+  // Sentences go back into the editor as offsets into the audited text. If the document has changed since
+  // the audit, offsets would be drawn in the wrong place, so they are withheld; the editor's debounce has
+  // already queued a fresh report for that edit, which replaces them.
+  const styleSentences = useMemo(
+    () => sentencesToDraw(styleAudit, editorRef.current?.getPlainText(), drawStyleHighlights),
+    [drawStyleHighlights, styleAudit],
+  );
+
+  const handleStyleJump = useCallback((s: SentenceAudit) => {
+    if (!auditMatchesDoc(styleAudit, editorRef.current?.getPlainText()) || !editorRef.current?.selectFlatRange(s.start, s.end)) {
+      showToast('The document changed since this sentence was measured. The panel is refreshing.', 'info');
+    }
+  }, [styleAudit, showToast]);
+
+  useEffect(() => () => rewriteAbort.current?.abort(), []);
+
+  // Rewrite one flagged sentence in the author's voice; the guards and the apply step live in performStyleRewrite.
+  const handleStyleRewrite = useCallback(
+    (s: SentenceAudit) => performStyleRewrite({
+      sentence: s, audit: styleAudit, getEditor: () => editorRef.current, settings: aiSettings,
+      inFlight: rewriteAbort, setBusy: setRewritingId, toast: showToast,
+    }),
+    [aiSettings, styleAudit, showToast],
+  );
 
   // Initialize all stores on mount (loads from Dexie, migrating from localforage if needed)
   useEffect(() => {
@@ -1527,6 +1580,9 @@ export default function App() {
             aiSettings={aiSettings}
             onAnalyzeImage={handleAnalyzeImage}
             onInsertFigure={handleInsertFigure}
+            styleSentences={styleSentences}
+            styleAuditEnabled={styleAuditOn}
+            onStyleAudit={handleStyleAudit}
           />
         </main>
 
@@ -1575,6 +1631,14 @@ export default function App() {
             analysisProgress={analysisProgress}
             activeTabOverride={sidebarTab}
             onTabChange={setSidebarTab}
+            stylePanel={{
+              metrics: styleAudit?.metrics ?? null,
+              onJumpToSentence: handleStyleJump,
+              onRewrite: handleStyleRewrite,
+              highlightsOn: drawStyleHighlights,
+              onToggleHighlights: setDrawStyleHighlights,
+              rewritingId,
+            }}
             onAgentChange={setCurrentAgent}
             manuscriptContent={stripHtml(content)}
             manuscriptHtml={content}
