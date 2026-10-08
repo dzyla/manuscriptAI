@@ -228,16 +228,25 @@ function isBlank(d: ParagraphDraft): boolean {
   return d.text === '' && d.atoms.length === 0 && !d.multiline;
 }
 
-/** The paragraph that follows `drafts[i]` in the document, skipping blank ones, or null if the run of paragraphs ends first. */
+/**
+ * The paragraph that follows `drafts[i]` in the document, skipping blank ones, or null if the run of paragraphs ends first.
+ * A bullet or numbered list standing right there (after blank paragraphs too) counts as what follows: its first item is
+ * returned, flagged `isListLead`. A table, figure or heading in between still ends the search.
+ */
 function followingParagraph(drafts: ParagraphDraft[], i: number): ParagraphDraft | null {
   let prev = drafts[i];
   for (let j = i + 1; j < drafts.length; j++) {
     const d = drafts[j];
-    if (d.index !== prev.index + 1) return null; // a table, figure or heading stands between
+    if (d.index !== prev.index + 1) return prev.leadsIntoList ?? null; // a list leads on; a table, figure or heading stands between
     if (!isBlank(d)) return d;
     prev = d;
   }
-  return null;
+  return prev.leadsIntoList ?? null;
+}
+
+/** How the evidence describes what follows a title. */
+function followerWords(next: ParagraphDraft): string {
+  return next.isListLead ? 'a list whose first item is not bold or larger' : 'a body paragraph that is not bold or larger';
 }
 
 interface NameMatch {
@@ -288,9 +297,12 @@ function emphatic(d: ParagraphDraft, ctx: DetectContext): boolean {
   return d.allBold || (ctx.bodyFontSizePt !== undefined && d.minFontSizePt !== null && d.minFontSizePt > ctx.bodyFontSizePt);
 }
 
-/** Real body text for a title to be followed by: not emphatic, and long enough not to be another contents or list line. */
+/**
+ * Real body text for a title to be followed by: not emphatic, and long enough not to be another contents line. The first item
+ * of a list is exempt from the length rule (its items are short by nature) but not from the others.
+ */
 function isBodyParagraph(d: ParagraphDraft | null, ctx: DetectContext): d is ParagraphDraft {
-  return !!d && !emphatic(d, ctx) && d.words >= MIN_BODY_WORDS && aimToken(split(d.text).rest) === null;
+  return !!d && !emphatic(d, ctx) && (d.isListLead ? d.words > 0 : d.words >= MIN_BODY_WORDS) && aimToken(split(d.text).rest) === null;
 }
 
 function detect(drafts: ParagraphDraft[], ctx: DetectContext): HeadingCandidate[] {
@@ -354,7 +366,9 @@ function detect(drafts: ParagraphDraft[], ctx: DetectContext): HeadingCandidate[
         lastLevel1 ? `placed below the level-1 heading "${lastLevel1.text}", so level 2` : 'no section heading precedes it, so level 2',
         d.allBold ? 'entire paragraph is bold' : 'not bold (not required for an aim title)',
         TERMINAL_PERIOD.test(d.text) ? `${shape} (limit ${MAX_WORDS_LONG} words), trailing period ignored` : `${shape} (limit ${MAX_WORDS_LONG} words)`,
-        `followed by a body paragraph of ${plural(next.words, 'word')} that is not bold or larger, and no contents-list dot leaders`,
+        next.isListLead
+          ? `followed by a list whose first item (${plural(next.words, 'word')}) is not bold or larger, and no contents-list dot leaders`
+          : `followed by a body paragraph of ${plural(next.words, 'word')} that is not bold or larger, and no contents-list dot leaders`,
       ];
       out.push({ index: d.index, level: 2, text: d.text, evidence: bits, confidence: 'aim' });
       return;
@@ -373,7 +387,7 @@ function detect(drafts: ParagraphDraft[], ctx: DetectContext): HeadingCandidate[
     if (d.allBold) bits.push('entire paragraph is bold');
     if (bigger) bits.push(`entire paragraph is in a larger font (${d.minFontSizePt} pt) than the ${ctx.bodyFontSizePt} pt body text`);
     bits.push(`${shape}, no terminal period, question or exclamation mark`);
-    bits.push('followed by a body paragraph that is not bold or larger');
+    bits.push(`followed by ${followerWords(next)}`);
     const base = depth(lastLevel1 ? 2 : 1);
     bits.push(lastLevel1 ? `follows the level-1 heading "${lastLevel1.text}", so level 2` : 'no section heading precedes it, so level 1');
     if (base.note) bits.push(base.note);
@@ -394,7 +408,7 @@ function detect(drafts: ParagraphDraft[], ctx: DetectContext): HeadingCandidate[
  *  - lie within `reach` paragraphs of its nearest run member, for a gap fill as for an extension. `reach` is the larger of
  *    SIBLING_REACH and twice the widest spacing between members whose numbers are consecutive; the span across a missing
  *    number is not evidence of how far apart sections are, so it never widens the reach;
- *  - be followed by a body paragraph, not another title.
+ *  - be followed by a body paragraph (or a list whose first item is not bold or larger), not another title.
  * A bold paragraph of two lines (title, then a sub-title) joins too; body text never does. Repeats until nothing more joins.
  * Depth 1 ("1.", "2.") is left out: numbered lists and reference lists share that shape, so the sequence alone is no evidence.
  */
@@ -454,7 +468,7 @@ function completeNumberedRuns(drafts: ParagraphDraft[], out: HeadingCandidate[],
       // Emphasis: the sibling and its nearest member are both bold (or larger).
       const nearest = byIndex.get(run.get(nearestN)!.index)!;
       if (!emphatic(d, ctx) || !emphatic(nearest, ctx)) continue;
-      // And, like any format match, it must be followed by body text rather than another title or a bare list.
+      // And, like any format match, it must be followed by body text (or a list that opens with some) rather than another title.
       const next = followingParagraph(drafts, di);
       if (!next || emphatic(next, ctx)) continue;
       const level = run.get(max)!.level;
@@ -473,7 +487,7 @@ function completeNumberedRuns(drafts: ParagraphDraft[], out: HeadingCandidate[],
           'starts with a capital letter',
           `${d.allBold ? 'bold' : 'larger than the body text'}, like the nearest member of the run (${k.prefix}.${nearestN}, ${nearest.allBold ? 'bold' : 'larger than the body text'})`,
           proximity,
-          'followed by a body paragraph that is not bold or larger',
+          `followed by ${followerWords(next)}`,
         ],
       });
       taken.add(d.index);

@@ -41,6 +41,8 @@ export interface NumberingLevel {
   indentIn?: number;
   /** `w:pStyle`: a paragraph style that is tied to this level. */
   pStyle?: string;
+  /** `w:lvlRestart` is present on a level below the first: a restart rule the editor does not apply. */
+  restartRule?: true;
   /** The list the editor shows has the same labels as Word would show for this level. */
   exact: boolean;
   /** Why not, in a sentence the author can read. */
@@ -49,6 +51,8 @@ export interface NumberingLevel {
 
 export interface NumberingDef {
   abstractNumId: number | null;
+  /** The `w:num` has `w:lvlOverride`s: Word then counts it on its own instead of sharing the abstractNum's count. */
+  hasOverride: boolean;
   levels: Map<number, NumberingLevel>;
 }
 
@@ -89,6 +93,7 @@ function readLevel(el: Element, ilvl: number, startOverride?: number): Numbering
   const ind = firstW(firstW(el, 'pPr') ?? el, 'ind');
   const left = ind ? int(wAttr(ind, 'left') ?? wAttr(ind, 'start')) : undefined;
   const pStyle = val('pStyle');
+  const restartRule = ilvl > 0 && firstW(el, 'lvlRestart') !== undefined;
   const approximation = approximationOf(format, text, ilvl);
   return {
     ordered: format !== 'bullet',
@@ -98,6 +103,7 @@ function readLevel(el: Element, ilvl: number, startOverride?: number): Numbering
     listType: LIST_TYPE[format] ?? null,
     ...(left !== undefined ? { indentIn: round4(twipsToIn(left)) } : {}),
     ...(pStyle ? { pStyle } : {}),
+    ...(restartRule ? { restartRule: true as const } : {}),
     exact: approximation === undefined,
     ...(approximation ? { approximation } : {}),
   };
@@ -231,9 +237,11 @@ export function readNumbering(pkg: DocxPackage, report?: ImportReport): Numberin
     const numId = int(wAttr(el, 'numId'));
     if (numId === undefined || map.has(numId) || !numToAbstract.has(numId)) continue;
     const absId = numToAbstract.get(numId)!;
+    let hasOverride = false;
     const levels = new Map(levelsOf(absId)); // the level objects are replaced, never edited, so abstract definitions stay shared and intact
     for (const o of childElements(el)) {
       if (!isW(o, 'lvlOverride')) continue;
+      hasOverride = true;
       const ilvl = int(wAttr(o, 'ilvl'));
       if (ilvl === undefined || ilvl < 0 || ilvl > 8) continue;
       const own = firstW(o, 'lvl');
@@ -242,7 +250,7 @@ export function readNumbering(pkg: DocxPackage, report?: ImportReport): Numberin
       if (own) levels.set(ilvl, readLevel(own, ilvl, startOverride));
       else if (startOverride !== undefined && levels.has(ilvl)) levels.set(ilvl, { ...levels.get(ilvl)!, start: startOverride });
     }
-    map.set(numId, { abstractNumId: absId, levels });
+    map.set(numId, { abstractNumId: absId, hasOverride, levels });
   }
   return map;
 }
@@ -304,7 +312,8 @@ interface OpenList {
 }
 
 const MSG = {
-  interrupted: 'A numbered list that is interrupted by other text and then resumed is shown as two lists; the second keeps the numbers Word shows.',
+  interrupted: 'A numbered list that continues earlier numbering is shown as a separate list that keeps the numbers Word shows. This happens when it was interrupted by other text (a blank paragraph between two numbered items counts), and when it shares its numbering with another list.',
+  restart: 'A numbered list level has its own restart rule (w:lvlRestart), which the editor does not apply; its numbers may differ from Word\'s. The original numbering is kept for export.',
   skipped: 'A list skips a level; its deeper items are shown one level in.',
   undefinedLevel: 'A list uses a level its numbering definition does not give; it is shown with the closest level that is defined.',
   below: 'A list begins below its first level; it is shown without that indent.',
@@ -351,8 +360,12 @@ export function groupListParagraphs(blocks: ReadonlyArray<Pick<ParagraphDraft, '
   const out: Array<JSONContent | Group> = [];
   let stack: OpenList[] = [];
   let group: Group | null = null;
-  /** numId -> level -> the number Word has reached. Persists across interruptions: that is what makes a resumed list resume. */
-  const counters = new Map<number, Map<number, number>>();
+  /**
+   * counter key -> level -> the number Word has reached. Persists across interruptions: that is what makes a resumed list
+   * resume. Word counts per abstractNum: every w:num that shares one (and has no lvlOverride) continues the same count,
+   * while a w:num with a lvlOverride counts on its own.
+   */
+  const counters = new Map<string, Map<number, number>>();
 
   const endList = () => {
     stack = [];
@@ -364,8 +377,6 @@ export function groupListParagraphs(blocks: ReadonlyArray<Pick<ParagraphDraft, '
     const found = levelFor(def, np.ilvl)!;
     const level = found.level;
     const approximations: string[] = [];
-    if (!found.defined) approximations.push(MSG.undefinedLevel);
-    if (!level.exact && level.approximation) approximations.push(level.approximation);
 
     while (stack.length && stack[stack.length - 1].ilvl > np.ilvl) stack.pop();
     const top = stack[stack.length - 1];
@@ -375,14 +386,19 @@ export function groupListParagraphs(blocks: ReadonlyArray<Pick<ParagraphDraft, '
     const parent = stack[stack.length - 1];
 
     // Word's number for this item: continues what this numId has reached at this level, restarts below a higher level.
-    const byLevel = counters.get(np.numId) ?? new Map<number, number>();
-    counters.set(np.numId, byLevel);
+    const key = def.hasOverride || def.abstractNumId === null ? `n${np.numId}` : `a${def.abstractNumId}`;
+    const byLevel = counters.get(key) ?? new Map<number, number>();
+    counters.set(key, byLevel);
     const previous = byLevel.get(np.ilvl);
     const value = previous === undefined ? level.start : previous + 1;
     byLevel.set(np.ilvl, value);
     for (const k of [...byLevel.keys()]) if (k > np.ilvl) byLevel.delete(k);
 
     if (!target) {
+      // Notes about a list are made once, when the list is created, not once per item.
+      if (!found.defined) approximations.push(MSG.undefinedLevel);
+      if (!level.exact && level.approximation) approximations.push(level.approximation);
+      if (level.ordered && level.restartRule) approximations.push(MSG.restart);
       const attrs: Record<string, unknown> = level.ordered
         ? { wordNumId: np.numId, start: value, type: level.listType }
         : { wordNumId: np.numId };

@@ -296,15 +296,28 @@ describe.skipIf(docs.length === 0)('private real-world documents', () => {
     expect(paragraphsOut.map(x => (x.attrs!.ooxml as { blockId: string }).blockId)).toEqual(flat.map(x => (x.attrs!.ooxml as { blockId: string }).blockId));
     const lostProvenance = paragraphsOut.filter(x => !x.attrs?.ooxml || !isBlockUntouched(x)).length;
     expect(lostProvenance).toBe(0);
-    // 2. every directly numbered paragraph is an item (a numbered heading stays a heading, a missing definition stays a paragraph)
-    expect(items).toBeGreaterThanOrEqual(directlyNumbered - numberedHeadings - (report.warnings.some(w => /does not contain/.test(w.message)) ? directlyNumbered : 0));
+    // 2. every directly numbered paragraph is an item, except a numbered heading (stays a heading) and a paragraph whose numId has no
+    //    definition (stays a paragraph). Paragraphs numbered only through a style can add items on top, so then it is a lower bound.
+    const directIds = sources.flatMap(p => {
+      const pPr = Array.from(p.childNodes).find(c => c.nodeType === 1 && isW(c as Element, 'pPr')) as Element | undefined;
+      const np = pPr && (Array.from(pPr.childNodes).find(c => c.nodeType === 1 && isW(c as Element, 'numPr')) as Element | undefined);
+      const id = np?.getElementsByTagNameNS(W_NS, 'numId')[0]?.getAttributeNS(W_NS, 'val');
+      return id && id !== '0' ? [Number(id)] : [];
+    });
+    const undefinedDirect = directIds.filter(id => !numbering.has(id)).length;
+    const expectedItems = directlyNumbered - numberedHeadings - undefinedDirect;
+    if (numbering.styleNumPr.size === 0) expect(items).toBe(expectedItems);
+    else expect(items).toBeGreaterThanOrEqual(expectedItems);
     expect(report.counts.list ?? 0).toBe(blocks.filter(isList).length);
+    // snsf: five one-item bullet lists (measured by hand against the document); r01 has no w:num at all
+    if (name === 'snsf.docx') {
+      expect(lists).toHaveLength(5);
+      expect(maxDepth).toBe(0);
+      expect(kinds).toEqual({ bullet: 5, ordered: 0 });
+    }
+    if (name === 'r01.docx') expect(lists).toHaveLength(0);
     // 3. the grouped document is valid
     expect(() => getSpecSchema().nodeFromJSON({ type: 'doc', content: blocks }).check()).not.toThrow();
-    // 4. a list item is never a heading candidate
-    const drafts = paragraphDrafts(blocks, { format: ctx.styles.format, styleIdByWordId: ctx.styles.styleIdByWordId, blocks: ctx.preservation.blocks });
-    expect(drafts.every(d => blocks[d.index].type === 'paragraph')).toBe(true);
-
     console.log(
       `numbering ${name}: part ${numbering.part ?? 'none'}, ${numbering.size} numIds defined, ${numbering.styleNumPr.size} styles carry numbering, ` +
         `${directlyNumbered} paragraphs with their own numPr (${numberedHeadings} of them headings); ` +

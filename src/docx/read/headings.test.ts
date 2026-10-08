@@ -940,3 +940,78 @@ describe('report bookkeeping is idempotent', () => {
     expect(report.warnings.map(w => w.feature)).toEqual(['part']);
   });
 });
+
+describe('a title followed by a list (lists are grouped before headings are inferred)', () => {
+  const para = (text: string, bold = false): JSONContent => ({
+    type: 'paragraph', attrs: { styleId: null }, content: [{ type: 'text', text, ...(bold ? { marks: [{ type: 'bold' }] } : {}) }],
+  });
+  const body = () => para('Plain body text that goes on for a while and ends properly.');
+  const list = (items: string[], opts: { boldFirst?: boolean; ordered?: boolean } = {}): JSONContent => ({
+    type: opts.ordered ? 'orderedList' : 'bulletList',
+    content: items.map((t, i) => ({ type: 'listItem', content: [para(t, opts.boldFirst === true && i === 0)] })),
+  });
+  const BULLETS = ['Reduced relapse', 'Lower toxicity', 'A new target'];
+  const evidence = (c: HeadingCandidate | undefined) => (c?.evidence ?? []).join(' | ');
+
+  it('format path: a bold short title followed by a bullet list is detected, and the evidence says a list follows', () => {
+    const blocks = [para('Expected Outcomes', true), list(BULLETS)];
+    const found = detect(blocks);
+    const c = byText(found, 'Expected Outcomes');
+    expect(c).toMatchObject({ confidence: 'format', index: 0 });
+    expect(evidence(c)).toContain('followed by a list whose first item is not bold or larger');
+    expect(evidence(c)).not.toContain('body paragraph');
+  });
+
+  it('format path: a blank paragraph between the title and the list does not hide the list', () => {
+    expect(byText(detect([para('Potential Pitfalls', true), para(''), list(BULLETS)]), 'Potential Pitfalls')).toMatchObject({ confidence: 'format' });
+  });
+
+  it('format path: a numbered list leads too', () => {
+    expect(byText(detect([para('Milestones', true), list(BULLETS, { ordered: true })]), 'Milestones')).toBeDefined();
+  });
+
+  it('format path: a bold FIRST item means the list is not body text, so no title', () => {
+    expect(detect([para('Expected Outcomes', true), list(BULLETS, { boldFirst: true })])).toEqual([]);
+  });
+
+  it('format path: a table or figure between the title and the list still ends the search', () => {
+    expect(detect([para('Expected Outcomes', true), { type: 'table', content: [] } as JSONContent, list(BULLETS)])).toEqual([]);
+  });
+
+  it('aim path: "Aim 1: ..." followed by SHORT bullets is detected (the 8-word body minimum does not apply to a list)', () => {
+    const c = byText(detect([para('Aim 1: Define the mechanism'), list(BULLETS)]), 'Aim 1: Define the mechanism');
+    expect(c).toMatchObject({ confidence: 'aim', level: 2 });
+    expect(evidence(c)).toMatch(/followed by a list whose first item \(2 words\) is not bold or larger/);
+  });
+
+  it('aim path: the same short line as a PARAGRAPH still fails the 8-word minimum', () => {
+    expect(detect([para('Aim 1: Define the mechanism'), para('Too short here')])).toEqual([]);
+  });
+
+  it('aim path: a bold first bullet is refused', () => {
+    expect(detect([para('Aim 1: Define the mechanism'), list(BULLETS, { boldFirst: true })])).toEqual([]);
+  });
+
+  it('sibling path: a numbered-run member that the format path cannot take is completed when a list follows it', () => {
+    const section = (t: string) => [para(t, true), body()];
+    const LONG = 'A much longer title, with a comma, that fails the eight word format limit';
+    const blocks = [...section('2.1 First part'), ...section('2.2 Second part'), para(`2.3 ${LONG}`, true), list(BULLETS), ...section('2.4 Fourth part')];
+    const sib = detect(blocks).find(c => c.text.startsWith('2.3'));
+    expect(sib).toMatchObject({ confidence: 'sibling' });
+    expect(evidence(sib)).toContain('followed by a list whose first item is not bold or larger');
+    const boldFirst = [...section('2.1 First part'), ...section('2.2 Second part'), para(`2.3 ${LONG}`, true), list(BULLETS, { boldFirst: true }), ...section('2.4 Fourth part')];
+    expect(detect(boldFirst).some(c => c.text.startsWith('2.3'))).toBe(false);
+  });
+
+  it('the lead-in is lookahead only: it is never a draft of its own, so it is never proposed', () => {
+    const blocks = [para('Expected Outcomes', true), list(['Bold-looking line of text', 'second'])];
+    const drafts = paragraphDrafts(blocks);
+    expect(drafts.map(d => d.index)).toEqual([0]);
+    expect(drafts[0].leadsIntoList).toMatchObject({ index: 1, isListLead: true, text: 'Bold-looking line of text' });
+    expect(detect(blocks).map(c => c.index)).toEqual([0]);
+  });
+
+  it('a paragraph that is not directly followed by a list has no lead-in', () => {
+    expect(paragraphDrafts([para('Title', true), body(), list(BULLETS)])[0].leadsIntoList).toBeUndefined();
+  });
+});

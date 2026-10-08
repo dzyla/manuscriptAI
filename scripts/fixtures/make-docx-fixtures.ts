@@ -47,7 +47,7 @@
  *                   anchor), plus the shapes that must NOT be detected (bold lead-in sharing a paragraph with body text, a bold
  *                   sentence mid-paragraph, a 14-word bold line, a figure label, a bookmarked title, a title with a tracked insertion)
  *   lists.docx      word/numbering.xml with bullet, decimal, start=3, startOverride, upperRoman "(%1)" and ordinalText levels; two-level bullet
- *                   and numbered lists, a start-3 list, a list item with a second (continuation) paragraph, a numbered list interrupted by a
+ *                   and numbered lists, a start-3 list, a list item with a second (continuation) paragraph (indented, and one in the List Continue style), a numbered list interrupted by a
  *                   plain paragraph and resumed on the same numId, list-style (no direct numPr) items, a numbered Heading1, a missing numId,
  *                   numId 0, a bold list item that would read as a section title, items holding a page break / an equation, a skipped
  *                   level and a list that starts below its first level
@@ -217,11 +217,13 @@ const NUMBERING_LISTS = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:abstractNum w:abstractNumId="1"><w:multiLevelType w:val="hybridMultilevel"/>${lvl(0, 'decimal', '%1.', 720, '<w:pStyle w:val="ListNumber"/>')}${lvl(1, 'lowerLetter', '%2.', 1440)}${lvl(2, 'lowerRoman', '%3.', 2160)}</w:abstractNum>
 <w:abstractNum w:abstractNumId="2"><w:multiLevelType w:val="hybridMultilevel"/><w:lvl w:ilvl="0"><w:start w:val="3"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum>
 <w:abstractNum w:abstractNumId="3"><w:multiLevelType w:val="multilevel"/>${lvl(0, 'upperRoman', '(%1)', 720)}${lvl(1, 'ordinalText', '%1.%2', 1440)}</w:abstractNum>
+<w:abstractNum w:abstractNumId="4"><w:multiLevelType w:val="hybridMultilevel"/>${lvl(0, 'decimal', '%1.', 720)}</w:abstractNum>
+<w:abstractNum w:abstractNumId="5"><w:multiLevelType w:val="hybridMultilevel"/>${lvl(0, 'decimal', '%1.', 720)}</w:abstractNum>
 <w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
 <w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>
 <w:num w:numId="3"><w:abstractNumId w:val="2"/></w:num>
-<w:num w:numId="4"><w:abstractNumId w:val="1"/></w:num>
-<w:num w:numId="5"><w:abstractNumId w:val="1"/></w:num>
+<w:num w:numId="4"><w:abstractNumId w:val="4"/></w:num>
+<w:num w:numId="5"><w:abstractNumId w:val="5"/></w:num>
 <w:num w:numId="6"><w:abstractNumId w:val="3"/></w:num>
 <w:num w:numId="7"><w:abstractNumId w:val="1"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="5"/></w:lvlOverride></w:num>
 </w:numbering>`;
@@ -261,6 +263,7 @@ ${plain('Between lists three.')}
 ${li('Item with two paragraphs', 4, 0)}
 ${plain('Continuation of that item.', '<w:ind w:left="720"/>')}
 ${li('Next item', 4, 0)}
+<w:p><w:pPr><w:pStyle w:val="ListContinue"/></w:pPr>${run('Style continuation of that item.')}</w:p>
 ${plain('Between lists four.')}
 ${li('Resume one', 5, 0)}
 ${li('Resume two', 5, 0)}

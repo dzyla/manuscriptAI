@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
+import JSZip from 'jszip';
 import type { JSONContent } from '@tiptap/core';
 import { openPackage } from './package';
 import { readStyles } from './styles';
@@ -20,8 +21,10 @@ const load = (name: string): ArrayBuffer => {
 };
 
 /** Read every body paragraph, then group the list paragraphs the way a body reader will. */
-async function readLists(name: string) {
-  const pkg = await openPackage(load(name));
+const readLists = (name: string) => readListsFrom(load(name));
+
+async function readListsFrom(data: ArrayBuffer) {
+  const pkg = await openPackage(data);
   const report = createReport();
   let n = 0;
   const ctx: ReadContext = {
@@ -67,6 +70,49 @@ const topLevelBlock = (blocks: JSONContent[], needle: string): JSONContent => {
 };
 const blockIdOf = (n: JSONContent): string => (n.attrs!.ooxml as { blockId: string }).blockId;
 
+
+// ─── inline packages: one numbering definition set, a body written per test ─────────────────────────────────────
+
+const WNS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+const RNS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+const lvlXml = (ilvl: number, fmt: string, text: string, left: number | null, extra = '') =>
+  `<w:lvl w:ilvl="${ilvl}"><w:start w:val="1"/><w:numFmt w:val="${fmt}"/>${extra}<w:lvlText w:val="${text}"/>${left === null ? '' : `<w:pPr><w:ind w:left="${left}" w:hanging="360"/></w:pPr>`}</w:lvl>`;
+const INLINE_NUMBERING = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="${WNS}">
+<w:abstractNum w:abstractNumId="0">${lvlXml(0, 'bullet', '•', 720)}${lvlXml(1, 'bullet', 'o', 1440)}</w:abstractNum>
+<w:abstractNum w:abstractNumId="1">${lvlXml(0, 'decimal', '%1.', 720)}${lvlXml(1, 'lowerLetter', '%2.', 1440)}${lvlXml(2, 'lowerRoman', '%3.', 2160)}</w:abstractNum>
+<w:abstractNum w:abstractNumId="2">${lvlXml(0, 'decimal', '%1.', null)}</w:abstractNum>
+<w:abstractNum w:abstractNumId="3">${lvlXml(0, 'decimal', '%1.', 720)}${lvlXml(1, 'lowerLetter', '%2.', 1440, '<w:lvlRestart w:val="0"/>')}</w:abstractNum>
+<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
+<w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>
+<w:num w:numId="3"><w:abstractNumId w:val="1"/></w:num>
+<w:num w:numId="4"><w:abstractNumId w:val="1"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="1"/></w:lvlOverride></w:num>
+<w:num w:numId="5"><w:abstractNumId w:val="2"/></w:num>
+<w:num w:numId="6"><w:abstractNumId w:val="3"/></w:num>
+</w:numbering>`;
+const STYLES_INLINE = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="${WNS}"><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style></w:styles>`;
+const li = (text: string, numId: number, ilvl: number, bold = false) =>
+  `<w:p><w:pPr><w:numPr><w:ilvl w:val="${ilvl}"/><w:numId w:val="${numId}"/></w:numPr></w:pPr><w:r>${bold ? '<w:rPr><w:b/></w:rPr>' : ''}<w:t>${text}</w:t></w:r></w:p>`;
+const pl = (text: string, pPr = '') => `<w:p>${pPr ? `<w:pPr>${pPr}</w:pPr>` : ''}<w:r><w:t>${text}</w:t></w:r></w:p>`;
+
+async function inline(bodyXml: string, numberingXml: string | null = INLINE_NUMBERING): Promise<ArrayBuffer> {
+  const zip = new JSZip();
+  const ct = 'application/vnd.openxmlformats-officedocument.wordprocessingml';
+  zip.file('[Content_Types].xml', `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="${ct}.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="${ct}.styles+xml"/>${numberingXml ? `<Override PartName="/word/numbering.xml" ContentType="${ct}.numbering+xml"/>` : ''}</Types>`);
+  zip.file('_rels/.rels', `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${RNS}/officeDocument" Target="word/document.xml"/></Relationships>`);
+  zip.file('word/_rels/document.xml.rels', `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${RNS}/styles" Target="styles.xml"/>${numberingXml ? `<Relationship Id="rId2" Type="${RNS}/numbering" Target="numbering.xml"/>` : ''}</Relationships>`);
+  zip.file('word/document.xml', `<?xml version="1.0"?><w:document xmlns:w="${WNS}"><w:body>${bodyXml}</w:body></w:document>`);
+  zip.file('word/styles.xml', STYLES_INLINE);
+  if (numberingXml) zip.file('word/numbering.xml', numberingXml);
+  return zip.generateAsync({ type: 'arraybuffer' });
+}
+const readInline = async (bodyXml: string, numberingXml?: string | null) => readListsFrom(await inline(bodyXml, numberingXml));
+/** A compact picture of a list tree: "ol[a, b, ul[c]]" (items' first paragraph; nested lists inline). */
+const shape = (n: JSONContent): string =>
+  isList(n)
+    ? `${n.type === 'orderedList' ? 'ol' : 'ul'}[${(n.content ?? []).map(item => (item.content ?? []).map(c => (isList(c) ? shape(c) : textOf(c))).join(' ')).join(', ')}]`
+    : textOf(n);
+
 describe('readNumbering', async () => {
   const pkg = await openPackage(load('lists.docx'));
   const report = createReport();
@@ -74,6 +120,8 @@ describe('readNumbering', async () => {
 
   it('reads every w:num with the ordered flag, format and start of each level', () => {
     expect([...map.keys()].sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(map.get(7)!.hasOverride).toBe(true);
+    expect(map.get(2)!.hasOverride).toBe(false);
     expect(map.get(1)!.levels.get(0)).toMatchObject({ ordered: false, format: 'bullet', start: 1 });
     expect(map.get(1)!.levels.get(1)).toMatchObject({ ordered: false, format: 'bullet' });
     expect(map.get(2)!.levels.get(0)).toMatchObject({ ordered: true, format: 'decimal', start: 1 });
@@ -168,6 +216,12 @@ describe('lists.docx: grouping numbered paragraphs into lists', async () => {
     expect(itemText(items[1])).toBe('Next item');
   });
 
+  it('joins an unnumbered List Continue paragraph (no indent at all) to the item above it', () => {
+    const items = itemsOf(listWith(r.blocks, 'Item with two paragraphs'));
+    expect(items).toHaveLength(2);
+    expect(items[1].content!.map(textOf)).toEqual(['Next item', 'Style continuation of that item.']);
+  });
+
   it('splits a numbered list interrupted by a plain paragraph into two lists that keep their numbers', () => {
     const first = listWith(r.blocks, 'Resume one');
     const second = listWith(r.blocks, 'Resume three');
@@ -186,11 +240,6 @@ describe('lists.docx: grouping numbered paragraphs into lists', async () => {
   it('records the split as complexNumbering (category 2) with a warning', () => {
     expect(r.report.counts.complexNumbering).toBeGreaterThanOrEqual(1);
     expect(r.report.warnings.some(w => w.feature === 'complexNumbering' && w.category === 2 && /interrupted/i.test(w.message))).toBe(true);
-  });
-
-  it('does not call a bullet list reused after other text an approximation', () => {
-    // numId 1 (bullets) is used in four separate places; none of them is a resumed NUMBERED list
-    expect(r.report.warnings.filter(w => w.feature === 'complexNumbering' && /bullet/i.test(w.message))).toEqual([]);
   });
 
   it('records a format the model cannot express as complexNumbering and still chooses the closest list', () => {
@@ -294,6 +343,107 @@ describe('lists.docx: grouping numbered paragraphs into lists', async () => {
     expect(numbered.length).toBeGreaterThan(20);
     expect(r.numbering.part).toBe('word/numbering.xml');
     expect(r.pkg.entry('word/numbering.xml')).toContain('w:abstractNum');
+  });
+});
+
+describe('inline cases: continuation, nesting shapes and Word counting rules', () => {
+  const warn = (r: Awaited<ReturnType<typeof readInline>>, re: RegExp) => r.report.warnings.some(w => w.feature === 'complexNumbering' && re.test(w.message));
+
+  it('I1: a bullet list reused after body text adds no complexNumbering; a numbered one does, exactly once', async () => {
+    const bullets = await readInline(li('b1', 1, 0) + pl('body') + li('b2', 1, 0) + pl('body') + li('b3', 1, 0));
+    expect(bullets.blocks.map(shape)).toEqual(['ul[b1]', 'body', 'ul[b2]', 'body', 'ul[b3]']);
+    expect(bullets.report.counts.complexNumbering).toBeUndefined();
+    const numbered = await readInline(li('n1', 2, 0) + pl('body') + li('n2', 2, 0));
+    expect(numbered.blocks.map(shape)).toEqual(['ol[n1]', 'body', 'ol[n2]']);
+    expect(numbered.blocks[2].attrs!.start).toBe(2);
+    expect(numbered.report.counts.complexNumbering).toBe(1);
+    expect(warn(numbered, /interrupted/i)).toBe(true);
+  });
+
+  it('I2: a paragraph indented to a level that has no w:ind joins the item; one with no indent does not', async () => {
+    const r = await readInline(li('item', 5, 0) + pl('indented', '<w:ind w:left="360"/>') + li('next', 5, 0) + pl('flush') + li('after', 5, 0));
+    expect(r.blocks.map(shape)).toEqual(['ol[item indented, next]', 'flush', 'ol[after]']);
+  });
+
+  it('I2: a paragraph indented LESS than the item text does not join; one indented to it does', async () => {
+    const short = await readInline(li('item', 2, 0) + pl('shallow', '<w:ind w:left="360"/>'));
+    expect(short.blocks.map(shape)).toEqual(['ol[item]', 'shallow']);
+    const deep = await readInline(li('item', 2, 0) + pl('deep', '<w:ind w:left="720"/>') + pl('flush'));
+    expect(deep.blocks.map(shape)).toEqual(['ol[item deep]', 'flush']);
+  });
+
+  it('I2: a blank paragraph between two numbered items ends the list (and the second list keeps the number)', async () => {
+    const r = await readInline(li('one', 2, 0) + pl('') + li('two', 2, 0));
+    expect(r.blocks.map(shape)).toEqual(['ol[one]', '', 'ol[two]']);
+    expect(r.blocks[2].attrs!.start).toBe(2);
+    expect(r.report.warnings.find(w => /interrupted/i.test(w.message))!.message).toMatch(/blank paragraph/);
+  });
+
+  it('I3: 0 -> 0 -> 2 -> 1 -> 0 puts a second sibling list in the same listItem as the item above it', async () => {
+    const r = await readInline(li('a', 1, 0) + li('b', 1, 0) + li('x', 1, 2) + li('c', 1, 1) + li('d', 1, 0));
+    expect(r.blocks.map(shape)).toEqual(['ul[a, b ul[x] ul[c], d]']);
+    expect(warn(r, /skips a level/)).toBe(true);
+  });
+
+  it('I3: interleaved numIds at one level make separate adjacent lists', async () => {
+    const r = await readInline(li('p', 1, 0) + li('q', 2, 0) + li('r', 1, 0));
+    expect(r.blocks.map(shape)).toEqual(['ul[p]', 'ol[q]', 'ul[r]']);
+    expect(r.blocks.map(b => b.attrs?.wordNumId)).toEqual([1, 2, 1]);
+  });
+
+  it('I3: a bullet list nested in a numbered list keeps its own type and numId, and the numbered list carries on after it', async () => {
+    const r = await readInline(li('o1', 2, 0) + li('b1', 1, 1) + li('b2', 1, 1) + li('o2', 2, 0));
+    expect(r.blocks.map(shape)).toEqual(['ol[o1 ul[b1, b2], o2]']);
+    const inner = nestedLists(itemsOf(r.blocks[0])[0])[0];
+    expect(inner.type).toBe('bulletList');
+    expect(inner.attrs?.wordNumId).toBe(1);
+    expect(r.blocks[0].attrs?.start).toBe(1);
+    expect(r.report.counts.complexNumbering).toBeUndefined();
+  });
+
+  it('I3: a list that ends the document is closed and complete', async () => {
+    const r = await readInline(pl('lead') + li('x', 2, 0) + li('y', 2, 1));
+    expect(r.blocks.map(shape)).toEqual(['lead', 'ol[x ol[y]]']);
+    expect(all(r.blocks, n => n.type === 'paragraph')).toHaveLength(3);
+  });
+
+  it('I3: a first item at ilvl 2 followed by shallower items gives three top-level lists in order', async () => {
+    const r = await readInline(li('x', 2, 2) + li('y', 2, 1) + li('z', 2, 0));
+    expect(r.blocks.map(shape)).toEqual(['ol[x]', 'ol[y]', 'ol[z]']);
+    expect(r.blocks[0].attrs).toMatchObject({ type: 'i', start: 1 });
+    expect(warn(r, /begins below/)).toBe(true);
+    expect(all(r.blocks, n => n.type === 'paragraph').map(textOf)).toEqual(['x', 'y', 'z']);
+  });
+
+  it('I4: a second w:num on the same abstractNum continues the count, as Word does', async () => {
+    const r = await readInline(li('a', 2, 0) + li('b', 2, 0) + pl('body') + li('c', 3, 0));
+    expect(r.blocks.map(shape)).toEqual(['ol[a, b]', 'body', 'ol[c]']);
+    expect(r.blocks[2].attrs).toMatchObject({ start: 3, wordNumId: 3 });
+    expect(warn(r, /continues earlier numbering/)).toBe(true);
+  });
+
+  it('I4: adjacent lists on different numIds that share an abstractNum also continue', async () => {
+    const r = await readInline(li('a', 2, 0) + li('b', 3, 0));
+    expect(r.blocks.map(shape)).toEqual(['ol[a]', 'ol[b]']);
+    expect(r.blocks[1].attrs!.start).toBe(2);
+  });
+
+  it('I4: a w:num with a lvlOverride counts on its own, from its startOverride', async () => {
+    const r = await readInline(li('a', 2, 0) + li('b', 2, 0) + pl('body') + li('fresh', 4, 0));
+    expect(r.blocks[2].attrs).toMatchObject({ start: 1, wordNumId: 4 });
+    expect(r.report.counts.complexNumbering).toBeUndefined(); // a fresh count: nothing is continued, so nothing is approximated
+  });
+
+  it('I4: w:lvlRestart on a numbered level is reported, not silently ignored', async () => {
+    const r = await readInline(li('one', 6, 0) + li('sub', 6, 1));
+    expect(warn(r, /lvlRestart/)).toBe(true);
+    expect(r.report.counts.complexNumbering).toBe(1);
+  });
+
+  it('records a level approximation once per list, not once per item', async () => {
+    const odd = INLINE_NUMBERING.replace("w:val=\"lowerLetter\"/><w:lvlText w:val=\"%2.\"", "w:val=\"ordinalText\"/><w:lvlText w:val=\"%2.\"");
+    const r = await readInline(li('p', 2, 0) + li('q', 2, 1) + li('r', 2, 1) + li('s', 2, 1), odd);
+    expect(r.report.counts.complexNumbering).toBe(1);
   });
 });
 

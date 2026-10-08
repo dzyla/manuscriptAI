@@ -168,6 +168,14 @@ export interface ParagraphDraft {
   atoms: string[];
   /** A line break, or a page break that follows text: the paragraph is more than one line. */
   multiline: boolean;
+  /**
+   * Set when the very next top-level block is a bullet or numbered list: the draft of that list's first paragraph (positioned
+   * at the list, `index + 1`). Only a lookahead for the heading detector ("a title followed by a list is followed by body
+   * text"): it is never one of the drafts `paragraphDrafts` returns, so it can never be proposed as a heading itself.
+   */
+  leadsIntoList?: ParagraphDraft;
+  /** True on a draft that stands for the start of a list (a `leadsIntoList` value), not for a paragraph of its own. */
+  isListLead?: true;
 }
 
 const COMMENT_ANCHOR = 'comment anchor';
@@ -296,7 +304,12 @@ function draftOf(node: JSONContent, index: number, source: DraftSource = {}): Pa
 export function paragraphDrafts(blocks: JSONContent[], source: DraftSource = {}): ParagraphDraft[] {
   const out: ParagraphDraft[] = [];
   blocks.forEach((b, i) => {
-    if (b.type === 'paragraph') out.push(draftOf(b, i, source));
+    if (b.type !== 'paragraph') return;
+    const draft = draftOf(b, i, source);
+    const next = blocks[i + 1];
+    const first = next && (next.type === 'bulletList' || next.type === 'orderedList') ? next.content?.[0]?.content?.[0] : undefined;
+    if (first?.type === 'paragraph') draft.leadsIntoList = { ...draftOf(first, i + 1, source), isListLead: true };
+    out.push(draft);
   });
   return out;
 }
