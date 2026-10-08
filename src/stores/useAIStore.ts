@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { db } from '../db/manuscriptDb';
+import { inlineAssetImages } from '../db/assetStore';
 import type { AISettings, Suggestion, Message, HistoryItem } from '../types';
 import * as secureStorage from '../services/secureStorage';
 import { DEFAULT_MODELS } from '../services/models';
@@ -180,7 +181,20 @@ export const useAIStore = create<AIState>((set, get) => ({
 
   persistHistory: async () => {
     const { history } = get();
+    // History snapshots are editor HTML: after a reload their images are session blob: URLs that die
+    // with the tab. Persist self-contained copies (data: URLs) so "revert" works in a later session.
+    const replaced = new Map<HistoryItem, HistoryItem>();
+    const stored = await Promise.all(history.map(async h => {
+      const [oldContent, newContent] = await Promise.all([inlineAssetImages(h.oldContent), inlineAssetImages(h.newContent)]);
+      if (oldContent === h.oldContent && newContent === h.newContent) return h;
+      const next = { ...h, oldContent, newContent };
+      replaced.set(h, next);
+      return next;
+    }));
+    // Keep the inlined copies in memory too, so each item is converted once (identity check skips
+    // items that were replaced or removed meanwhile).
+    if (replaced.size) set(s => ({ history: s.history.map(h => replaced.get(h) ?? h) }));
     await db.historyItems.clear();
-    if (history.length > 0) await db.historyItems.bulkPut(history);
+    if (stored.length > 0) await db.historyItems.bulkPut(stored);
   },
 }));

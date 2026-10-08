@@ -22,6 +22,7 @@ import { useDocumentStore } from './stores/useDocumentStore';
 import { useAIStore } from './stores/useAIStore';
 import { useSourceStore } from './stores/useSourceStore';
 import { db } from './db/manuscriptDb';
+import { inlineAssetImages, bytesToDataUrl, defaultFetchBytes } from './db/assetStore';
 import { migrateLegacyCitations } from './utils/migrateCitations';
 import { prefetchImages, walkNode } from './services/astExport';
 import { DocxRenderer, Packer } from './services/docxExport';
@@ -50,6 +51,7 @@ export default function App() {
     resetDocument, persist: persistDocument, initialize: initDocument,
     mode, grantInstructions, grantTemplateId,
     setMode, setGrantInstructions, setGrantTemplateId,
+    loadStatus, blockedByUnreadable, lastLoad, allowOverwrite,
   } = useDocumentStore();
 
   const {
@@ -183,6 +185,7 @@ export default function App() {
     setMode('grant');
     setGrantTemplateId(template.id);
     setShowTemplatePicker(false);
+    allowOverwrite(); // explicit user replacement of the document
     persistDocument();
     showToast(`${template.mechanism} template applied — fill in each section`, 'success');
   };
@@ -245,10 +248,11 @@ export default function App() {
   useEffect(() => {
     Promise.all([initDocument(), initAI(), initSources()]).then(() => {
       const { lastLoad } = useDocumentStore.getState();
+      // Failed loads and unreadable rows get a persistent banner (rendered from store state below).
       if (lastLoad.recoveredFromBackup) {
-        showToast('Your last save could not be read. Restored the most recent backup.', 'error');
-      } else if (lastLoad.unreadableRowPresent) {
-        showToast('Your saved document could not be opened (it may come from a newer version of the app). A protected copy was kept; you are seeing a blank document.', 'error');
+        showToast(lastLoad.quarantined
+          ? 'Your last save could not be read. Restored the most recent backup; a protected copy of the unreadable save was kept.'
+          : 'Your last save could not be read. Restored the most recent backup. The unreadable save could not be protected and may be replaced by later saves.', 'error');
       }
       // After loading, apply citation migration to content if needed
       const { content: loadedContent, citationRegistry: reg } = useDocumentStore.getState();
@@ -273,13 +277,16 @@ export default function App() {
   // Auto-save every 30s to Dexie (granular — only changed tables are written)
   useEffect(() => {
     const interval = setInterval(async () => {
+      // Never autosave before the stored document has loaded (or after loading it failed):
+      // the in-memory defaults would overwrite the user's real data.
+      if (useDocumentStore.getState().loadStatus !== 'ready') return;
       try {
-        await persistDocument();
+        const docSaved = await persistDocument();
         await persistSuggestions();
         await persistMessages();
         await persistHistory();
         await persistSources();
-        if (saveState === 'Draft') setSaveState('Auto-saved');
+        if (docSaved && saveState === 'Draft') setSaveState('Auto-saved');
       } catch (e) {
         showToast('Auto-save failed. Use "Save Workspace" to download a backup file.', 'error');
       }
@@ -328,8 +335,8 @@ export default function App() {
     clearSources();
     setClearSourcesTrigger(n => n + 1);
 
-    // Clear Dexie tables
-    await db.documents.delete('current');
+    // Clear Dexie tables. The document row is not deleted directly: it is replaced through the
+    // repository below, so the previous document lands in the backup ring instead of vanishing.
     await db.sources.clear();
     await db.suggestions.clear();
     await db.chatHistory.clear();
@@ -338,6 +345,7 @@ export default function App() {
     // Set new content after reset
     setContent(newContent);
     editorRef.current?.setContent(newContent);
+    await persistDocument().catch(err => console.error('Saving the new manuscript failed', err));
 
     showToast('New manuscript created', 'success');
   };
@@ -556,8 +564,20 @@ export default function App() {
     }
   };
 
-  const handleAnalyzeImage = (dataUrl: string, prompt: string, contextText?: string) => {
-    const match = dataUrl.match(/^data:(image\/[a-z]+);base64,(.+)$/);
+  const handleAnalyzeImage = async (src: string, prompt: string, contextText?: string) => {
+    // Images loaded from storage are session blob: URLs; the LLM needs inline base64.
+    let dataUrl = src;
+    if (src.startsWith('blob:')) {
+      try {
+        const { mime, data } = await defaultFetchBytes(src);
+        dataUrl = bytesToDataUrl(mime, data);
+      } catch (err) {
+        console.error('Could not read image for analysis', err);
+        showToast('Could not read this image for analysis', 'error');
+        return;
+      }
+    }
+    const match = dataUrl.match(/^data:(image\/[a-z+.-]+);base64,(.+)$/);
     if (!match) return;
     const rawMime = match[1];
     const allowed: AttachedImage['mimeType'][] = ['image/jpeg', 'image/png', 'image/webp'];
@@ -788,8 +808,11 @@ export default function App() {
     if (item) {
       const handledByEditor = editorRef.current?.revertSuggestion(item.originalText, item.suggestedText);
       if (!handledByEditor) {
-        setContent(item.oldContent);
-        editorRef.current?.setContent(item.oldContent);
+        // Inline asset images first: an item from an earlier session may reference dead blob: URLs.
+        void inlineAssetImages(item.oldContent).then(html => {
+          setContent(html);
+          editorRef.current?.setContent(html);
+        });
       }
       removeHistoryItem(historyId);
       showToast('Change reverted', 'info');
@@ -968,7 +991,8 @@ export default function App() {
     const currentContent = editorRef.current?.getHTML() || content;
     if (format === 'md') {
       const turndownService = new TurndownService();
-      const markdown = turndownService.turndown(currentContent);
+      // Session blob: image URLs would be dead links in the exported file: inline the bytes.
+      const markdown = turndownService.turndown(await inlineAssetImages(currentContent));
       saveAs(new Blob([markdown], { type: 'text/markdown;charset=utf-8' }), `${title.replace(/\s+/g, '_')}.md`);
     } else if (format === 'docx') {
       showToast('Exporting Word document...', 'info');
@@ -1003,7 +1027,14 @@ export default function App() {
       const exportedSources = useSourceStore.getState().sources;
       // Strip API keys before export — never serialize credentials into a shareable file
       const { geminiApiKey: _g, openaiApiKey: _o, anthropicApiKey: _a, localApiKey: _l, ...safeSettings } = aiSettings;
-      const workspace = { title, content: currentContent, suggestions, history, messages, aiSettings: safeSettings, sources: exportedSources };
+      // The file must be self-contained: inline asset-backed images (session blob: URLs die with the tab).
+      const exportedContent = await inlineAssetImages(currentContent);
+      const exportedHistory = await Promise.all(history.map(async h => ({
+        ...h,
+        oldContent: await inlineAssetImages(h.oldContent),
+        newContent: await inlineAssetImages(h.newContent),
+      })));
+      const workspace = { title, content: exportedContent, suggestions, history: exportedHistory, messages, aiSettings: safeSettings, sources: exportedSources };
       saveAs(new Blob([JSON.stringify(workspace, null, 2)], { type: 'application/json' }), 'workspace.json');
       setSaveState('Saved');
     }
@@ -1043,7 +1074,8 @@ export default function App() {
           }
           setSaveState('Saved');
           editorRef.current?.setContent(loadedContent);
-          // Persist to Dexie
+          // Persist to Dexie (loading a workspace is an explicit replacement of the document)
+          allowOverwrite();
           await persistDocument();
           showToast('Workspace loaded', 'success');
         }
@@ -1061,10 +1093,12 @@ export default function App() {
     setTimeout(() => setHighlightedSuggestionId(null), 1500);
   };
 
-  const handleRestoreSnapshot = (snapshot: VersionSnapshot) => {
+  const handleRestoreSnapshot = async (snapshot: VersionSnapshot) => {
+    // Snapshots are stored self-contained; older ones may still reference asset ids / blob: URLs.
+    const html = await inlineAssetImages(snapshot.content);
     setTitle(snapshot.title);
-    setContent(snapshot.content);
-    editorRef.current?.setContent(snapshot.content);
+    setContent(html);
+    editorRef.current?.setContent(html);
     showToast(`Restored snapshot: "${snapshot.name}"`, 'success');
     setSidebarTab('chat');
   };
@@ -1457,6 +1491,15 @@ export default function App() {
         manuscriptText={stripHtml(content)}
         aiSettings={aiSettings}
       />
+
+      {/* Persistent storage warnings (never auto-dismissed) */}
+      {(loadStatus === 'failed' || blockedByUnreadable) && (
+        <div role="alert" className="fixed top-3 left-1/2 -translate-x-1/2 z-[210] px-4 py-2.5 rounded-xl text-xs font-medium shadow-lg border bg-rose-50 text-rose-700 border-rose-200 max-w-lg">
+          ✕ {loadStatus === 'failed'
+            ? 'Your document could not be loaded. Changes will not be saved until you reload.'
+            : `Your saved document could not be opened (it may come from a newer version of the app). ${lastLoad.quarantined ? 'A protected copy was kept.' : 'A protected copy could NOT be made; the original is left untouched.'} You are seeing a blank document; changes will not be saved until you start a New Manuscript, apply a template or load a workspace file.`}
+        </div>
+      )}
 
       {/* Toast */}
       {toast && (
