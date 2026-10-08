@@ -153,6 +153,10 @@ function describeImport(name: string, dir: 'fixtures' | 'private', want: Expect)
       expect((await db.assets.toArray()).map(a => a.id).sort()).toEqual(before);
       const again = await createDexieRepository(db, { htmlToDoc, isValidDoc, resolver }).load();
       for (const id of collectAssetIds(again.doc!.docJson)) expect(await db.assets.get(id), id).toBeDefined();
+      // the preserved XML the writer needs is still all there after those saves (the saves prune fragments nothing refers to)
+      const pres = (await db.preservationStores.get('current'))!.store;
+      expect(pres).toEqual(r.result.preservation);
+      for (const id of collectFragmentIds(again.doc!.docJson)) expect(pres.fragments[id], id).toBeDefined();
     });
   });
 }

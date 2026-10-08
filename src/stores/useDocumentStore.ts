@@ -325,6 +325,8 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
 
   importDocx: async (result, decisions) => {
     if (importInFlight) throw new Error('Another import is already in progress.');
+    // While the stored document is still being read, the import and the load would race to set the store: the load can finish second.
+    if (get().loadStatus === 'loading') throw new Error('The stored document is still loading. Try again in a moment.');
     importInFlight = true;
     try {
       const s = get();

@@ -1108,7 +1108,9 @@ export default function App() {
     // Choosing the same file again must fire onChange again.
     if (fileInputRef.current) fileInputRef.current.value = '';
     const lowerName = file.name.toLowerCase();
-    if (lowerName.endsWith('.docx')) { void docxImport.start(file); return; }
+    // .docm / .dotm go to the reader too, which refuses them with the reason; the old binary .doc cannot be read at all.
+    if (/\.(docx|docm|dotx|dotm)$/.test(lowerName)) { void docxImport.start(file); return; }
+    if (lowerName.endsWith('.doc')) { showToast('The old Word format (.doc) cannot be imported. In Word, use Save As and choose .docx, then import that.', 'error'); return; }
     if (lowerName.endsWith('.md') || lowerName.endsWith('.txt')) { void handleImportText(file); return; }
     const reader = new FileReader();
     reader.onload = async (e) => {

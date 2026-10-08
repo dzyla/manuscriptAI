@@ -251,6 +251,17 @@ describe('useDocumentStore.importDocx', () => {
     expect((await db.documents.get('current'))?.title).toBe('first');
   });
 
+  it('does not run while the stored document is still loading (the load could finish second and replace the import)', async () => {
+    const r = await readDocx(loadDocx('body-basics.docx'), undefined, 'body-basics.docx');
+    useDocumentStore.setState({ loadStatus: 'loading' });
+    await expect(useDocumentStore.getState().importDocx(r, { title: 'x', acceptedHeadings: [] })).rejects.toThrow(/still loading/);
+    expect(await db.documents.count()).toBe(0);
+    // and the refusal did not leave the in-flight flag set
+    useDocumentStore.setState({ loadStatus: 'ready' });
+    await useDocumentStore.getState().importDocx(r, { title: 'x', acceptedHeadings: [] });
+    expect((await db.documents.get('current'))?.title).toBe('x');
+  });
+
   it('a failed import leaves the document in the store and on disk as it was', async () => {
     await useDocumentStore.getState().initialize();
     useDocumentStore.getState().setDocJson(htmlToDoc('<p>mine</p>'));
