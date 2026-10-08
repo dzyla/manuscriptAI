@@ -78,7 +78,10 @@ export function StylePanel({ metrics, onJumpToSentence, onRewrite, highlightsOn,
         </div>
         <div className="mt-1 text-[10px] opacity-80">
           Measures writing style, not authorship.
-          {isGeneric && ' Using a generic human baseline until you add your own samples.'}
+          {isGeneric && ' Using a typical-writing baseline until you add your own samples.'}
+        </div>
+        <div data-testid="style-discount-note" className="mt-1 text-[10px] opacity-80">
+          Some patterns count for less because no measurement backs their scale, so check the rows below.
         </div>
       </div>
 

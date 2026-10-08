@@ -57,7 +57,7 @@ export function VoiceProfileManager({ onBuilt }: { onBuilt?: (name: string) => v
       ) : (
         <div className="flex items-center justify-between gap-2">
           <div style={{ color: 'var(--text-secondary)' }}>
-            Comparing against a generic human baseline. Add your own writing for a profile that matches your voice.
+            Comparing against a typical-writing baseline. Add your own writing for a profile that matches your voice.
           </div>
           <button
             className="shrink-0 rounded-lg bg-stone-800 px-2.5 py-1 text-[11px] font-semibold text-white"

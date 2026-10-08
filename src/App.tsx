@@ -11,7 +11,8 @@ import { analyzeText, chatWithAgent, chatWithManuscript, resolveConflicts, runJu
 import { detectorSuggestions } from './services/detectors';
 import { buildReviewNote } from './utils/reviewNotes';
 import { findTextSpan } from './utils/textMatch';
-import { auditText, worstSentences } from './services/proseAudit/metrics';
+import { auditText } from './services/proseAudit/metrics';
+import { sentencesToDraw, auditMatchesDoc } from './components/style/styleSync';
 import { setDocumentContext, trimSectionToLimit, type AgentTool } from './services/ai';
 import { GrantTemplatePicker, GrantInstructionsModal, GrantToolbar } from './components/GrantPanel';
 import { loadCustomTemplates, getGrantTemplate, WORDS_PER_PAGE, type GrantTemplate } from './services/grantTemplates';
@@ -93,7 +94,7 @@ export default function App() {
   // Style audit (sub-project H). `text` is the exact editor text the metrics were computed from, so
   // sentence offsets are only ever applied to a document that still matches (see styleSentences below).
   const [styleAudit, setStyleAudit] = useState<{ metrics: AuditMetrics; text: string } | null>(null);
-  const [showStyleHighlights, setShowStyleHighlights] = useState(false);
+  const [drawStyleHighlights, setDrawStyleHighlights] = useState(false);
   const [rewritingId] = useState<string | null>(null); // set by the rewrite wiring (next task)
   const [sidebarWidth, setSidebarWidth] = useState(400);
   const [zoom, setZoom] = useState(100);
@@ -260,7 +261,7 @@ export default function App() {
   // ─── Style audit wiring (sub-project H) ────────────────────────────────────
   // The editor only audits (and reports) while its style plugin is enabled, so the plugin is on whenever
   // the Style tab is open or highlights are shown. Highlights themselves are drawn only when the user opts in.
-  const styleAuditOn = sidebarTab === 'style' || showStyleHighlights;
+  const styleAuditOn = sidebarTab === 'style' || drawStyleHighlights;
 
   // The plugin reports on edits only; run one audit when metrics are switched on so the panel is
   // populated immediately instead of after the first keystroke.
@@ -280,15 +281,12 @@ export default function App() {
   // the audit, offsets would be drawn in the wrong place, so they are withheld; the editor's debounce has
   // already queued a fresh report for that edit, which replaces them.
   const styleSentences = useMemo(
-    () =>
-      showStyleHighlights && styleAudit && editorRef.current?.getPlainText() === styleAudit.text
-        ? worstSentences(styleAudit.metrics, 12)
-        : [],
-    [showStyleHighlights, styleAudit],
+    () => sentencesToDraw(styleAudit, editorRef.current?.getPlainText(), drawStyleHighlights),
+    [drawStyleHighlights, styleAudit],
   );
 
   const handleStyleJump = useCallback((s: SentenceAudit) => {
-    if (!styleAudit || editorRef.current?.getPlainText() !== styleAudit.text || !editorRef.current.selectFlatRange(s.start, s.end)) {
+    if (!auditMatchesDoc(styleAudit, editorRef.current?.getPlainText()) || !editorRef.current?.selectFlatRange(s.start, s.end)) {
       showToast('The document changed since this sentence was measured. The panel is refreshing.', 'info');
     }
   }, [styleAudit, showToast]);
@@ -1464,7 +1462,7 @@ export default function App() {
             onAnalyzeImage={handleAnalyzeImage}
             onInsertFigure={handleInsertFigure}
             styleSentences={styleSentences}
-            showStyleHighlights={styleAuditOn}
+            styleAuditEnabled={styleAuditOn}
             onStyleAudit={handleStyleAudit}
           />
         </main>
@@ -1518,8 +1516,8 @@ export default function App() {
               metrics: styleAudit?.metrics ?? null,
               onJumpToSentence: handleStyleJump,
               onRewrite: handleStyleRewrite,
-              highlightsOn: showStyleHighlights,
-              onToggleHighlights: setShowStyleHighlights,
+              highlightsOn: drawStyleHighlights,
+              onToggleHighlights: setDrawStyleHighlights,
               rewritingId,
             }}
             onAgentChange={setCurrentAgent}

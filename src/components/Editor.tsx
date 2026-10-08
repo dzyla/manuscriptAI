@@ -21,7 +21,8 @@ import { StyleHighlights, replaceRangeWithText } from '../extensions/StyleHighli
 import { NodeSelection } from 'prosemirror-state';
 import { expandCitationNums, fetchCrossrefDoi, looksLikeDoi, normalizeDoi } from '../services/citations';
 import { useSourceStore } from '../stores/useSourceStore';
-import { findTextPositionRobust, flattenDoc, flatSpanToPm } from '../utils/textMatch';
+import { findTextPositionRobust, flattenDoc } from '../utils/textMatch';
+import { flatRangeToPm } from './style/styleSync';
 
 interface EditorProps {
   content: string;
@@ -50,7 +51,7 @@ interface EditorProps {
   showPageGuides?: boolean;
   /** flagged sentences to tint (sub-project H); empty disables highlighting */
   styleSentences?: SentenceAudit[];
-  showStyleHighlights?: boolean;
+  styleAuditEnabled?: boolean;
   onStyleAudit?: (metrics: AuditMetrics) => void;
 }
 
@@ -131,7 +132,7 @@ const BUBBLE_ACTIONS: { label: string; instruction: string; agent: AgentType; ic
   },
 ];
 
-const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocChange, suggestions, onSuggestionClick, onSelectionQuery, onTransformSelection, onRewriteSection, onAnalyzeSection, onVerifyClaim, onSearchSimilar, sources, citationRegistry, onInsertCitation, isDistractionFree, editorZoom = 100, editorWidth = 'normal', aiSettings, onAnalyzeImage, onInsertFigure, showPageGuides = false, styleSentences, showStyleHighlights, onStyleAudit }, ref) => {
+const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocChange, suggestions, onSuggestionClick, onSelectionQuery, onTransformSelection, onRewriteSection, onAnalyzeSection, onVerifyClaim, onSearchSimilar, sources, citationRegistry, onInsertCitation, isDistractionFree, editorZoom = 100, editorWidth = 'normal', aiSettings, onAnalyzeImage, onInsertFigure, showPageGuides = false, styleSentences, styleAuditEnabled, onStyleAudit }, ref) => {
   const [isMounted, setIsMounted] = useState(false);
 
   // ── Page guides: dashed page-break lines at NIH-format intervals ──────────
@@ -204,7 +205,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
   useEffect(() => { autocompleteEnabledRef.current = autocompleteEnabled; }, [autocompleteEnabled]);
 
   const styleSentencesRef = useRef<SentenceAudit[]>(styleSentences ?? []);
-  const showStyleHighlightsRef = useRef(!!showStyleHighlights);
+  const styleAuditEnabledRef = useRef(!!styleAuditEnabled);
   const onStyleAuditRef = useRef(onStyleAudit);
 
   const editor = useEditor({
@@ -222,7 +223,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
         onLoadingChange: setAutocompleteLoading,
       }),
       StyleHighlights.configure({
-        getEnabled: () => showStyleHighlightsRef.current,
+        getEnabled: () => styleAuditEnabledRef.current,
         getSentences: () => styleSentencesRef.current,
         onReport: (m) => onStyleAuditRef.current?.(m),
       }),
@@ -265,7 +266,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
   });
 
   useEffect(() => { styleSentencesRef.current = styleSentences ?? []; editor?.commands.refreshStyleAudit(); }, [styleSentences, editor]);
-  useEffect(() => { showStyleHighlightsRef.current = !!showStyleHighlights; editor?.commands.refreshStyleAudit(); }, [showStyleHighlights, editor]);
+  useEffect(() => { styleAuditEnabledRef.current = !!styleAuditEnabled; editor?.commands.refreshStyleAudit(); }, [styleAuditEnabled, editor]);
   useEffect(() => { onStyleAuditRef.current = onStyleAudit; }, [onStyleAudit]);
 
   // Handle clicks on highlight marks: find suggestion by ProseMirror position (TipTap Highlight
@@ -698,9 +699,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
     replaceRange: (from: number, to: number, text: string) => (editor ? replaceRangeWithText(editor, from, to, text) : false),
     selectFlatRange: (start: number, end: number) => {
       if (!editor) return false;
-      const flat = flattenDoc(editor.state.doc);
-      if (start < 0 || end > flat.text.length || end <= start) return false;
-      const span = flatSpanToPm(flat, start, end);
+      const span = flatRangeToPm(editor.state.doc, start, end);
       if (!span) return false;
       editor.chain().focus().setTextSelection({ from: span.from, to: span.to }).scrollIntoView().run();
       return true;

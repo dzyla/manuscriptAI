@@ -4,7 +4,8 @@ import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { StylePanel } from './StylePanel';
 import { styleRows } from './styleRows';
 import { auditText } from '../../services/proseAudit/metrics';
-import { GENERIC_HUMAN_SUMMARY } from '../../services/proseAudit/profile';
+import { GENERIC_HUMAN_SUMMARY, buildProfile } from '../../services/proseAudit/profile';
+import { useAIStore } from '../../stores/useAIStore';
 
 afterEach(cleanup);
 
@@ -58,8 +59,34 @@ describe('StylePanel rows', () => {
     expect(props.onToggleHighlights).toHaveBeenCalledWith(true);
   });
 
-  it('never claims to detect authorship anywhere in the rendered output', () => {
+  const CLAIM = /\bAI\b|probab|detect|written by|generated|human|machine/i;
+  const text = (c: HTMLElement) => c.textContent ?? '';
+
+  it('never claims to detect authorship in the populated render', () => {
     const { container } = render(<StylePanel {...props} />);
-    expect(container.textContent).not.toMatch(/\bAI\b|probab|detect|written by|generated/i);
+    expect(text(container)).not.toMatch(CLAIM);
+  });
+
+  it('never claims to detect authorship in the empty state', () => {
+    const { container } = render(<StylePanel {...props} metrics={null} />);
+    expect(text(container)).not.toMatch(CLAIM);
+  });
+
+  it('never claims to detect authorship with a voice profile present', () => {
+    const sentence = 'We purified the complex by gel filtration and measured binding at three pH values. ';
+    const { profile } = buildProfile('Mine', [sentence.repeat(160)]);
+    useAIStore.setState(st => ({ aiSettings: { ...st.aiSettings, voiceProfile: profile } }));
+    try {
+      const { container } = render(<StylePanel {...props} />);
+      expect(text(container)).toMatch(/Mine/);
+      expect(text(container)).not.toMatch(CLAIM);
+    } finally {
+      useAIStore.setState(st => ({ aiSettings: { ...st.aiSettings, voiceProfile: undefined } }));
+    }
+  });
+
+  it('tells the reader that some patterns are down-weighted', () => {
+    render(<StylePanel {...props} />);
+    expect(screen.getByTestId('style-discount-note').textContent).toMatch(/count for less/i);
   });
 });
