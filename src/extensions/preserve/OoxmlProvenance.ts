@@ -31,8 +31,10 @@ export const OoxmlProvenance = Extension.create({
         attributes: {
           ooxml: {
             default: null,
-            // Splitting a block must not give the new half the original's provenance:
-            // it would otherwise claim to be an untouched copy of the source block.
+            // keepOnSplit:false only affects the *new* block created at the end of a block. A mid-block
+            // (or start-of-block) split copies the attrs to both halves, so it does NOT on its own prevent
+            // two blocks from carrying the same ooxml provenance. Uniqueness is enforced by
+            // OpaqueFragmentGuard, which clears duplicated provenance in an appendTransaction.
             keepOnSplit: false,
             parseHTML: (el: HTMLElement) => parseProvenance(el.getAttribute('data-ooxml')),
             renderHTML: (attrs: Record<string, unknown>) =>
