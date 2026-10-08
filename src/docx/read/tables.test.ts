@@ -28,7 +28,7 @@ const load = (name: string): ArrayBuffer => {
  * What the body reader (Task 9) will do with the block stream: paragraphs, tables, anything else opaque, then the list grouping.
  * Numbering comes from `getNumbering(ctx)`, as the body reader will get it.
  */
-async function readDocument(data: ArrayBuffer) {
+async function readDocument(data: ArrayBuffer, preservation = emptyPreservationStore()) {
   const pkg = await openPackage(data);
   const report = createReport();
   let n = 0;
@@ -36,7 +36,7 @@ async function readDocument(data: ArrayBuffer) {
     pkg,
     styles: readStyles(pkg, report),
     report,
-    preservation: emptyPreservationStore(),
+    preservation,
     assets: [],
     nextId: () => `b${++n}`,
   };
@@ -795,7 +795,7 @@ describe('tables: structureHash separates "the table was edited" from "the table
     expect(isBlockUntouched(edited)).toBe(false);
     expect(blockHash(edited)).not.toBe(prov(table).sourceHash);
     expect(structureHash(edited)).toBe(prov(table).structureHash);
-    // the edited paragraph is no longer untouched, the others still are: the writer patches only that one into the original <w:tbl>
+    // the edited paragraph is no longer untouched, the others still are
     const untouched = all([edited], n => n.type === 'paragraph').filter(isBlockUntouched);
     expect(untouched).toHaveLength(all([table], n => n.type === 'paragraph').length - 1);
   });
@@ -855,6 +855,9 @@ describe('tables: structureHash separates "the table was edited" from "the table
   });
 });
 
+// The abandoned-read path (rollback of blocks, fragments, counts, warnings and comment ids) is unreachable from XML: both reachable
+// abandon paths (depth limit, no rows) return before the read has taken an id. It is forced, with a mocked schema failure, in
+// tables.fallback.test.ts.
 describe('tables: shared state', () => {
   it('numbering is parsed once for tables and body together: a damaged numbering part warns once', async () => {
     const r = await readDocument(await inline(tbl(grid(1000), tr(tc(p('a')))) + tbl(grid(1000), tr(tc(p('b')))) + p('c'), '<w:numbering xmlns:w="x"'));
@@ -868,18 +871,94 @@ describe('tables: shared state', () => {
     expect(r.blocks).toHaveLength(12000);
     expect(Date.now() - started).toBeLessThan(8000);
   }, 60000);
+});
 
-  it('an abandoned read removes exactly its own blocks and fragments, not its neighbours\'', async () => {
-    // a table whose cell paragraphs register blocks, nested inside one that is then kept whole at the depth limit
-    let xml = tbl(grid(1000), tr(tc(p('deepest') + '<w:bookmarkStart w:id="9" w:name="x"/>')));
-    for (let i = 0; i < 11; i++) xml = tbl(grid(1000), tr(tc(p('level ' + i) + xml)));
-    const r = await readInline(p('before') + xml + p('after'));
-    const kept = all(r.blocks, n => n.type === 'opaqueBlock');
-    expect(kept).toHaveLength(1);
-    // every block entry is referenced by a paragraph or table in the model; no orphan is left behind
-    const referenced = new Set(all(r.blocks, n => !!n.attrs?.ooxml).map(blockIdOf));
-    expect(Object.keys(r.ctx.preservation.blocks).sort()).toEqual([...referenced].sort());
-    // the fragment of the kept-whole table is the only fragment (the bookmark inside it lives in that table's XML)
-    expect(Object.keys(r.ctx.preservation.fragments)).toEqual([kept[0].attrs!.fragmentId]);
+describe('tables: what structureHash does and does not promise', () => {
+  const clone = <T,>(x: T): T => JSON.parse(JSON.stringify(x)) as T;
+  const stored = (t: JSONContent) => (t.attrs!.ooxml as { structureHash: string }).structureHash;
+  const paragraphsOf = (n: JSONContent) => all([n], x => x.type === 'paragraph');
+
+  it('a paragraph moved from one cell to another leaves the hash unchanged although every paragraph is still untouched', async () => {
+    const r = await readInline(tbl(grid(1000, 1000), tr(tc(p('moves') + p('stays')) + tc(p('other')))));
+    const t = r.blocks[0];
+    const moved = clone(t);
+    const [c1, c2] = cellsOf(rowsOf(moved)[0]);
+    c2.content!.push(c1.content!.shift()!);
+    expect(rowsOf(moved).map(cellTexts)).not.toEqual(rowsOf(t).map(cellTexts));
+    expect(structureHash(moved)).toBe(stored(t));
+    expect(paragraphsOf(moved).every(isBlockUntouched)).toBe(true);
+    expect(isBlockUntouched(moved)).toBe(false); // the content hash does notice
+  });
+
+  it('reversing the blocks of a cell, and swapping two rows of identical shape, also leave the hash unchanged', async () => {
+    const r = await readInline(tbl(grid(1000), tr(tc(p('one') + p('two') + p('three'))) + tr(tc(p('row a'))) + tr(tc(p('row b')))));
+    const t = r.blocks[0];
+    const reversed = clone(t);
+    cellsOf(rowsOf(reversed)[0])[0].content!.reverse();
+    expect(structureHash(reversed)).toBe(stored(t));
+    const swapped = clone(t);
+    [swapped.content![1], swapped.content![2]] = [swapped.content![2], swapped.content![1]];
+    expect(structureHash(swapped)).toBe(stored(t));
+    expect(paragraphsOf(swapped).every(isBlockUntouched)).toBe(true);
+    // so the hash alone is NOT enough to patch edits into the old cells: the writer rebuilds each cell's blocks from the model
+    expect(rowsOf(swapped).map(cellTexts)).toEqual([['one' + 'two' + 'three'], ['row b'], ['row a']]);
+  });
+
+  it('replacing a cell\'s content with a list and a heading leaves the hash unchanged', async () => {
+    const r = await readInline(tbl(grid(1000), tr(tc(p('plain')))));
+    const t = r.blocks[0];
+    const swapped = clone(t);
+    cellsOf(rowsOf(swapped)[0])[0].content = [
+      { type: 'heading', attrs: { level: 1 }, content: [{ type: 'text', text: 'H' }] },
+      { type: 'bulletList', content: [{ type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'item' }] }] }] },
+    ];
+    expect(structureHash(swapped)).toBe(stored(t));
+  });
+
+  it('swapping a nested table and a paragraph inside a cell leaves the hash unchanged', async () => {
+    const r = await readInline(tbl(grid(2000), tr(tc(p('lead') + tbl(grid(500), tr(tc(p('in'))))))));
+    const t = r.blocks[0];
+    const swapped = clone(t);
+    cellsOf(rowsOf(swapped)[0])[0].content!.reverse();
+    expect(cellsOf(rowsOf(swapped)[0])[0].content![0].type).toBe('table');
+    expect(structureHash(swapped)).toBe(stored(t));
+  });
+});
+
+describe('tables: bounded work', () => {
+  it('reading paragraphs and tables never scans the preservation maps (counted, not timed)', async () => {
+    let scans = 0;
+    const counting = <T extends object>(o: T): T =>
+      new Proxy(o, {
+        ownKeys(target) {
+          scans++;
+          return Reflect.ownKeys(target);
+        },
+      });
+    const store = emptyPreservationStore();
+    store.blocks = counting(store.blocks);
+    store.fragments = counting(store.fragments);
+    const ins = '<w:ins w:id="1" w:author="A" w:date="2026-01-01T00:00:00Z"><w:r><w:t>added</w:t></w:r></w:ins>';
+    const bodyXml =
+      p('a') + `<w:p><w:r><w:t>b</w:t></w:r>${ins}<w:bookmarkStart w:id="1" w:name="m"/></w:p>` +
+      tbl(grid(1000, 1000), tr(tc(`<w:p><w:r><w:t>c</w:t></w:r>${ins}</w:p>` + tbl(grid(500), tr(tc(p('d'))))) + tc(p('e')))) +
+      p('f');
+    const r = await readDocument(await inline(bodyXml), store);
+    const scansWhileReading = scans;
+    expect(r.blocks.map(b => b.type)).toEqual(['paragraph', 'paragraph', 'table', 'paragraph']);
+    expect(Object.keys(r.ctx.preservation.fragments).length).toBeGreaterThanOrEqual(3);
+    expect(scansWhileReading).toBe(0);
+  });
+});
+
+describe('tables: rarely-hit guards', () => {
+  it('gridBefore is clamped to the widest grid Word allows', async () => {
+    const r = await readInline(tbl(grid(...Array.from({ length: 100 }, () => 1500)), tr(tc(p('x')), '<w:gridBefore w:val="500"/>')));
+    expect(cellsOf(rowsOf(r.blocks[0])[0])[0].attrs!.colwidth).toEqual([100]); // starts at column 63, not 500 (beyond the grid)
+  });
+
+  it('a second tblGrid is ignored: the first one gives the widths', async () => {
+    const r = await readInline(`<w:tbl><w:tblPr/>${grid(1500)}${grid(3000)}${tr(tc(p('x')))}</w:tbl>`);
+    expect(cellsOf(rowsOf(r.blocks[0])[0])[0].attrs!.colwidth).toEqual([100]);
   });
 });

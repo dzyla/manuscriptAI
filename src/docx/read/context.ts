@@ -20,8 +20,8 @@ export interface ReadContext {
   preservation: PreservationStore;
   assets: AssetDraft[];
   /**
-   * The document's numbering definitions. Optional: whoever reads blocks that can hold lists (the body reader, table cells) may
-   * set it once up front; `readTable` reads and caches it here when it is not set.
+   * The document's numbering definitions, cached here by `getNumbering(ctx)` (numbering.ts). Every reader that needs them (the
+   * body, table cells) goes through that function; do not call `readNumbering` directly or the part is parsed, and warned about, twice.
    */
   numbering?: NumberingMap;
   /** Unique ids for blocks and fragments. */
@@ -36,4 +36,21 @@ export function warnOnce(
   category: FidelityCategory,
 ): void {
   if (!report.warnings.some(w => w.feature === feature && w.message === message)) addWarning(report, feature, message, category);
+}
+
+/**
+ * Log the ids `ctx.nextId` hands out until `stop()`. An abandoned read (a paragraph or table whose content is withdrawn) removes
+ * exactly those ids from `preservation.blocks` / `.fragments`, instead of scanning the maps, which would make a document with many
+ * paragraphs or tables quadratic. Trackers nest: an inner one calls the outer's wrapper, so the outer sees every id too. Call
+ * `stop()` in a `finally`, innermost first.
+ */
+export function trackIds(ctx: ReadContext): { created: string[]; stop: () => void } {
+  const outer = ctx.nextId;
+  const created: string[] = [];
+  ctx.nextId = () => {
+    const id = outer();
+    created.push(id);
+    return id;
+  };
+  return { created, stop: () => void (ctx.nextId = outer) };
 }

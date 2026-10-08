@@ -12,7 +12,7 @@ import { isBlockUntouched, stampProvenance } from '../preserve/hash';
 import type { PreservationStore } from '../preserve/types';
 import { captureFragment, parseXml } from '../preserve/xml';
 import { specNormalizeNode } from '../../extensions/schemaSpecs';
-import { warnOnce, type ReadContext } from './context';
+import { trackIds, warnOnce, type ReadContext } from './context';
 import { childElements, firstW, int, isW, onOff, round4, wAttr } from './ooxml';
 import { snapshotCommentIds } from './opaque';
 import { readRuns, recordFormatChange } from './runs';
@@ -108,10 +108,16 @@ function readProps(p: Element, ctx: ReadContext): ParagraphProps {
 export function readParagraph(p: Element, ctx: ReadContext): JSONContent | JSONContent[] {
   recordFeature(ctx.report, 'paragraph');
   const { attrs, headingLevel } = readProps(p, ctx);
-  const fragmentsBefore = new Set(Object.keys(ctx.preservation.fragments));
   const featuresBefore = { counts: { ...ctx.report.counts }, byCategory: { ...ctx.report.byCategory } };
   const restoreCommentIds = snapshotCommentIds(ctx.report);
-  const content = readRuns(p, ctx);
+  // The fragments this paragraph's atoms take are logged by id so a withdrawn paragraph can remove exactly those (no scan of the map).
+  const ids = trackIds(ctx);
+  let content: JSONContent[];
+  try {
+    content = readRuns(p, ctx);
+  } finally {
+    ids.stop();
+  }
   if (headingLevel) recordFeature(ctx.report, 'heading');
   if (attrs.styleId === 'caption') recordFeature(ctx.report, 'caption');
 
@@ -128,7 +134,7 @@ export function readParagraph(p: Element, ctx: ReadContext): JSONContent | JSONC
     // basis after the first edit. Without provenance the exporter regenerates it.
     // The atoms are dropped from this paragraph, so their fragments and report counts are withdrawn too:
     // nothing may reference (or be counted for) content that is no longer in the document.
-    for (const id of Object.keys(ctx.preservation.fragments)) if (!fragmentsBefore.has(id)) delete ctx.preservation.fragments[id];
+    for (const id of ids.created) delete ctx.preservation.fragments[id];
     ctx.report.counts = featuresBefore.counts;
     ctx.report.byCategory = featuresBefore.byCategory;
     restoreCommentIds();

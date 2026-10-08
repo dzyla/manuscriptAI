@@ -45,17 +45,24 @@ function skeleton(node: JSONContent): JSONContent {
     const { ooxml: _drop, ...rest } = node.attrs;
     if (Object.keys(rest).length) out.attrs = rest;
   }
-  const kids = (node.content ?? []).filter(c => (node.type === 'tableCell' || node.type === 'tableHeader' ? c.type === 'table' : STRUCTURAL.has(c.type ?? '')));
-  if (kids.length || node.type === 'tableRow') out.content = kids.map(skeleton);
+  const isCell = node.type === 'tableCell' || node.type === 'tableHeader';
+  out.content = (node.content ?? []).filter(c => (isCell ? c.type === 'table' : STRUCTURAL.has(c.type ?? ''))).map(skeleton);
   return out;
 }
 
 /**
  * A second hash of a table that ignores what is IN its cells: the rows, the cells (colspan, rowspan, colwidth, header or not) and
  * any nested tables' skeletons count; every paragraph, list and opaque block in a cell does not. `blockHash` of a table changes
- * when one character in one cell changes, which says "the table was edited" but not "the table's shape was". When
- * `structureHash(table)` still equals the stored `ooxml.structureHash`, the original `<w:tbl>` shell (borders, shading, margins, row
- * heights, style) is still valid and a writer can patch the edited cell content into it, using each paragraph's own provenance.
+ * when one character in one cell changes, which says "the table was edited" but not "the table's shape was".
+ *
+ * WHAT IT MEANS, AND NOTHING MORE: while `structureHash(table)` equals the stored `ooxml.structureHash`, the original `<w:tbl>`
+ * SHELL (`tblPr`, `tblGrid`, each row's `trPr`, each cell's `tcPr`) is still valid and can be reused. It does NOT say the cell
+ * contents are unchanged or still where they were: moving a paragraph to another cell, reordering the blocks of a cell, swapping a
+ * nested table and a paragraph, swapping two rows of identical shape, or replacing a cell's content with a list, all leave it
+ * unchanged. So a writer that reuses the shell must still rebuild EACH CELL'S BLOCK SEQUENCE from the model (by each block's
+ * `ooxml.blockId`, re-emitting an untouched block's original XML), never patch "only the paragraphs that were edited" into the old
+ * cells. By position, a cell keeps its `tcPr` (shading, margins) and a row its `trPr` (height), so two identical-shaped rows that
+ * swap keep their formatting in place and move their content: defensible.
  */
 export function structureHash(table: JSONContent): string {
   return cyrb53(stableStringify(skeleton(table)));

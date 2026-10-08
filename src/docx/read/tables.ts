@@ -25,7 +25,7 @@ import { recordFeature } from '../fidelity';
 import { stampProvenance } from '../preserve/hash';
 import { captureFragment } from '../preserve/xml';
 import { specNormalizeNode } from '../../extensions/schemaSpecs';
-import { warnOnce, type ReadContext } from './context';
+import { trackIds, warnOnce, type ReadContext } from './context';
 import { childElements, firstW, int, isW, onOff, wAttr } from './ooxml';
 import { classifyOpaque, readOpaque, snapshotCommentIds } from './opaque';
 import { blockChildren, readParagraph } from './paragraphs';
@@ -241,17 +241,11 @@ function readCell(tc: Element, ctx: ReadContext, depth: number): JSONContent[] {
 
 function readTableAt(tbl: Element, ctx: ReadContext, depth: number): JSONContent {
   // Every id this read (and the tables nested in it) takes is logged, so an abandoned read can remove exactly its own entries.
-  const created: string[] = [];
-  const outerNextId = ctx.nextId;
-  ctx.nextId = () => {
-    const id = outerNextId();
-    created.push(id);
-    return id;
-  };
+  const ids = trackIds(ctx);
   try {
-    return readTableBody(tbl, ctx, depth, rollbackPoint(ctx, created));
+    return readTableBody(tbl, ctx, depth, rollbackPoint(ctx, ids.created));
   } finally {
-    ctx.nextId = outerNextId;
+    ids.stop();
   }
 }
 
