@@ -30,7 +30,7 @@ afterEach(async () => { db.close(); await Dexie.delete(name); });
 
 describe('DocumentRepository', () => {
   it('fresh install: no document', async () => {
-    expect(await repo.load()).toEqual({ doc: null, migrated: false, recoveredFromBackup: false });
+    expect(await repo.load()).toEqual({ doc: null, migrated: false, recoveredFromBackup: false, unreadableRowPresent: false });
   });
 
   it('save then load round-trips and never persists HTML', async () => {
@@ -100,7 +100,40 @@ describe('DocumentRepository', () => {
     await db.documents.put({ ...row!, docJson: { type: 'doc', content: [{ type: 'hologram' }] } as any });
     const r = await repo.load();
     expect(r.recoveredFromBackup).toBe(true);
+    expect(r.unreadableRowPresent).toBe(true);
     expect(JSON.stringify(r.doc?.docJson)).toContain('v1');
+    const q = (await repo.listBackups()).filter(b => b.quarantined);
+    expect(q).toHaveLength(1);
+    expect(JSON.stringify(q[0].row.docJson)).toContain('hologram');
+  });
+
+  const corruptCurrent = () => db.documents.put({ id: 'current', title: 'Future', docJson: { type: 'doc', content: [{ type: 'hologram' }] } as any, saveState: 'Saved', updatedAt: 42, schemaVersion: 99 } as any);
+
+  it('unreadable current row with no valid backup: quarantined, survives the ring', async () => {
+    const small = createDexieRepository(db, { htmlToDoc, isValidDoc, resolver, maxBackups: 3 });
+    await corruptCurrent();
+    const r = await small.load();
+    expect(r).toEqual({ doc: null, migrated: false, recoveredFromBackup: false, unreadableRowPresent: true });
+    expect((await small.listBackups()).filter(b => b.quarantined)).toHaveLength(1);
+    for (let i = 0; i < 12; i++) await small.save(baseDoc('s' + i));
+    const all = await small.listBackups();
+    expect(all.filter(b => b.quarantined)).toHaveLength(1);
+    expect(JSON.stringify(all.find(b => b.quarantined)!.row.docJson)).toContain('hologram');
+    expect(all.filter(b => !b.quarantined)).toHaveLength(3);
+  });
+
+  it('loading an unreadable row repeatedly quarantines it only once', async () => {
+    await corruptCurrent();
+    await repo.load();
+    await repo.load();
+    expect((await repo.listBackups()).filter(b => b.quarantined)).toHaveLength(1);
+  });
+
+  it('quarantined rows are never restorable', async () => {
+    await corruptCurrent();
+    await repo.load();
+    const q = (await repo.listBackups()).find(b => b.quarantined)!;
+    await expect(repo.restoreBackup(q.seq!)).rejects.toThrow();
   });
 
   it('garbage-collects assets no longer referenced by the doc or any backup', async () => {

@@ -24,6 +24,8 @@ export interface LoadResult {
   doc: LoadedDocument | null;
   migrated: boolean;
   recoveredFromBackup: boolean;
+  /** The current row exists but could not be converted (corrupt or written by a newer build). */
+  unreadableRowPresent: boolean;
 }
 
 export interface DocumentRepository {
@@ -105,9 +107,10 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
     await db.transaction('rw', [db.documents, db.assets, db.autosaveBackups, db.docxPackages], async () => {
       const prev = await db.documents.get('current');
       if (prev) await db.autosaveBackups.add({ documentId: 'current', savedAt: Date.now(), row: prev });
-      const all = await db.autosaveBackups.orderBy('seq').primaryKeys();
+      // Quarantined (unreadable) rows are exempt from the ring: only regular backups are counted/trimmed.
+      const all = (await db.autosaveBackups.orderBy('seq').toArray()).filter(b => !b.quarantined);
       const excess = all.length - maxBackups;
-      if (excess > 0) await db.autosaveBackups.bulkDelete(all.slice(0, excess));
+      if (excess > 0) await db.autosaveBackups.bulkDelete(all.slice(0, excess).map(b => b.seq!));
       if (assets.length) await db.assets.bulkPut(assets);
       await db.documents.put(row);
 
@@ -135,6 +138,19 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
     });
   }
 
+  /** Preserve an unreadable current row outside the backup ring (idempotent per row.updatedAt). */
+  async function quarantine(row: DocumentRow): Promise<void> {
+    try {
+      await db.transaction('rw', db.autosaveBackups, async () => {
+        const existing = await db.autosaveBackups.toArray();
+        if (existing.some(b => b.quarantined && b.row.updatedAt === row.updatedAt)) return;
+        await db.autosaveBackups.add({ documentId: 'current', savedAt: Date.now(), row, quarantined: true });
+      });
+    } catch (err) {
+      console.error('Could not quarantine unreadable document row', err);
+    }
+  }
+
   const repo: DocumentRepository = {
     save(doc) {
       const run = queue.then(() => doSave(doc));
@@ -144,7 +160,7 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
 
     async load() {
       const row = await db.documents.get('current');
-      if (!row) return { doc: null, migrated: false, recoveredFromBackup: false };
+      if (!row) return { doc: null, migrated: false, recoveredFromBackup: false, unreadableRowPresent: false };
       const converted = rowToDoc(row);
       if (converted) {
         if (converted.fromHtml) {
@@ -154,18 +170,20 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
             // Legacy row is untouched (transaction rolled back): open the converted document
             // anyway and retry the migration on the next load.
             console.error('Legacy document migration failed; will retry on next load', err);
-            return { doc: converted.doc, migrated: false, recoveredFromBackup: false };
+            return { doc: converted.doc, migrated: false, recoveredFromBackup: false, unreadableRowPresent: false };
           }
           const fresh = rowToDoc((await db.documents.get('current'))!)!;
-          return { doc: await hydrate(fresh.doc), migrated: true, recoveredFromBackup: false };
+          return { doc: await hydrate(fresh.doc), migrated: true, recoveredFromBackup: false, unreadableRowPresent: false };
         }
-        return { doc: await hydrate(converted.doc), migrated: false, recoveredFromBackup: false };
+        return { doc: await hydrate(converted.doc), migrated: false, recoveredFromBackup: false, unreadableRowPresent: false };
       }
+      await quarantine(row);
       for (const b of await repo.listBackups()) {
+        if (b.quarantined) continue;
         const c = rowToDoc(b.row);
-        if (c) return { doc: await hydrate(c.doc), migrated: false, recoveredFromBackup: true };
+        if (c) return { doc: await hydrate(c.doc), migrated: false, recoveredFromBackup: true, unreadableRowPresent: true };
       }
-      return { doc: null, migrated: false, recoveredFromBackup: false };
+      return { doc: null, migrated: false, recoveredFromBackup: false, unreadableRowPresent: true };
     },
 
     getPackage: () => db.docxPackages.get('current'),
@@ -177,7 +195,7 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
 
     async restoreBackup(seq) {
       const b = await db.autosaveBackups.get(seq);
-      const c = b && rowToDoc(b.row);
+      const c = b && !b.quarantined ? rowToDoc(b.row) : null;
       if (!c) throw new Error(`Backup ${seq} is missing or unreadable`);
       return hydrate(c.doc);
     },

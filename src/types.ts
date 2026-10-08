@@ -255,6 +255,8 @@ export interface BackupRow {
   documentId: 'current';
   savedAt: number;
   row: DocumentRow;
+  /** An unreadable current row preserved for forensics; never trimmed, never a recovery candidate. */
+  quarantined?: true;
 }
 
 export interface SourceRow extends ManuscriptSource {
