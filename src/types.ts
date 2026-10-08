@@ -64,6 +64,8 @@ export interface AISettings {
   recallPass?: boolean;
   customPrompts?: Partial<Record<AgentType, string>>;
   zotero?: ZoteroSettings;
+  /** The author's measured writing style, built from their own samples (sub-project H). */
+  voiceProfile?: VoiceProfile;
 }
 
 export interface Suggestion {
@@ -216,6 +218,16 @@ export interface AuditMetrics {
   summary: AuditSummary;
   sentences: SentenceAudit[];
   sections: { title: string; summary: AuditSummary }[];
+}
+
+export interface VoiceProfile {
+  id: string;
+  name: string;
+  createdAt: number;
+  sampleWords: number;
+  summary: AuditSummary;
+  /** short representative sentences, used as few-shot style examples when rewriting */
+  exampleSentences: string[];
 }
 
 // ─── Dexie row types ──────────────────────────────────────────────────────────
