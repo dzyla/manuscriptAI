@@ -134,16 +134,25 @@ describe('styleDistance', () => {
   });
 
   it('a trace of every unreferenced tell never lowers the score', () => {
-    // A draft that is machine-like on the seven calibrated metrics only. Its ceiling is
-    // about 52: the nine other tells carry about half the total weight and sit at ~0.
-    // (A ">= 90" expectation is unreachable with a plain weighted mean.) The point of this
-    // test is monotonicity: adding a trace of each tell must not reduce the score.
+    // A draft that is machine-like on the seven calibrated metrics (plus tricolon) only.
+    // It should land firmly in the far band but NOT near 90: the nine untabulated tells
+    // are real dimensions of style, so a draft that shows none of them is not fully
+    // machine-like. The point of the test is monotonicity: adding a trace of each tell
+    // must not reduce the score.
     const sevenOnly = withRates(MACHINE_REFERENCE, Object.fromEntries(NINE.map(m => [m, 0])));
     const traces = withRates(sevenOnly, Object.fromEntries(NINE.map(m => [m, 0.1])));
     const without = styleDistance(sevenOnly, GENERIC_HUMAN_SUMMARY).score;
     const withTraces = styleDistance(traces, GENERIC_HUMAN_SUMMARY).score;
     expect(withTraces).toBeGreaterThanOrEqual(without);
-    expect(without).toBeGreaterThanOrEqual(45);
+    expect(without).toBeGreaterThanOrEqual(60);
+  });
+
+  it('weights the untabulated tells below the calibrated ones', () => {
+    const sum = (keys: string[]) => keys.reduce((a, k) => a + WEIGHTS[k], 0);
+    const calibrated = Object.keys(WEIGHTS).filter(k => !NINE.includes(k));
+    expect(Object.keys(WEIGHTS).length).toBe(calibrated.length + NINE.length);
+    expect(sum(NINE)).toBeLessThan(sum(calibrated));
+    for (const k of NINE) expect(WEIGHTS[k]).toBe(0.5);
   });
 
   describe('when the author voice sits near the machine reference', () => {

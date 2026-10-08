@@ -12,29 +12,37 @@ export interface MetricDeviation {
 }
 
 /**
- * Weight per metric when scoring a whole document: the strongest tells from the
- * skill's calibration count most. This is a different table from
- * TELL_PATTERNS[...].weight, which ranks individual sentences against each other;
- * the numbers happen to agree today but serve different purposes.
+ * Weight per metric when scoring a whole document. This is a different table from
+ * TELL_PATTERNS[...].weight, which ranks individual sentences against each other and
+ * keeps full weight for every tell; that is where the tells below are most useful to
+ * the author.
+ *
+ * The first block is the metrics backed by the skill's calibration table (plus the
+ * corpus-measured tricolon), weighted by how strong a tell each is. The second block,
+ * the nine untabulated tells, is deliberately discounted to 0.5: no calibration
+ * measurement backs their scale (their machine-side reference values are chosen
+ * thresholds, see profile.ts), so they must not dominate the document score.
  */
 export const WEIGHTS: Record<string, number> = {
+  // calibrated
   meanWords: 2,
   pctOver35: 2,
   'rather than': 2,
-  'not X but/instead': 2,
-  'instead of': 1.5,
   semicolon: 1.5,
   'which is appositive': 1.5,
   'is what cleft': 1.5,
   'initial Because': 1,
-  'This/That anaphora': 1,
   tricolon: 0.5,
-  'throat-clearing': 1,
-  'em dash': 1,
-  'not only but also': 1.5,
-  'paragraph connective': 1,
-  'summary flourish': 1,
-  'stock vocabulary': 1,
+  // untabulated: evidential discount
+  'not X but/instead': 0.5,
+  'instead of': 0.5,
+  'This/That anaphora': 0.5,
+  'throat-clearing': 0.5,
+  'em dash': 0.5,
+  'not only but also': 0.5,
+  'paragraph connective': 0.5,
+  'summary flourish': 0.5,
+  'stock vocabulary': 0.5,
 };
 
 /**
