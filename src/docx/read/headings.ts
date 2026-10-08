@@ -12,7 +12,7 @@
  * A document that already uses heading styles is left completely alone.
  */
 import type { JSONContent } from '@tiptap/core';
-import { addWarning, recordFeature, type ImportReport } from '../fidelity';
+import { recordFeature, type ImportReport, type ImportWarning } from '../fidelity';
 import type { ReadContext } from './context';
 import { paragraphDrafts, type ParagraphDraft } from './paragraphs';
 
@@ -24,8 +24,11 @@ export interface HeadingCandidate {
   text: string;
   /** Why this was proposed; never empty. */
   evidence: string[];
-  /** `name`: matches a known section name. `format`: only its look and position say so. */
-  confidence: 'name' | 'format';
+  /**
+   * `name`: matches a known section name. `format`: only its look and position say so. `aim`: an "Aim 1" / "AIM 2." line.
+   * `sibling`: completes a numbered run whose other members were found (2.1, 2.2, [2.3], 2.4).
+   */
+  confidence: 'name' | 'format' | 'aim' | 'sibling';
 }
 
 export interface DetectContext {
@@ -46,6 +49,8 @@ export interface KnownSection {
   kind: 'top' | 'sub';
   /** Opens a scope in which `sub` sections are level 2. */
   opensScope?: boolean;
+  /** Closes the body: what follows (trailing matter) must not inherit a sub-level from the sections above. */
+  endsBody?: boolean;
 }
 
 const top = (name: string, ...aliases: string[]): KnownSection => ({ name, aliases: [name, ...aliases], kind: 'top' });
@@ -80,7 +85,7 @@ export const KNOWN_SECTIONS: KnownSection[] = [
   top('Biosketch', 'Biographical Sketch'),
   top('Budget Justification'),
   top('Introduction to Resubmission', 'Introduction to Resubmission Application', 'Introduction to Revision', 'Introduction to Revision Application', 'Introduction to the Resubmission', 'Introduction to the Revision'),
-  top('References Cited', 'Bibliography and References Cited', 'Literature Cited', 'Bibliography'),
+  { ...top('References Cited', 'Bibliography and References Cited', 'Literature Cited', 'Bibliography'), endsBody: true },
   // NIH, career awards
   top("Candidate's Background", 'Candidate Background', "Candidate's Goals"),
   top('Career Goals and Objectives', 'Career Goals'),
@@ -96,7 +101,7 @@ export const KNOWN_SECTIONS: KnownSection[] = [
   top('Results', 'Results and Discussion'),
   top('Discussion'),
   top('Conclusion', 'Conclusions', 'Concluding Remarks'),
-  top('References'),
+  { ...top('References'), endsBody: true },
   top('Acknowledgements', 'Acknowledgments', 'Acknowledgement', 'Acknowledgment'),
   top('Author Contributions', 'Authors Contributions', 'Author Contribution'),
   top('Competing Interests', 'Conflict of Interest', 'Conflicts of Interest', 'Declaration of Interests', 'Competing Interest'),
@@ -134,6 +139,41 @@ const TERMINAL_PERIOD = /\.$/;
 
 const MAX_WORDS_NAME = 10;
 const MAX_WORDS_FORMAT = 8;
+/**
+ * Aim titles and numbered-sibling completions are real titles that run longer than a bare section name. 30, not the
+ * ordered "about 20": one real grant's "AIM 1: <title and objective>" line is 30 words (its run-in aim paragraphs are 150+).
+ */
+const MAX_WORDS_LONG = 30;
+
+/** "Aim 1", "AIM 2.", "Aim III:" (after any enumerator): a specific-aim title. Roman numerals must be capitals so "Aim in ..." is not one. */
+const AIM = /^[Aa][Ii][Mm]\s+(?:\d+|[IVXL]+)(?=[\s.:)]|$)/;
+
+// ── guards that apply to a FORMAT match only (a look-alike of bold or larger text that is not a section title) ──
+const MONTH = /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/i;
+const NUMERIC_DATE = /\b\d{1,4}[/-]\d{1,2}[/-]\d{1,4}\b/;
+const PAGE_ARTIFACT = /^(?:page\s+\d|\d+\s+of\s+\d+$)/i;
+const DISCOURSE = /^(?:importantly|notably|interestingly|however|moreover|furthermore|key\s+findings?|in\s+summary|of\s+note|conversely|therefore)\b/i;
+const STATUS_WORD = /^(?:confidential|draft|preliminary|do\s+not\s+distribute|for\s+review\s+only)\b/i;
+const STATUS_PHRASE = /do\s+not\s+distribute|for\s+review\s+only/i;
+const LABEL_LIKE = /^(?:panel\s+\w|extended\s+data\b|supplementary\s+(?:fig|table|data)|notes?:?$)/i;
+
+/**
+ * Why a bold or larger short line is NOT taken as a heading, or null. These shapes (an author list, a date, a running head, a
+ * bold lead-in, a status stamp, a panel label) are what a title page and a body are full of. Name, aim and sibling
+ * matches never come through here: their evidence is stronger than the look.
+ */
+function formatRejection(text: string, rest: string): string | null {
+  if (text.includes(',')) return 'contains a comma';
+  const date = NUMERIC_DATE.test(text) || (MONTH.test(text) && (/\d/.test(text) || !/\s/.test(text)));
+  if (date) return 'looks like a date';
+  if (PAGE_ARTIFACT.test(text)) return 'looks like a page number or running head';
+  if (DISCOURSE.test(rest)) return 'begins with a discourse marker, so it is a lead-in';
+  if (STATUS_PHRASE.test(text)) return 'is a document-status stamp';
+  const status = STATUS_WORD.exec(rest);
+  if (status && /^\s*(?:$|[-\u2013\u2014:|(\[])/.test(rest.slice(status[0].length))) return 'is a document-status stamp';
+  if (LABEL_LIKE.test(rest)) return 'is a figure, panel or note label';
+  return null;
+}
 
 const plural = (n: number, one: string, many = one + 's') => `${n} ${n === 1 ? one : many}`;
 
@@ -182,8 +222,27 @@ function enumeratorParts(enumerator: string): number {
   return enumerator.replace(/^\(|[.)]+$|\)$/g, '').split('.').filter(Boolean).length;
 }
 
-export function detectHeadings(drafts: ParagraphDraft[], ctx: DetectContext): HeadingCandidate[] {
-  if (ctx.hasRealHeadings) return [];
+/** One short line with letters in it, nothing the app cannot show, and not already styled as a caption. */
+function eligibleLine(d: ParagraphDraft, maxWords: number, allowBreakIfBold = false): boolean {
+  if (d.node.type !== 'paragraph' || !d.text || d.atoms.length) return false;
+  if (d.multiline && !(allowBreakIfBold && d.allBold)) return false;
+  if (d.node.attrs?.styleId === 'caption') return false;
+  if (!/[\p{L}]/u.test(d.text)) return false; // a page number, a rule of dashes
+  if (d.words > maxWords) return false;
+  return !TERMINAL_STRONG.test(d.text);
+}
+
+/** "2.3." -> { prefix: "2", depth: 2, n: 3 }; "C.1" -> { prefix: "c", depth: 2, n: 1 }. Only multi-part enumerators ending in a number. */
+function numbered(text: string): { prefix: string; depth: number; n: number } | null {
+  const { enumerator } = split(text);
+  if (!enumerator) return null;
+  const parts = enumerator.replace(/^\(|[.)]+$|\)$/g, '').split('.').filter(Boolean);
+  const last = parts[parts.length - 1];
+  if (parts.length < 2 || !/^\d+$/.test(last)) return null;
+  return { prefix: parts.slice(0, -1).join('.').toLowerCase(), depth: parts.length, n: Number(last) };
+}
+
+function detect(drafts: ParagraphDraft[], ctx: DetectContext): HeadingCandidate[] {
   const out: HeadingCandidate[] = [];
   let lastLevel1: HeadingCandidate | null = null; // nearest name-matched level-1 heading so far
   let scopeOpen = false; // a Research Strategy heading is open
@@ -193,14 +252,11 @@ export function detectHeadings(drafts: ParagraphDraft[], ctx: DetectContext): He
 
   drafts.forEach((d, i) => {
     // Rule 2 and 6: one short line, nothing the app cannot show, not already structure.
-    if (d.node.type !== 'paragraph' || !d.text || d.atoms.length || d.multiline) return;
-    if (d.node.attrs?.styleId === 'caption') return;
-    if (!/[\p{L}]/u.test(d.text)) return; // a page number, a rule of dashes
-    if (d.words > MAX_WORDS_NAME) return;
-    if (TERMINAL_STRONG.test(d.text)) return;
+    const { enumerator, rest } = split(d.text);
+    const isAim = AIM.test(rest);
+    if (!eligibleLine(d, isAim ? MAX_WORDS_LONG : MAX_WORDS_NAME)) return;
 
     const shape = `single line of ${plural(d.words, 'word')}`;
-    const { enumerator } = split(d.text);
     const parts = enumerator ? enumeratorParts(enumerator) : 0;
     const depth = (base: 1 | 2): { level: 1 | 2 | 3; note: string | null } =>
       parts >= 2 && Math.min(parts, 3) > base
@@ -228,16 +284,31 @@ export function detectHeadings(drafts: ParagraphDraft[], ctx: DetectContext): He
       bits.push(TERMINAL_PERIOD.test(d.text) ? `${shape}, trailing period ignored for a known section name` : `${shape}, no terminal punctuation`);
       const c: HeadingCandidate = { index: d.index, level: base.level, text: d.text, evidence: bits, confidence: 'name' };
       out.push(c);
-      if (base.level === 1) lastLevel1 = c;
+      if (base.level === 1) lastLevel1 = section.endsBody ? null : c;
       if (section.opensScope) scopeOpen = true;
       else if (section.kind === 'top') scopeOpen = false;
       return;
     }
 
+    // Aim title: an "Aim 1" / "AIM 2." line. Bold is not required and a period is tolerated, because the pattern is specific.
+    if (isAim) {
+      const sentences = rest.slice(AIM.exec(rest)![0].length).replace(/^[\s.:)]+|\.$/g, '').split(/[.!?]\s+(?=[A-Z])/).length;
+      const bits = [
+        `begins with "${AIM.exec(rest)![0]}", a specific-aim title`,
+        ...(sentences > 1 ? [`holds ${sentences} sentences (a title followed by an objective?): accepting makes the whole paragraph the heading`] : []),
+        lastLevel1 ? `placed below the level-1 heading "${lastLevel1.text}", so level 2` : 'no section heading precedes it, so level 2',
+        d.allBold ? 'entire paragraph is bold' : 'not bold (not required for an aim title)',
+        TERMINAL_PERIOD.test(d.text) ? `${shape} (limit ${MAX_WORDS_LONG} words), trailing period ignored` : `${shape} (limit ${MAX_WORDS_LONG} words)`,
+      ];
+      out.push({ index: d.index, level: 2, text: d.text, evidence: bits, confidence: 'aim' });
+      return;
+    }
+
     // Format match: stricter than a name match, because nothing but the look says it is a heading.
-    if (TERMINAL_PERIOD.test(d.text)) return;
     if (d.words > MAX_WORDS_FORMAT) return;
+    if (TERMINAL_PERIOD.test(d.text)) return;
     if (CAPTION_LIKE.test(d.text)) return;
+    if (formatRejection(d.text, rest)) return;
     const bigger = larger(d);
     if (!d.allBold && !bigger) return;
     const next = followingParagraph(drafts, i);
@@ -253,18 +324,113 @@ export function detectHeadings(drafts: ParagraphDraft[], ctx: DetectContext): He
     out.push({ index: d.index, level: base.level, text: d.text, evidence: bits, confidence: 'format' });
   });
 
-  if (ctx.report && out.length) report(ctx.report, out.length);
+  completeNumberedRuns(drafts, out);
   return out;
 }
 
-function report(r: ImportReport, n: number): void {
-  recordFeature(r, 'inferredHeading', n);
-  addWarning(
-    r,
-    'inferredHeading',
-    `This document uses no Word heading styles. ${plural(n, 'section heading')} ${n === 1 ? 'was' : 'were'} inferred from bold or larger text, short lines and common section names. Review them: each can be accepted or rejected, and none is applied until you accept it.`,
-    2,
-  );
+/**
+ * A hole in a numbered sequence is evidence: when two or more candidates share a multi-part enumerator prefix, a line that
+ * fills a gap in the run, or extends it by one, at the same depth and in the right place in the document, joins it at the
+ * run's level - even if its own look would not qualify. A bold paragraph of two lines (title, then a sub-title) joins too;
+ * body text never does. Repeats until nothing more joins. Depth 1 ("1.", "2.") is left out:
+ * numbered lists and reference lists share that shape, so the sequence alone would not be evidence there.
+ */
+function completeNumberedRuns(drafts: ParagraphDraft[], out: HeadingCandidate[]): void {
+  const taken = new Set(out.map(c => c.index));
+  for (let added = true; added; ) {
+    added = false;
+    const runs = new Map<string, Map<number, HeadingCandidate>>();
+    for (const c of out) {
+      const k = numbered(c.text);
+      if (!k) continue;
+      const key = `${k.prefix}|${k.depth}`;
+      if (!runs.has(key)) runs.set(key, new Map());
+      runs.get(key)!.set(k.n, c);
+    }
+    for (const d of drafts) {
+      if (taken.has(d.index) || !eligibleLine(d, MAX_WORDS_LONG, true) || TERMINAL_PERIOD.test(d.text)) continue;
+      const k = numbered(d.text);
+      const run = k && runs.get(`${k.prefix}|${k.depth}`);
+      if (!k || !run || run.size < 2 || run.has(k.n)) continue;
+      const ns = [...run.keys()].sort((a, b) => a - b);
+      const min = ns[0];
+      const max = ns[ns.length - 1];
+      let fits: boolean;
+      if (k.n > min && k.n < max) {
+        const lower = run.get(Math.max(...ns.filter(n => n < k.n)))!;
+        const upper = run.get(Math.min(...ns.filter(n => n > k.n)))!;
+        fits = d.index > lower.index && d.index < upper.index;
+      } else if (k.n === max + 1) fits = d.index > run.get(max)!.index;
+      else if (k.n === min - 1 && k.n >= 1) fits = d.index < run.get(min)!.index;
+      else fits = false;
+      if (!fits) continue;
+      const level = run.get(max)!.level;
+      const members = ns.map(n => `${k.prefix}.${n}`).join(', ');
+      out.push({
+        index: d.index,
+        level,
+        text: d.text,
+        confidence: 'sibling',
+        evidence: [
+          `its enumerator "${split(d.text).enumerator}" ${k.n > min && k.n < max ? 'fills a gap in' : 'extends'} the numbered run ${members} (${plural(run.size, 'heading')} already found at depth ${k.depth})`,
+          `joins that run at level ${level}`,
+          d.multiline
+            ? `two bold lines in one paragraph (a title and a sub-title, no body text), ${plural(d.words, 'word')} (limit ${MAX_WORDS_LONG}), no terminal punctuation`
+            : `single line of ${plural(d.words, 'word')} (limit ${MAX_WORDS_LONG} words), no terminal punctuation; bold is not required`,
+        ],
+      });
+      taken.add(d.index);
+      added = true;
+      break; // the run has grown: rebuild it
+    }
+  }
+  out.sort((a, b) => a.index - b.index);
+}
+
+export function detectHeadings(drafts: ParagraphDraft[], ctx: DetectContext): HeadingCandidate[] {
+  if (ctx.hasRealHeadings) {
+    // The author styled their own headings: propose nothing. If that suppressed titles that would otherwise have been
+    // proposed (a styled title page over unstyled sections, say), the report says so rather than staying silent.
+    const suppressed = ctx.report ? detect(drafts, ctx).length : 0;
+    if (ctx.report) publish(ctx.report, 0, suppressed);
+    return [];
+  }
+  const out = detect(drafts, ctx);
+  if (ctx.report) publish(ctx.report, out.length, 0);
+  return out;
+}
+
+/** What `publish` added to a report, so a repeat run on the same report replaces it instead of adding to it. */
+const published = new WeakMap<ImportReport, { n: number; warnings: ImportWarning[] }>();
+
+function publish(r: ImportReport, n: number, suppressed: number): void {
+  const before = published.get(r);
+  if (before) {
+    if (before.n) {
+      r.counts.inferredHeading = (r.counts.inferredHeading ?? 0) - before.n;
+      if (!r.counts.inferredHeading) delete r.counts.inferredHeading;
+      r.byCategory[2] -= before.n;
+    }
+    r.warnings = r.warnings.filter(w => !before.warnings.includes(w));
+  }
+  const added: ImportWarning[] = [];
+  const warn = (message: string) => {
+    const w: ImportWarning = { feature: 'inferredHeading', message, category: 2 };
+    r.warnings.push(w);
+    added.push(w);
+  };
+  if (n > 0) {
+    recordFeature(r, 'inferredHeading', n);
+    warn(
+      `This document uses no Word heading styles. ${plural(n, 'section heading')} ${n === 1 ? 'was' : 'were'} inferred from bold or larger text, short lines, aim titles, numbering and common section names. Review them: each can be accepted or rejected, and none is applied until you accept it.`,
+    );
+  }
+  if (suppressed > 0) {
+    warn(
+      `Section headings were not inferred, because the document already uses at least one Word heading style (it is left exactly as its author structured it). ${plural(suppressed, 'unstyled line')} look${suppressed === 1 ? 's' : ''} like section titles and stay${suppressed === 1 ? 's' : ''} body text.`,
+    );
+  }
+  published.set(r, { n, warnings: added });
 }
 
 /**

@@ -85,10 +85,10 @@ describe('unstyled-sections.docx: headings inferred from formatting and section 
     expect(found.some(c => c.index === indexOf(r.blocks, 'The overall objective'))).toBe(false);
   });
 
-  it('detects a short bold line that names no section as a format match, one level below a preceding level-1 heading', () => {
+  it('detects "Aim 1: ..." as an aim title, one level below, even though it is just a short bold line', () => {
     const c = byText(found, 'Aim 1: Define the mechanism');
-    expect(c).toMatchObject({ level: 2, confidence: 'format' });
-    expect(c!.evidence.join(' | ')).toMatch(/bold/i);
+    expect(c).toMatchObject({ level: 2, confidence: 'aim' });
+    expect(c!.evidence.join(' | ')).toMatch(/aim title/i);
     // the evidence names the heading it was placed under: the nearest preceding level-1 heading
     expect(c!.evidence.join(' | ')).toContain('A. Significance');
   });
@@ -156,7 +156,7 @@ describe('unstyled-sections.docx: headings inferred from formatting and section 
     const styled = await readBody('body-basics.docx');
     const before = JSON.stringify(styled.report);
     inferHeadings(styled.doc, styled.ctx);
-    expect(JSON.stringify(styled.report)).toBe(before);
+    expect(JSON.stringify(styled.report)).toBe(before); // nothing was suppressed either, so the report stays quiet
   });
 });
 
@@ -458,5 +458,270 @@ describe('applyHeadings', async () => {
   it('produces a document the editor schema accepts', () => {
     const out = applyHeadings(r.doc, found);
     expect(() => getSpecSchema().nodeFromJSON(out).check()).not.toThrow();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+describe('aim titles (R1)', () => {
+  const para = (text: string, bold = false): JSONContent => ({
+    type: 'paragraph', attrs: { styleId: null }, content: [{ type: 'text', text, ...(bold ? { marks: [{ type: 'bold' }] } : {}) }],
+  });
+  const body = () => para('Plain body text that goes on for a while and ends properly.');
+  const one = (t: string, bold = false) => detect([para(t, bold), body()]);
+
+  it('detects Aim/AIM with an arabic or roman numeral and a separator, bold or not, with or without a final period', () => {
+    for (const t of ['AIM 1: Characterize the antibody response', 'AIM 2. Map the T cell response to the viral peptides.', 'Aim III) Test the model', 'Aim 4', 'A. Aim 1: Define it']) {
+      const got = one(t);
+      expect(got, t).toHaveLength(1);
+      expect(got[0], t).toMatchObject({ level: 2, confidence: 'aim' });
+    }
+  });
+
+  it('allows up to 30 words, not 31, and still refuses a question or an exclamation', () => {
+    const words = (n: number) => 'Aim 1: ' + Array.from({ length: n - 2 }, (_, i) => `w${i}`).join(' ');
+    expect(one(words(30))).toHaveLength(1);
+    expect(one(words(31))).toHaveLength(0);
+    expect(one('Aim 1: what happens next?')).toHaveLength(0);
+  });
+
+  it('does not take "Aim in ...", "Aimed ..." or a sentence that merely mentions an aim for an aim title', () => {
+    expect(one('Aim in the right direction')).toHaveLength(0);
+    expect(one('Aims 1 and 2 are independent')).toHaveLength(0);
+    expect(one('The first Aim 1 is to test')).toHaveLength(0);
+  });
+
+  it('is level 2 below a preceding level-1 heading, and level 2 when none precedes', () => {
+    const got = detect([para('Specific Aims', true), body(), para('Aim 1: First'), body()]);
+    expect(got.map(c => [c.text, c.level, c.confidence])).toEqual([['Specific Aims', 1, 'name'], ['Aim 1: First', 2, 'aim']]);
+    expect(got[1].evidence.join(' | ')).toContain('Specific Aims');
+    expect(one('Aim 1: First')[0].level).toBe(2);
+  });
+
+  it('says so when an aim line holds more than one sentence, because accepting it makes all of it the heading', () => {
+    const two = one('AIM 1: Characterize the response. Objective: To define the breadth of it.');
+    expect(two[0].evidence.join(' | ')).toMatch(/2 sentences/);
+    expect(one('AIM 2. Map the T cell response.')[0].evidence.join(' | ')).not.toMatch(/sentences/);
+  });
+
+  it('still refuses a multi-line paragraph, or one holding an opaque atom', () => {
+    const br: JSONContent = { type: 'paragraph', attrs: { styleId: null }, content: [{ type: 'text', text: 'Aim 1: first' }, { type: 'hardBreak' }, { type: 'text', text: 'more' }] };
+    const atom: JSONContent = { type: 'paragraph', attrs: { styleId: null }, content: [{ type: 'text', text: 'Aim 1: first' }, { type: 'opaqueInline', attrs: { kind: 'bookmark', label: 'bookmark', fragmentId: 'x' } }] };
+    expect(detect([br, body()])).toHaveLength(0);
+    expect(detect([atom, body()])).toHaveLength(0);
+  });
+});
+
+describe('numbered-sibling completion (R2)', () => {
+  const para = (text: string, bold = false): JSONContent => ({
+    type: 'paragraph', attrs: { styleId: null }, content: [{ type: 'text', text, ...(bold ? { marks: [{ type: 'bold' }] } : {}) }],
+  });
+  const body = () => para('Plain body text that goes on for a while and ends properly.');
+  const section = (t: string, bold = true) => [para(t, bold), body()];
+
+  it('fills the hole in 2.1, 2.2, [2.3], 2.4 with a plain line that fails the format test, at the run\'s level', () => {
+    const blocks = [...section('2.1 First part'), ...section('2.2 Second part'), ...section('2.3 A longer title that is not bold and would not qualify on its own', false), ...section('2.4 Fourth part')];
+    const got = detect(blocks);
+    expect(got.map(c => [c.text.slice(0, 4), c.confidence, c.level])).toEqual([['2.1 ', 'format', 2], ['2.2 ', 'format', 2], ['2.3 ', 'sibling', 2], ['2.4 ', 'format', 2]]);
+    const sib = got[2];
+    expect(sib.evidence.join(' | ')).toMatch(/fills a gap in the numbered run 2\.1, 2\.2, 2\.4/);
+  });
+
+  it('lets a bold two-line paragraph (title, then sub-title) complete a run, but never one with a break and body text', () => {
+    const br = (marks: JSONContent['marks']): JSONContent => ({ type: 'paragraph', attrs: { styleId: null }, content: [{ type: 'text', text: '2.3 Detailed plan', marks }, { type: 'hardBreak' }, { type: 'text', text: 'Project 1 Structure', marks }] });
+    const run = [...section('2.1 One'), ...section('2.2 Two'), ...section('2.4 Four')];
+    const gap = (p: JSONContent) => detect([...run.slice(0, 4), p, body(), ...run.slice(4)]).find(c => c.text.startsWith('2.3'));
+    expect(gap(br([{ type: 'bold' }]))).toMatchObject({ confidence: 'sibling' });
+    expect(gap(br([{ type: 'bold' }]))!.evidence.join(' ')).toMatch(/two bold lines/);
+    expect(gap(br(undefined))).toBeUndefined();
+    // and on its own a multi-line paragraph is still not a heading
+    expect(detect([br([{ type: 'bold' }]), body()])).toHaveLength(0);
+  });
+
+  it('extends a run by one at either end, and chains', () => {
+    const blocks = [...section('2.2 Second part'), ...section('2.3 Third part'), ...section('2.4 not bold line', false), ...section('2.5 not bold again', false), ...section('2.1 not bold first', false)];
+    // 2.1 is out of document order (after 2.5), so it is refused; 2.4 then 2.5 chain on
+    expect(detect(blocks).map(c => [c.text.slice(0, 3), c.confidence])).toEqual([['2.2', 'format'], ['2.3', 'format'], ['2.4', 'sibling'], ['2.5', 'sibling']]);
+  });
+
+  it('needs two members already found, and a number that is next to the run', () => {
+    expect(detect([...section('2.1 Only one', true), ...section('2.2 plain follower', false)]).map(c => c.text.slice(0, 3))).toEqual(['2.1']);
+    const far = [...section('2.1 One'), ...section('2.2 Two'), ...section('2.7 Far away plain line', false)];
+    expect(detect(far).map(c => c.text.slice(0, 3))).toEqual(['2.1', '2.2']);
+  });
+
+  it('keeps the other rules: one short line (30 words), no terminal period, a different prefix does not join', () => {
+    const run = [...section('2.1 One'), ...section('2.2 Two')];
+    const long = '2.3 ' + Array.from({ length: 30 }, (_, i) => `w${i}`).join(' ');
+    expect(detect([...run, ...section(long, false), ...section('2.4 Four')]).some(c => c.text.startsWith('2.3'))).toBe(false);
+    expect(detect([...run, ...section('2.3 Ends with a period.', false)]).some(c => c.text.startsWith('2.3'))).toBe(false);
+    expect(detect([...run, ...section('3.3 Other prefix', false)]).some(c => c.text.startsWith('3.3'))).toBe(false);
+    expect(detect([...run, ...section('2.2.3 Deeper', false)]).some(c => c.text.startsWith('2.2.3'))).toBe(false);
+  });
+
+  it('does not chain on single-part numbers, because numbered lists and reference lists look like that', () => {
+    const blocks = [...section('1. First'), ...section('3. Third'), ...section('2. Second item of a list', false)];
+    expect(detect(blocks).map(c => c.text.slice(0, 2))).toEqual(['1.', '3.']);
+  });
+
+  it('must sit between its neighbours in the document', () => {
+    const blocks = [...section('2.1 One'), ...section('2.3 Three'), ...section('2.2 Two but out of order', false)];
+    expect(detect(blocks).some(c => c.text.startsWith('2.2'))).toBe(false);
+  });
+});
+
+describe('format-path guards: look-alikes of a bold section title', () => {
+  const para = (text: string, bold = true): JSONContent => ({
+    type: 'paragraph', attrs: { styleId: null }, content: [{ type: 'text', text, ...(bold ? { marks: [{ type: 'bold' }] } : {}) }],
+  });
+  const body = () => para('Plain body text that goes on for a while and ends properly.', false);
+  const found = (t: string) => detect([para(t), body()]);
+
+  it('control: a plain short bold title is still detected', () => {
+    expect(found('Mitochondrial Stress Signalling')).toHaveLength(1);
+  });
+
+  it.each([
+    ['an author list (comma)', 'Dawid Zyla, Jane Smith, John Doe'],
+    ['a comma-spliced lead-in', 'In mice, the pathway is conserved'],
+  ])('rejects %s', (_n, t) => expect(found(t)).toHaveLength(0));
+
+  it.each([
+    ['a long-form date', 'October 7 2026'],
+    ['a long-form date with a comma', 'October 7, 2026'],
+    ['a month and year', 'March 2026'],
+    ['a bare month', 'October'],
+    ['a numeric date', '2026-10-07'],
+    ['a slashed date', '10/07/2026'],
+  ])('rejects %s', (_n, t) => expect(found(t)).toHaveLength(0));
+
+  it('does not mistake a dotted section number for a date, or "March" inside a longer word', () => {
+    expect(found('1.2.3 Current state of research')).toHaveLength(1);
+    expect(found('Marching Orders for Muscle')).toHaveLength(1);
+  });
+
+  it.each(['Page 3 of 12', 'Page 3', '3 of 12'])('rejects the running head %s', t => expect(found(t)).toHaveLength(0));
+
+  it.each([
+    'Key finding: knockdown halves the response',
+    'Importantly the pathway is conserved',
+    'Notably',
+    'Interestingly this holds',
+    'However this fails',
+    'Moreover it scales',
+    'Furthermore we show',
+    'In summary the data agree',
+    'Of note this is rare',
+    'Conversely it is lost',
+    'Therefore we conclude',
+  ])('rejects the bold lead-in "%s"', t => expect(found(t)).toHaveLength(0));
+
+  it('does not reject a title that merely starts like a marker word', () => {
+    expect(found('Importance of Rigor Here')).toHaveLength(1);
+    expect(found('Keyboard Findings Overview')).toHaveLength(1);
+  });
+
+  it.each(['CONFIDENTIAL', 'DRAFT', 'DRAFT - do not distribute', 'PRELIMINARY', 'DO NOT DISTRIBUTE', 'FOR REVIEW ONLY', 'Draft: for review only'])(
+    'rejects the status stamp "%s"',
+    t => expect(found(t)).toHaveLength(0),
+  );
+
+  it('allows a title that starts with a status word but continues as a title', () => {
+    expect(found('Draft Genome Assembly')).toHaveLength(1);
+    expect(found('Preliminary Results Overview')).toHaveLength(1);
+  });
+
+  it.each(['Panel A', 'Panel 3', 'Extended Data Fig. 3', 'Extended Data Table 1', 'Supplementary Figure', 'Supplementary Table', 'Note', 'Notes', 'Note:'])(
+    'rejects the label "%s"',
+    t => expect(found(t)).toHaveLength(0),
+  );
+
+  it('applies to format matches only: a known section name, an aim title and a numbered sibling are never refused by them', () => {
+    expect(found('Preliminary Data')[0]).toMatchObject({ confidence: 'name' });
+    expect(found('Notes')).toHaveLength(0);
+    expect(detect([para('Aim 1: Test X, Y, and Z in October'), body()])[0]).toMatchObject({ confidence: 'aim' });
+    const run = [para('2.1 One'), body(), para('2.2 Two'), body(), para('2.3 Draft, rev 2', false), body(), para('2.4 Four'), body()];
+    expect(detect(run).find(c => c.text.startsWith('2.3'))).toMatchObject({ confidence: 'sibling' });
+  });
+});
+
+describe('level reset after the references', () => {
+  const para = (text: string, bold = true): JSONContent => ({
+    type: 'paragraph', attrs: { styleId: null }, content: [{ type: 'text', text, ...(bold ? { marks: [{ type: 'bold' }] } : {}) }],
+  });
+  const body = () => para('Plain body text that goes on for a while and ends properly.', false);
+
+  it('does not let trailing matter inherit a level-2 slot from the body', () => {
+    const got = detect([para('Specific Aims'), body(), para('LITERATURE CITED:'), body(), para('Appendix Contents'), body()]);
+    expect(got.map(c => [c.text, c.level])).toEqual([['Specific Aims', 1], ['LITERATURE CITED:', 1], ['Appendix Contents', 1]]);
+    // control: without the references section the same line is level 2
+    expect(detect([para('Specific Aims'), body(), para('Appendix Contents'), body()]).map(c => c.level)).toEqual([1, 2]);
+  });
+});
+
+describe('detection skipped because the document has a styled heading', () => {
+  const para = (text: string, bold = true): JSONContent => ({
+    type: 'paragraph', attrs: { styleId: null }, content: [{ type: 'text', text, ...(bold ? { marks: [{ type: 'bold' }] } : {}) }],
+  });
+  const body = () => para('Plain body text that goes on for a while and ends properly.', false);
+  const heading: JSONContent = { type: 'heading', attrs: { level: 1, styleId: 'heading1' }, content: [{ type: 'text', text: 'Title' }] };
+  const unstyled = [para('Specific Aims'), body(), para('Mitochondrial Stress Signalling'), body(), para('Approach'), body()];
+
+  it('with one styled heading plus many unstyled titles: proposes nothing and says why, once', () => {
+    const report = createReport();
+    const drafts = paragraphDrafts([heading, ...unstyled]);
+    expect(detectHeadings(drafts, { hasRealHeadings: true, report })).toEqual([]);
+    expect(report.counts.inferredHeading).toBeUndefined();
+    const warns = report.warnings.filter(w => w.feature === 'inferredHeading');
+    expect(warns).toHaveLength(1);
+    expect(warns[0].message).toMatch(/not inferred/);
+    expect(warns[0].message).toMatch(/at least one Word heading style/);
+    expect(warns[0].message).toContain('3 unstyled lines');
+  });
+
+  it('the one styled heading may sit inside a table cell: the whole document is still skipped', () => {
+    const table: JSONContent = { type: 'table', content: [{ type: 'tableRow', content: [{ type: 'tableCell', content: [heading] }] }] };
+    const doc: JSONContent = { type: 'doc', content: [table, ...unstyled] };
+    expect(hasHeadings(doc)).toBe(true);
+    const report = createReport();
+    const fmt = createFormat('nih');
+    const got = inferHeadings(doc, { styles: { format: fmt, styleIdByWordId: new Map() }, report, preservation: emptyPreservationStore() } as unknown as ReadContext);
+    expect(got).toEqual([]);
+    expect(report.warnings.filter(w => w.feature === 'inferredHeading')).toHaveLength(1);
+  });
+
+  it('stays quiet when nothing would have been proposed', () => {
+    const report = createReport();
+    detectHeadings(paragraphDrafts([heading, body(), body()]), { hasRealHeadings: true, report });
+    expect(report.warnings).toEqual([]);
+  });
+});
+
+describe('report bookkeeping is idempotent', () => {
+  const para = (text: string): JSONContent => ({ type: 'paragraph', attrs: { styleId: null }, content: [{ type: 'text', text, marks: [{ type: 'bold' }] }] });
+  const body: JSONContent = { type: 'paragraph', attrs: { styleId: null }, content: [{ type: 'text', text: 'Plain body text that goes on for a while and ends properly.' }] };
+  const drafts = paragraphDrafts([para('Specific Aims'), body, para('Approach'), body]);
+
+  it('running detection twice on one report counts once and warns once', () => {
+    const report = createReport();
+    detectHeadings(drafts, { hasRealHeadings: false, report });
+    const once = JSON.stringify(report);
+    detectHeadings(drafts, { hasRealHeadings: false, report });
+    expect(JSON.stringify(report)).toBe(once);
+    expect(report.counts.inferredHeading).toBe(2);
+    expect(report.byCategory[2]).toBe(2);
+    expect(report.warnings.filter(w => w.feature === 'inferredHeading')).toHaveLength(1);
+  });
+
+  it('a later run replaces the earlier result instead of adding to it, and leaves unrelated warnings alone', () => {
+    const report = createReport();
+    report.warnings.push({ feature: 'part', message: 'unrelated', category: 2 });
+    detectHeadings(drafts, { hasRealHeadings: false, report });
+    detectHeadings(drafts.slice(0, 2), { hasRealHeadings: false, report });
+    expect(report.counts.inferredHeading).toBe(1);
+    expect(report.byCategory[2]).toBe(1);
+    expect(report.warnings.map(w => w.feature)).toEqual(['part', 'inferredHeading']);
+    detectHeadings(drafts.slice(1, 2), { hasRealHeadings: false, report });
+    expect(report.counts.inferredHeading).toBeUndefined();
+    expect(report.warnings.map(w => w.feature)).toEqual(['part']);
   });
 });

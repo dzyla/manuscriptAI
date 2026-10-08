@@ -210,7 +210,7 @@ describe.skipIf(docs.length === 0)('private real-world documents', () => {
     for (const c of found) {
       const node = blocksByIndex[c.index];
       expect(node.type).toBe('paragraph');
-      const atoms = (node.content ?? []).filter(x => x.type !== 'text' && !(x.type === 'opaqueInline' && x.attrs?.label === 'comment anchor'));
+      const atoms = (node.content ?? []).filter(x => x.type !== 'text' && x.type !== 'hardBreak' && x.type !== 'pageBreak' && !(x.type === 'opaqueInline' && x.attrs?.label === 'comment anchor'));
       expect(atoms, `candidate ${c.index}`).toEqual([]);
       expect(c.evidence.length).toBeGreaterThan(0);
     }
@@ -233,12 +233,12 @@ describe.skipIf(docs.length === 0)('private real-world documents', () => {
     const tally = (lvl: number, conf: string) => found.filter(c => c.level === lvl && c.confidence === conf).length;
     console.log(
       `headings ${name}: ${found.length} inferred of ${blocks.length} paragraphs; ` +
-        `L1 name ${tally(1, 'name')}, L1 format ${tally(1, 'format')}, L2 name ${tally(2, 'name')}, L2 format ${tally(2, 'format')}, L3 ${found.filter(c => c.level === 3).length}; ` +
+        `L1 name ${tally(1, 'name')}, L1 format ${tally(1, 'format')}, L2 name ${tally(2, 'name')}, L2 format ${tally(2, 'format')}, L2 aim ${tally(2, 'aim')}, L2 sibling ${tally(2, 'sibling')}, L3 ${found.filter(c => c.level === 3).length}; ` +
         `${refused.length} more refused only for holding an atom ${JSON.stringify(Object.fromEntries(atomLabels))}`,
     );
     console.log(
       `titles ${name}:\n` +
-        found.map(c => `  [${String(c.index).padStart(3)}] L${c.level} ${c.confidence.padEnd(6)} ${JSON.stringify(c.text)}`).join('\n') +
+        found.map(c => `  [${String(c.index).padStart(3)}] L${c.level} ${c.confidence.padEnd(7)} ${JSON.stringify(c.text)}\n        evidence: ${c.evidence.join(' | ')}`).join('\n') +
         (refused.length ? '\n  refused (atom): ' + refused.map(c => `[${c.index}] ${JSON.stringify(c.text)} (${c.confidence})`).join('; ') : ''),
     );
   });
