@@ -1,6 +1,12 @@
-import { useState, useCallback, useRef, useEffect, useMemo, createElement } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo, useDeferredValue, createElement } from 'react';
 import Editor, { EditorRef } from './components/Editor';
 import Sidebar from './components/Sidebar';
+import { AppShell } from './components/shell/AppShell';
+import { StatusBar } from './components/shell/StatusBar';
+import type { RailTask } from './components/shell/Rail';
+import { estimatePages } from './services/pagination';
+import { styleDistance } from './services/proseAudit/score';
+import { activeSummary } from './services/proseAudit/profile';
 import SettingsModal from './components/SettingsModal';
 import PostDraftingView from './components/PostDraftingView';
 import VersionHistoryPopup from './components/VersionHistoryPopup';
@@ -48,6 +54,19 @@ function AgentIcon({ agent, size = 12 }: { agent: AgentType; size?: number }) {
   return createElement(IconComponent, { size });
 }
 
+/**
+ * U Task 2: the old six-tab Sidebar is mounted unchanged as the shell's panel while Tasks 4-7 replace
+ * it panel by panel. Task 9 deletes this constant along with Sidebar.tsx.
+ */
+const U_SHELL_LEGACY_PANEL = true;
+
+const TASK_TAB: Record<RailTask, 'outline' | 'sources' | 'suggestions' | 'style'> = {
+  write: 'outline', cite: 'sources', review: 'suggestions', format: 'style',
+};
+const TAB_TASK: Record<'chat' | 'suggestions' | 'history' | 'sources' | 'outline' | 'style', RailTask> = {
+  chat: 'review', suggestions: 'review', history: 'write', outline: 'write', sources: 'cite', style: 'format',
+};
+
 export default function App() {
   // ─── Zustand stores ────────────────────────────────────────────────────────
   const {
@@ -59,7 +78,7 @@ export default function App() {
     insertFigure: storeInsertFigure,
     renumberFigures: storeRenumberFigures,
     resetDocument, persist: persistDocument, initialize: initDocument,
-    mode, grantInstructions, grantTemplateId,
+    mode, grantInstructions, grantTemplateId, format, docJson,
     setMode, setGrantInstructions, setGrantTemplateId,
     loadStatus, blockedByUnreadable, lastLoad, allowOverwrite, replaceWithHtml, importDocx, revertImport, queueFragmentClone, importId,
   } = useDocumentStore();
@@ -105,6 +124,8 @@ export default function App() {
   const [rewritingId, setRewritingId] = useState<string | null>(null);
   const rewriteAbort = useRef<AbortController | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(400);
+  // One rail task open at a time; null closes the panel. Starts on Review, where the sidebar always opened.
+  const [railTask, setRailTask] = useState<RailTask | null>('review');
   const [zoom, setZoom] = useState(100);
   const [editorWidth, setEditorWidth] = useState<'normal' | 'wide' | 'full'>('normal');
   const [currentAgent, setCurrentAgent] = useState<AgentType>('manager');
@@ -1277,6 +1298,28 @@ export default function App() {
     }
   };
 
+  // Legacy code paths call setSidebarTab to reveal a tab; keep the rail in step so the panel is visible.
+  useEffect(() => { if (U_SHELL_LEGACY_PANEL) setRailTask(TAB_TASK[sidebarTab]); }, [sidebarTab]);
+  const handleRailSelect = useCallback((t: RailTask) => {
+    setRailTask(cur => (cur === t ? null : t));
+    if (U_SHELL_LEGACY_PANEL) setSidebarTab(TASK_TAB[t]);
+  }, []);
+
+  // Deferred so typing is never blocked by a whole-document walk; memoised on the document and format only.
+  const deferredDoc = useDeferredValue(docJson);
+  const pageEstimate = useMemo(() => estimatePages(deferredDoc, format ?? null), [deferredDoc, format]);
+  const limitPages = useMemo(() => {
+    if (mode !== 'grant') return null;
+    const total = (getGrantTemplate(grantTemplateId)?.sections ?? []).reduce((n, s) => n + (s.pageLimit ?? 0), 0);
+    return total > 0 ? total : null;
+  }, [mode, grantTemplateId]);
+  const voiceProfile = aiSettings.voiceProfile;
+  const voiceDistance = useMemo(() => {
+    if (!styleAudit) return null;
+    const { summary, isGeneric } = activeSummary(voiceProfile);
+    return isGeneric ? null : Math.round(styleDistance(styleAudit.metrics.summary, summary).score);
+  }, [styleAudit, voiceProfile]);
+
   const wordCount = stripHtml(content).split(/\s+/).filter(w => w.length > 0).length;
 
   return (
@@ -1365,7 +1408,13 @@ export default function App() {
       )}
 
       {/* Main Content */}
-      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+      <AppShell
+        hideChrome={isDistractionFree}
+        active={railTask}
+        badges={{ review: suggestions.length }}
+        onSelect={handleRailSelect}
+        topBar={(
+          <>
         {/* Header */}
         <header className="h-14 flex items-center justify-between px-4 sm:px-6 shrink-0 gap-2" style={{ borderBottom: '1px solid var(--border)', background: 'var(--surface-1)' }}>
           <div className="flex items-center gap-2 sm:gap-3 flex-1 min-w-0">
@@ -1547,12 +1596,14 @@ export default function App() {
             trimmingSection={trimmingSection}
           />
         )}
-
-        {/* Editor Area */}
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6 md:p-8" style={{ background: 'var(--surface-0)' }}>
+          </>
+        )}
+        canvas={(
+        <div className="h-full overflow-y-auto p-4 sm:p-6 md:p-8" style={{ background: 'var(--surface-0)' }}>
           <Editor
             ref={editorRef}
             content={content}
+            format={format}
             onChange={(html) => setContent(html)}
             onDocChange={setDocJson}
             pendingDocument={pendingDocument}
@@ -1583,12 +1634,14 @@ export default function App() {
             styleAuditEnabled={styleAuditOn}
             onStyleAudit={handleStyleAudit}
           />
-        </main>
+        </div>
+        )}
+        statusBar={(
+          <>
+            <StatusBar estimate={pageEstimate} limitPages={limitPages} words={wordCount} voiceDistance={voiceDistance} saveState={saveState} />
 
-        {/* Bottom status bar */}
         <div className="h-7 flex items-center justify-between px-4 text-[10px] font-medium shrink-0" style={{ borderTop: '1px solid var(--border)', background: 'var(--surface-1)', color: 'var(--text-muted)' }}>
           <div className="flex items-center gap-4">
-            <span>{wordCount} words</span>
             <span>~{tokenCount.toLocaleString()} tokens</span>
             <span>{suggestions.length} suggestions</span>
           </div>
@@ -1600,10 +1653,9 @@ export default function App() {
             {aiSettings.provider === 'local' && <span className="truncate max-w-[120px]">{aiSettings.localModel}</span>}
           </div>
         </div>
-      </div>
-
-      {/* Sidebar — responsive width */}
-      {!isDistractionFree && (
+          </>
+        )}
+        panel={(
         <div className="shrink-0 relative h-full border-t md:border-t-0 md:border-l max-w-full flex flex-col" style={{ width: typeof window !== 'undefined' && window.innerWidth < 768 ? '100%' : `${sidebarWidth}px`, minWidth: '280px', borderColor: 'var(--border)' }}>
           {/* Drag handle */}
           <div 
@@ -1657,7 +1709,8 @@ export default function App() {
             documentHTML={content}
           />
         </div>
-      )}
+        )}
+      />
 
       <SettingsModal
         isOpen={isSettingsOpen}
