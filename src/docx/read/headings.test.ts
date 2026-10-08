@@ -484,6 +484,26 @@ describe('aim titles (R1)', () => {
     expect(one('Aim 1: what happens next?')).toHaveLength(0);
   });
 
+  it('does not promote ordinary sentences that start with an aim number', () => {
+    for (const t of [
+      'Aim 2 will determine the structure of the F protein.',
+      'Aim 2 of this proposal is to test whether F binds H.',
+      'Aim 1 builds on preliminary data from Aim 2 and Aim 3.',
+      'Aim 1 tests the model',
+      'Aim 3 addresses the gap',
+      'Aim 1: will determine the structure',
+      'Aim 2 differs from the first in scope',
+      'Aim 1 here is a short summary of the work',
+    ]) expect(one(t), t).toHaveLength(0);
+  });
+
+  it('accepts the capital-initial form without a separator, and "Aim 1: To ..." with one', () => {
+    expect(one('Aim 1 Characterize the response')[0]).toMatchObject({ confidence: 'aim' });
+    expect(one('Aim 2 Map the T cell response')[0]).toMatchObject({ confidence: 'aim' });
+    expect(one('Aim 1: To define the breadth of the response')[0]).toMatchObject({ confidence: 'aim' });
+    expect(one('Aim 1 To define the breadth')).toHaveLength(0);
+  });
+
   it('does not take "Aim in ...", "Aimed ..." or a sentence that merely mentions an aim for an aim title', () => {
     expect(one('Aim in the right direction')).toHaveLength(0);
     expect(one('Aims 1 and 2 are independent')).toHaveLength(0);
@@ -517,9 +537,12 @@ describe('numbered-sibling completion (R2)', () => {
   });
   const body = () => para('Plain body text that goes on for a while and ends properly.');
   const section = (t: string, bold = true) => [para(t, bold), body()];
+  // Over the 8-word format limit, so the format path cannot find it: only numbered-sibling completion can.
+  const LONG = 'A bold title that is long enough to fail the eight word format limit';
+  const long = (n: string) => section(`${n} ${LONG}`);
 
-  it('fills the hole in 2.1, 2.2, [2.3], 2.4 with a plain line that fails the format test, at the run\'s level', () => {
-    const blocks = [...section('2.1 First part'), ...section('2.2 Second part'), ...section('2.3 A longer title that is not bold and would not qualify on its own', false), ...section('2.4 Fourth part')];
+  it('fills the hole in 2.1, 2.2, [2.3], 2.4 with a bold line that fails the format test (too long, a comma), at the run\'s level', () => {
+    const blocks = [...section('2.1 First part'), ...section('2.2 Second part'), ...section('2.3 A much longer title, with a comma, that fails the eight word format limit'), ...section('2.4 Fourth part')];
     const got = detect(blocks);
     expect(got.map(c => [c.text.slice(0, 4), c.confidence, c.level])).toEqual([['2.1 ', 'format', 2], ['2.2 ', 'format', 2], ['2.3 ', 'sibling', 2], ['2.4 ', 'format', 2]]);
     const sib = got[2];
@@ -538,33 +561,84 @@ describe('numbered-sibling completion (R2)', () => {
   });
 
   it('extends a run by one at either end, and chains', () => {
-    const blocks = [...section('2.2 Second part'), ...section('2.3 Third part'), ...section('2.4 not bold line', false), ...section('2.5 not bold again', false), ...section('2.1 not bold first', false)];
+    const blocks = [...section('2.2 Second part'), ...section('2.3 Third part'), ...section('2.4 A longer bold title that fails the eight word limit'), ...section('2.5 Another longer bold title that fails the eight word limit'), ...section('2.1 A longer bold title that is first but sits last in the document')];
     // 2.1 is out of document order (after 2.5), so it is refused; 2.4 then 2.5 chain on
     expect(detect(blocks).map(c => [c.text.slice(0, 3), c.confidence])).toEqual([['2.2', 'format'], ['2.3', 'format'], ['2.4', 'sibling'], ['2.5', 'sibling']]);
   });
 
   it('needs two members already found, and a number that is next to the run', () => {
     expect(detect([...section('2.1 Only one', true), ...section('2.2 plain follower', false)]).map(c => c.text.slice(0, 3))).toEqual(['2.1']);
-    const far = [...section('2.1 One'), ...section('2.2 Two'), ...section('2.7 Far away plain line', false)];
+    const far = [...section('2.1 One'), ...section('2.2 Two'), ...long('2.7')];
     expect(detect(far).map(c => c.text.slice(0, 3))).toEqual(['2.1', '2.2']);
   });
 
   it('keeps the other rules: one short line (30 words), no terminal period, a different prefix does not join', () => {
     const run = [...section('2.1 One'), ...section('2.2 Two')];
-    const long = '2.3 ' + Array.from({ length: 30 }, (_, i) => `w${i}`).join(' ');
-    expect(detect([...run, ...section(long, false), ...section('2.4 Four')]).some(c => c.text.startsWith('2.3'))).toBe(false);
-    expect(detect([...run, ...section('2.3 Ends with a period.', false)]).some(c => c.text.startsWith('2.3'))).toBe(false);
-    expect(detect([...run, ...section('3.3 Other prefix', false)]).some(c => c.text.startsWith('3.3'))).toBe(false);
-    expect(detect([...run, ...section('2.2.3 Deeper', false)]).some(c => c.text.startsWith('2.2.3'))).toBe(false);
+    const tooLong = '2.3 ' + Array.from({ length: 30 }, (_, i) => `w${i}`).join(' ');
+    const joins = (blocks: JSONContent[], prefix: string) => detect(blocks).find(c => c.text.startsWith(prefix))?.confidence === 'sibling';
+    expect(joins([...run, ...section(tooLong), ...section('2.4 Four')], '2.3')).toBe(false);
+    expect(joins([...run, ...section(`2.3 ${LONG}.`)], '2.3')).toBe(false);
+    expect(joins([...run, ...long('3.3')], '3.3')).toBe(false);
+    expect(joins([...run, ...long('2.2.3')], '2.2.3')).toBe(false);
+    // control: the same shape DOES join when it obeys the rules
+    expect(joins([...run, ...long('2.3')], '2.3')).toBe(true);
   });
 
   it('does not chain on single-part numbers, because numbered lists and reference lists look like that', () => {
-    const blocks = [...section('1. First'), ...section('3. Third'), ...section('2. Second item of a list', false)];
+    const blocks = [...section('1. First'), ...section('3. Third'), ...long('2.')];
     expect(detect(blocks).map(c => c.text.slice(0, 2))).toEqual(['1.', '3.']);
+    expect(detect(blocks).some(c => c.confidence === 'sibling')).toBe(false);
+  });
+
+  describe('what it must not promote (numbered body text, distant and list-like lines)', () => {
+    const run = [...section('2.1 One'), ...section('2.2 Two'), ...section('2.4 Four')];
+    const has = (blocks: JSONContent[], prefix: string) => detect(blocks).find(c => c.text.startsWith(prefix))?.confidence === 'sibling';
+
+    it('a number-led quantity such as "2.3 mM Tris buffer" is not a heading, plain or bold', () => {
+      const tris = '2.3 mM Tris buffer used throughout all of the experiments described in this section';
+      expect(has([...run.slice(0, 4), ...section(tris, false), ...run.slice(4)], '2.3')).toBe(false);
+      expect(has([...run.slice(0, 4), ...section(tris, true), ...run.slice(4)], '2.3')).toBe(false); // bold, so only the capital-letter rule stops it
+      expect(has([...run.slice(0, 4), ...section(tris.replace('2.3 mM', '2.3 Mm'), true), ...run.slice(4)], '2.3')).toBe(true);
+    });
+
+    it('a line far from the run is not a sibling however well it is numbered, but the same line close by is', () => {
+      const filler = Array.from({ length: 40 }, body);
+      const tight = [...section('2.1 One'), ...section('2.2 Two')];
+      expect(has([...tight, ...filler, ...long('2.3')], '2.3')).toBe(false);
+      expect(has([...tight, ...long('2.3')], '2.3')).toBe(true);
+      // the bound is the larger of 12 paragraphs and twice the run's widest spacing
+      const sparse = [para('2.1 One', true), ...Array.from({ length: 29 }, body), para('2.2 Two', true), body()];
+      expect(has([...sparse, ...Array.from({ length: 40 }, body), para(`2.3 ${LONG}`, true), body()], '2.3')).toBe(true);
+      expect(has([...sparse, ...Array.from({ length: 100 }, body), para(`2.3 ${LONG}`, true), body()], '2.3')).toBe(false);
+    });
+
+    it('a numbered list under real headings does not chain in, comma and all', () => {
+      const blocks = [para('2.1 One', true), body(), para('2.2 Two', true), body(), para('2.3 Collect samples at day 0, 7, and 14', false), para('2.4 Process the samples', false), para('2.5 Store them', false), body()];
+      expect(detect(blocks).map(c => c.text.slice(0, 3))).toEqual(['2.1', '2.2']);
+    });
+
+    it('a plain table-of-contents line does not join a run of real headings', () => {
+      const headings = [...section('2.2 Beta'), ...section('2.3 Gamma'), ...section('2.5 Epsilon')];
+      const toc = [para(`2.1 ${LONG}`, false), body()];
+      expect(detect([...toc, ...headings]).some(c => c.index === 0)).toBe(false);
+      // control: the same line set as a bold title does join
+      expect(detect([...long('2.1'), ...headings]).find(c => c.index === 0)?.confidence).toBe('sibling');
+    });
+
+    it('a bold sibling candidate still needs body text after it, not another title', () => {
+      const blocks = [...run.slice(0, 4), para(`2.3 ${LONG}`, true), para('Another bold title right after it', true), body(), ...run.slice(4)];
+      expect(has(blocks, '2.3')).toBe(false);
+      expect(has([...run.slice(0, 4), ...long('2.3'), ...run.slice(4)], '2.3')).toBe(true);
+    });
+
+    it('its evidence reports the distance and the conditions it met', () => {
+      const got = detect([...run.slice(0, 4), ...long('2.3'), ...run.slice(4)]).find(c => c.text.startsWith('2.3'))!;
+      expect(got.evidence.join(' | ')).toMatch(/paragraphs from the nearest member of the run \(reach \d+\); same emphasis as the run; followed by a body paragraph/);
+    });
   });
 
   it('must sit between its neighbours in the document', () => {
-    const blocks = [...section('2.1 One'), ...section('2.3 Three'), ...section('2.2 Two but out of order', false)];
+    const blocks = [...section('2.1 One'), ...section('2.3 Three'), ...long('2.2')];
     expect(detect(blocks).some(c => c.text.startsWith('2.2'))).toBe(false);
   });
 });
@@ -635,11 +709,30 @@ describe('format-path guards: look-alikes of a bold section title', () => {
     t => expect(found(t)).toHaveLength(0),
   );
 
+  it('pins the numeric-date guard on its own: letters elsewhere in the line, so no other check can reject it first', () => {
+    expect(found('Updated 10/07/2026')).toHaveLength(0);
+    expect(found('Revised 2026-10-07')).toHaveLength(0);
+    expect(found('Updated Records Overview')).toHaveLength(1);
+  });
+
+  it('pins the status-phrase guard on its own: the phrase sits mid-string, where the leading-word check cannot see it', () => {
+    expect(found('Report - Do not distribute copy')).toHaveLength(0);
+    expect(found('Grant Text For Review Only')).toHaveLength(0);
+  });
+
+  it.each(['Draft: v2', 'Confidential (internal)', 'Preliminary [v3]', 'DRAFT | Page'])('rejects a status word followed by the separator in "%s"', t =>
+    expect(found(t)).toHaveLength(0),
+  );
+
+  it.each(['Supplementary Data', 'Supplementary Table S1', 'Key Findings', 'Key Findings Summary'])('rejects the label or lead-in "%s"', t =>
+    expect(found(t)).toHaveLength(0),
+  );
+
   it('applies to format matches only: a known section name, an aim title and a numbered sibling are never refused by them', () => {
     expect(found('Preliminary Data')[0]).toMatchObject({ confidence: 'name' });
     expect(found('Notes')).toHaveLength(0);
     expect(detect([para('Aim 1: Test X, Y, and Z in October'), body()])[0]).toMatchObject({ confidence: 'aim' });
-    const run = [para('2.1 One'), body(), para('2.2 Two'), body(), para('2.3 Draft, rev 2', false), body(), para('2.4 Four'), body()];
+    const run = [para('2.1 One'), body(), para('2.2 Two'), body(), para('2.3 Draft, rev 2'), body(), para('2.4 Four'), body()];
     expect(detect(run).find(c => c.text.startsWith('2.3'))).toMatchObject({ confidence: 'sibling' });
   });
 });
