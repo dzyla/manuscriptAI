@@ -158,10 +158,16 @@ export const StyleHighlights = Extension.create<StyleHighlightsOptions, { enable
  *   textblock when the content has a non-text node, which would swap the block
  *   (heading -> paragraph) and drop its attrs (textAlign, ooxml). One code path is
  *   used for single- and multi-line text so both behave identically.
- * - The inserted text carries the marks of the replaced range (as `tr.insertText` does).
+ * - The inserted text carries the marks of the replaced range: `marksAcross` takes the
+ *   marks of the first run in the range (bold-then-italic yields bold), matching TipTap's
+ *   own `insertText`.
+ * - The range must lie inside ONE block (same parent at both ends); a range crossing a block
+ *   boundary (e.g. stale offsets) is rejected rather than merging blocks.
+ * - Multi-line text is rejected when the target block cannot hold a hardBreak (e.g. a code
+ *   block); single-line text is still allowed there.
  * - One transaction, so one undo step. It does not move focus; the caller decides.
- * - Returns false and changes nothing for a non-integer, out-of-bounds or empty
- *   range, and for empty text (so this cannot be used to delete a range).
+ * - Returns false and changes nothing for a non-integer, out-of-bounds, empty or cross-block
+ *   range, for multi-line text the block cannot hold, and for empty text (so this cannot be used to delete a range).
  */
 export function replaceRangeWithText(editor: Editor, from: number, to: number, text: string): boolean {
   const size = editor.state.doc.content.size;
@@ -169,9 +175,17 @@ export function replaceRangeWithText(editor: Editor, from: number, to: number, t
   if (from < 0 || to > size || to <= from) return false;
   const lines = text.split(/\r\n|\r|\n/);
   if (lines.every(l => l === '')) return false;
+  // All guards run on the current state BEFORE any command, so a rejected call dispatches
+  // nothing at all (TipTap would otherwise dispatch an empty transaction, letting
+  // appendTransaction plugins such as the trailing-node one touch the document).
+  const doc0 = editor.state.doc;
+  const schema = doc0.type.schema;
+  const $from0 = doc0.resolve(from);
+  const $to0 = doc0.resolve(to);
+  if (!$from0.sameParent($to0)) return false;
+  if (lines.length > 1 && !$from0.parent.canReplaceWith($from0.index(), $to0.index(), schema.nodes.hardBreak)) return false;
   return editor.commands.command(({ tr, dispatch }) => {
     const { doc } = tr;
-    const schema = doc.type.schema;
     const marks = doc.resolve(from).marksAcross(doc.resolve(to)) ?? [];
     const nodes: PMNode[] = [];
     lines.forEach((line, i) => {

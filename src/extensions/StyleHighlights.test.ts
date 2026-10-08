@@ -200,6 +200,9 @@ describe('replaceRangeWithText', () => {
   });
 });
 
+type J = { type?: string; content?: J[]; text?: string };
+const jsonOf = (e: Editor) => e.getJSON() as unknown as J;
+
 describe('replaceRangeWithText preserves the surrounding block and marks', () => {
   function mk(html: string) {
     return new Editor({ extensions: [...getSchemaExtensions()], content: htmlToDoc(html) });
@@ -247,6 +250,55 @@ describe('replaceRangeWithText preserves the surrounding block and marks', () =>
     });
   }
 
+  it('rejects a range that crosses a block boundary and leaves the document byte-identical', () => {
+    for (const text of ['Z Q', 'Z\nQ']) {
+      const e = mk('<p>abc def</p><p>ghi jkl</p>');
+      const before = JSON.stringify(e.getJSON());
+      expect(replaceRangeWithText(e, 5, 12, text)).toBe(false);
+      expect(JSON.stringify(e.getJSON())).toBe(before);
+      e.destroy();
+    }
+  });
+
+  it('rejects multi-line text in a code block but allows single-line text there', () => {
+    const e = mk('<pre><code>abc def ghi</code></pre>');
+    const before = JSON.stringify(e.getJSON());
+    expect(replaceRangeWithText(e, 1, 4, 'X\nY')).toBe(false);
+    expect(JSON.stringify(e.getJSON())).toBe(before);
+    expect(replaceRangeWithText(e, 1, 4, 'X Y')).toBe(true);
+    const block = jsonOf(e).content![0];
+    expect(block.type).toBe('codeBlock');
+    expect(block.content).toEqual([{ type: 'text', text: 'X Y def ghi' }]);
+    e.destroy();
+  });
+
+  for (const text of ['A B', 'A\nB']) {
+    const label = text.includes('\n') ? 'multi-line' : 'single-line';
+    it(`works inside a list item (${label})`, () => {
+      const e = mk('<ul><li><p>First sentence here. Second one.</p></li></ul>');
+      const from = 3; // inside ul > li > p
+      expect(e.state.doc.textBetween(from, from + 20)).toBe('First sentence here.');
+      expect(replaceRangeWithText(e, from, from + 20, text)).toBe(true);
+      const li = jsonOf(e).content![0].content![0];
+      expect(li.type).toBe('listItem');
+      expect(li.content).toHaveLength(1);
+      expect(li.content![0].type).toBe('paragraph');
+      e.destroy();
+    });
+
+    it(`works inside a table cell (${label})`, () => {
+      const e = mk('<table><tbody><tr><td><p>First sentence here. Second one.</p></td></tr></tbody></table>');
+      let from = -1;
+      e.state.doc.descendants((n, pos) => { if (n.isText && from < 0) from = pos; });
+      expect(replaceRangeWithText(e, from, from + 20, text)).toBe(true);
+      const cell = jsonOf(e).content![0].content![0].content![0];
+      expect(cell.type).toBe('tableCell');
+      expect(cell.content).toHaveLength(1);
+      expect(cell.content![0].type).toBe('paragraph');
+      e.destroy();
+    });
+  }
+
   it('rejects NaN / non-integer bounds and empty text', () => {
     const e = mk('<p>placeholder words</p>');
     expect(replaceRangeWithText(e, NaN, 5, 'x')).toBe(false);
@@ -288,8 +340,11 @@ describe('StyleHighlights audit gating', () => {
       expect(reports).toHaveLength(1);
 
       throwOnReport = true;
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       editor.commands.insertContentAt(1, 'C ');
       expect(() => vi.advanceTimersByTime(60)).not.toThrow();
+      expect(errSpy).toHaveBeenCalledTimes(1);
+      errSpy.mockRestore();
       editor.destroy();
     } finally {
       vi.useRealTimers();
