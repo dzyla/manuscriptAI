@@ -7,6 +7,35 @@ export function parseXml(xml: string): Document {
   return new DOMParser().parseFromString(xml, 'text/xml') as unknown as Document;
 }
 
+/**
+ * Parse untrusted XML or throw. xmldom is lenient by default (a truncated document parses to a
+ * partial tree and only logs a warning), so every warning/error is fatal here, DTDs/entity
+ * declarations are refused outright (OOXML never needs them), and the root element must be
+ * closed by the end of the source. Throws a plain Error; callers map it to their own error type.
+ */
+export function parseXmlStrict(xml: string): Document {
+  const src = xml.charCodeAt(0) === 0xfeff ? xml.slice(1) : xml;
+  if (/<!DOCTYPE|<!ENTITY/i.test(src)) throw new Error('DTD and entity declarations are not allowed');
+  const problems: string[] = [];
+  const record = (level: string) => (msg: string) => problems.push(`${level}: ${String(msg).trim()}`);
+  let doc: Document | undefined;
+  try {
+    doc = new DOMParser({
+      errorHandler: { warning: record('warning'), error: record('error'), fatalError: record('fatal') },
+    }).parseFromString(src, 'text/xml') as unknown as Document;
+  } catch (e) {
+    throw new Error(`XML parse failed: ${(e as Error).message}`);
+  }
+  const root = doc?.documentElement;
+  if (!root) throw new Error('XML has no root element');
+  if (problems.length) throw new Error(`malformed XML (${problems[0]})`);
+  // xmldom does not notice elements left open at end of input: require the root to be closed.
+  const tail = src.trimEnd();
+  const closed = tail.endsWith(`</${root.nodeName}>`) || (!root.firstChild && tail.endsWith('/>'));
+  if (!closed) throw new Error('XML is truncated: the root element is not closed');
+  return doc;
+}
+
 export function serializeXml(node: Node): string {
   return new XMLSerializer().serializeToString(node as any);
 }

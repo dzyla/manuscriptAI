@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseXml, captureFragment, remapRelIds, allocateRelIds, collectFragmentIds, pruneFragments } from './xml';
+import { parseXml, parseXmlStrict, captureFragment, remapRelIds, allocateRelIds, collectFragmentIds, pruneFragments } from './xml';
 import { emptyPreservationStore } from './types';
 
 const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
@@ -68,5 +68,24 @@ describe('fragment bookkeeping', () => {
     const out = pruneFragments(s, new Set(['f1']));
     expect(Object.keys(out.fragments)).toEqual(['f1']);
     expect(s.fragments.f9).toBeDefined(); // input not mutated
+  });
+});
+
+describe('parseXmlStrict', () => {
+  it('parses well-formed XML, with or without a BOM, and an empty root', () => {
+    expect(parseXmlStrict(DOC).documentElement.localName).toBe('document');
+    expect(parseXmlStrict('\uFEFF<a><b/></a>\n').documentElement.localName).toBe('a');
+    expect(parseXmlStrict('<a/>').documentElement.localName).toBe('a');
+  });
+
+  it.each([
+    ['cut inside text', '<a><b>hi'],
+    ['cut at a tag boundary', '<a><b></b>'],
+    ['mismatched close', '<a><b></a>'],
+    ['empty input', ''],
+    ['undefined entity', '<a>&bogus;</a>'],
+    ['DTD with entity', '<!DOCTYPE a [<!ENTITY x "y">]><a>&x;</a>'],
+  ])('throws for %s', (_label, xml) => {
+    expect(() => parseXmlStrict(xml)).toThrow();
   });
 });
