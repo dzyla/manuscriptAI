@@ -23,7 +23,8 @@ import { saveAs } from 'file-saver';
 import * as mammoth from 'mammoth';
 import TurndownService from 'turndown';
 import { useDocumentStore, documentRepository } from './stores/useDocumentStore';
-import { snapshotBeforeImport } from './services/importSafety';
+import { snapshotBeforeImport, revertLabel } from './services/importSafety';
+import { isBlankText } from './db/placeholder';
 import { useAIStore } from './stores/useAIStore';
 import { useSourceStore } from './stores/useSourceStore';
 import { db } from './db/manuscriptDb';
@@ -57,7 +58,7 @@ export default function App() {
     resetDocument, persist: persistDocument, initialize: initDocument,
     mode, grantInstructions, grantTemplateId,
     setMode, setGrantInstructions, setGrantTemplateId,
-    loadStatus, blockedByUnreadable, lastLoad, allowOverwrite, importDocx, revertImport,
+    loadStatus, blockedByUnreadable, lastLoad, allowOverwrite, replaceWithHtml, importDocx, revertImport,
   } = useDocumentStore();
 
   const {
@@ -1081,19 +1082,18 @@ export default function App() {
 
   // ─── .docx import ──────────────────────────────────────────────────────────
   // The file is read in a Worker (the page stays responsive); NOTHING is written until the author confirms the report.
-  // Whether an import left a replaced document that "Restore previous document" can bring back.
-  const [revertAvailable, setRevertAvailable] = useState(false);
-  const revertAvailableRef = useRef(false);
-  revertAvailableRef.current = revertAvailable;
+  // The document "Restore previous document" would bring back (the newest an import replaced), or null. Named on the button.
+  const [revertTarget, setRevertTarget] = useState<{ title: string; savedAt: number } | null>(null);
+  const revertTargetRef = useRef<{ title: string; savedAt: number } | null>(null);
   const refreshRevertAvailable = useCallback(async () => {
+    let target: { title: string; savedAt: number } | null = null;
     try {
-      const available = (await documentRepository.listBackups()).some(b => b.replacedByImport && b.pinned);
-      revertAvailableRef.current = available; // read straight away by the message that follows an import, before the next render
-      setRevertAvailable(available);
+      target = await documentRepository.peekRevert();
     } catch {
-      revertAvailableRef.current = false;
-      setRevertAvailable(false);
+      target = null;
     }
+    revertTargetRef.current = target; // read straight away by the message that follows an import, before the next render
+    setRevertTarget(target);
   }, []);
   useEffect(() => { if (loadSettled) void refreshRevertAvailable(); }, [loadSettled, refreshRevertAvailable]);
 
@@ -1102,6 +1102,7 @@ export default function App() {
       const doc = await revertImport();
       editorRef.current?.setDocument(doc);
       useAIStore.getState().setSuggestions([]);
+      useAIStore.getState().setHistory([]); // its entries hold text of the document that was just replaced
       await refreshRevertAvailable();
       showToast('Restored the document the import replaced. "Restore previous document" again brings the import back.', 'success');
     } catch (err) {
@@ -1120,14 +1121,19 @@ export default function App() {
     },
     // setDocument records no undo history: Ctrl+Z cannot bring the replaced document back (the dialog says so).
     showInEditor: doc => editorRef.current?.setDocument(doc),
-    onImported: () => useAIStore.getState().setSuggestions([]), // their text offsets belong to the replaced document
+    onImported: () => {
+      // Their text offsets, and the apply-history's old/new text, belong to the replaced document (reverting one would put that
+      // document's text over the import).
+      useAIStore.getState().setSuggestions([]);
+      useAIStore.getState().setHistory([]);
+    },
     notify: (message, type, action) => showToast(message, type, action),
-    afterImportAction: () => (revertAvailableRef.current ? { label: 'Restore previous document', onClick: () => { void handleRevertImport(); } } : undefined),
+    afterImportAction: () => (revertTargetRef.current ? { label: revertLabel(revertTargetRef.current), onClick: () => { void handleRevertImport(); } } : undefined),
   });
 
   const handleImportText = async (file: File) => {
-    const plainNow = content.replace(/<[^>]*>/g, '').replace(/Start writing your manuscript here.*$/, '').trim();
-    if (plainNow.length > 20 && !window.confirm(`Replace the open document with ${file.name}? Any unsaved changes will be lost.`)) return;
+    // Text typed into or after the placeholder is work; only no text, or exactly the placeholder, is an empty document.
+    if (!isBlankText(content.replace(/<[^>]*>/g, ' ')) && !window.confirm(`Replace the open document with ${file.name}? Any unsaved changes will be lost.`)) return;
     try {
       const html = textToHtml(await file.text(), file.name.toLowerCase().endsWith('.md'));
       setTitle(titleFromFileName(file.name));
@@ -1198,8 +1204,8 @@ export default function App() {
     // Snapshots are stored self-contained; older ones may still reference asset ids / blob: URLs.
     try {
       const html = await inlineAssetImages(snapshot.content);
-      setTitle(snapshot.title);
-      setContent(html);
+      // Not the open document's own text: ends its tie to a .docx import (and so its package), see replaceWithHtml.
+      replaceWithHtml(snapshot.title, html);
       editorRef.current?.setContent(html);
       showToast(`Restored snapshot: "${snapshot.name}"`, 'success');
       setSidebarTab('chat');
@@ -1248,9 +1254,9 @@ export default function App() {
                 <button onClick={() => fileInputRef.current?.click()} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg font-bold" style={{ color: 'var(--text-primary)', borderBottom: '1px solid var(--border-subtle)', marginBottom: '4px', paddingBottom: '8px' }}>
                   Load Document (.json, .docx, .md, .txt)
                 </button>
-                {revertAvailable && (
-                  <button onClick={() => { void handleRevertImport(); }} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>
-                    Restore previous document
+                {revertTarget && (
+                  <button onClick={() => { void handleRevertImport(); }} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }} title={`Saved ${new Date(revertTarget.savedAt).toLocaleString()}`}>
+                    {revertLabel(revertTarget)}
                   </button>
                 )}
                 <button onClick={() => handleDownload('md')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>Export Markdown</button>
@@ -1583,7 +1589,7 @@ export default function App() {
       />
       {showTemplatePicker && (
         <GrantTemplatePicker
-          documentHasContent={stripHtml(content).replace(/Start writing your manuscript here.*$/, '').trim().length > 0}
+          documentHasContent={!isBlankText(content.replace(/<[^>]*>/g, ' '))}
           aiSettings={aiSettings}
           onApply={handleApplyGrantTemplate}
           onClose={() => setShowTemplatePicker(false)}

@@ -400,6 +400,42 @@ describe('useDocumentStore after an import: the whole store follows the committe
     }
   });
 
+  it('restoring a Version History snapshot after an import (replaceWithHtml) detaches the package, and saves the snapshot\'s text, not the import\'s', async () => {
+    const r = await readDocx(loadDocx('body-basics.docx'), undefined, 'body-basics.docx');
+    await useDocumentStore.getState().initialize();
+    await useDocumentStore.getState().importDocx(r, { title: 'Imported', acceptedHeadings: [] });
+    const { importId } = (await db.documents.get('current'))!;
+    expect(await db.docxPackages.get('current')).toBeDefined();
+
+    // what handleRestoreSnapshot does: the stored HTML of the pre-import document replaces the open one
+    useDocumentStore.getState().replaceWithHtml('Before the import', '<h2>Aims</h2><p>the text from before the import</p>');
+    const s = useDocumentStore.getState();
+    expect(s.importId).toBeNull();
+    expect(s.title).toBe('Before the import');
+    expect(s.saveState).toBe('Draft');
+    expect(s.docJson).toBeNull(); // the import's JSON must not be saved under the snapshot's text
+    expect(await s.persist()).toBe(true);
+
+    const row = (await db.documents.get('current'))!;
+    expect(row.title).toBe('Before the import');
+    expect(JSON.stringify(row.docJson)).toContain('the text from before the import');
+    expect(JSON.stringify(row.docJson)).not.toContain('Aims Overview'); // the import's own text
+    expect(row.importId).toBeUndefined();
+    expect(await db.docxPackages.get('current')).toBeUndefined();
+    expect(await db.preservationStores.get('current')).toBeUndefined();
+    const old = (await db.autosaveBackups.toArray()).find(b => b.row.importId === importId)!;
+    expect((await db.importBackupParts.get(old.seq!))?.package?.fileName).toBe('body-basics.docx');
+  });
+
+  it('replaceWithHtml also lifts the unreadable-document block, like any deliberate replacement', async () => {
+    await unreadableRow();
+    await useDocumentStore.getState().initialize();
+    expect(useDocumentStore.getState().blockedByUnreadable).toBe(true);
+    useDocumentStore.getState().replaceWithHtml('Snapshot', '<p>restored</p>');
+    expect(useDocumentStore.getState().blockedByUnreadable).toBe(false);
+    expect(await useDocumentStore.getState().persist()).toBe(true);
+  });
+
   it('a document loaded from disk keeps its import: reload, edit, autosave', async () => {
     const r = await readDocx(loadDocx('body-basics.docx'), undefined, 'body-basics.docx');
     await useDocumentStore.getState().initialize();

@@ -879,4 +879,104 @@ describe('DocumentRepository.importDocx', () => {
       expect((await repo.load()).doc?.title).toBe('fresh');
     });
   });
+
+  describe('revertImport and the blank-document rule: each rule on its own', () => {
+    it('runs in turn with saves: a save already waiting on a slow fetch lands first, then the restore wins', async () => {
+      let release!: () => void;
+      const gate = new Promise<void>(r => { release = r; });
+      const slow = createDexieRepository(db, {
+        htmlToDoc, isValidDoc, resolver,
+        fetchBytes: async () => { await gate; return { mime: 'image/png', data: new Uint8Array([1, 2, 3]).buffer }; },
+      });
+      await slow.save({ ...baseDoc('my own work'), title: 'W' });
+      await slow.importDocx(plain, { title: 'the import' });
+      const withBlob: LoadedDocument = {
+        ...baseDoc('late autosave'), title: 'S',
+        docJson: { type: 'doc', content: [{ type: IMAGE_NODE, attrs: { src: 'blob:http://x/1', assetId: null } }] } as JSONContent,
+      };
+      const pendingSave = slow.save(withBlob);
+      const pendingRevert = slow.revertImport();
+      await new Promise(r => setTimeout(r, 30));
+      expect((await db.documents.get('current'))?.title).toBe('the import'); // the restore has not jumped the queue
+      release();
+      await Promise.all([pendingSave, pendingRevert]);
+      expect((await db.documents.get('current'))?.title).toBe('W');
+    });
+
+    it('never picks a pinned legacy-migration backup: with no import backup there is nothing to restore', async () => {
+      await db.documents.put({ id: 'current', title: 'Legacy', content: '<p>old text</p>', saveState: 'Saved', citationRegistry: {}, citationCounter: 0, figureRegistry: {}, figureCounter: 0, updatedAt: 1 });
+      expect((await repo.load()).migrated).toBe(true);
+      expect((await repo.listBackups()).some(b => b.pinned && !b.replacedByImport)).toBe(true); // the pre-migration row is pinned
+      await expect(repo.revertImport()).rejects.toThrow(/nothing|no replaced/i);
+      expect(await repo.peekRevert()).toBeNull();
+      expect((await repo.load()).doc?.title).toBe('Legacy');
+    });
+
+    it('refuses when the replaced document\'s images are gone, changing nothing', async () => {
+      await repo.importDocx(imported, { title: 'A' });
+      await repo.importDocx(plain, { title: 'B' });
+      const before = { row: await db.documents.get('current'), pkg: await db.docxPackages.get('current'), n: await db.autosaveBackups.count() };
+      await db.assets.clear(); // what a quota eviction or a manual clean-up could do
+      await expect(repo.revertImport()).rejects.toThrow(/missing/);
+      expect(await db.documents.get('current')).toEqual(before.row);
+      expect(await db.docxPackages.get('current')).toEqual(before.pkg);
+      expect(await db.autosaveBackups.count()).toBe(before.n);
+    });
+
+    it('marks the restored document Saved, whatever its backed-up row said (it is exactly what is stored)', async () => {
+      await repo.save({ ...baseDoc('my own work'), saveState: 'Draft' });
+      await repo.importDocx(plain, { title: 'B' });
+      expect((await repo.listBackups()).find(b => b.replacedByImport)?.row.saveState).toBe('Draft');
+      await repo.revertImport();
+      expect((await db.documents.get('current'))?.saveState).toBe('Saved');
+    });
+
+    it('an imported document is never blank, even with no text in it (its package would be lost with it)', async () => {
+      const empty = { ...plain, doc: { type: 'doc', content: [{ type: 'paragraph' }] } as JSONContent };
+      await repo.importDocx(empty, { title: 'empty import' });
+      await repo.importDocx(imported, { title: 'next' });
+      const kept = (await repo.listBackups()).filter(b => b.replacedByImport);
+      expect(kept).toHaveLength(1);
+      expect(kept[0].row.title).toBe('empty import');
+      expect((await db.importBackupParts.get(kept[0].seq!))?.package?.fileName).toBe('body-basics.docx');
+    });
+
+    it.each([
+      ['a line break', { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'hardBreak' }] }] }],
+      ['a horizontal rule', { type: 'doc', content: [{ type: 'paragraph' }, { type: 'horizontalRule' }] }],
+    ])('a document whose only content is %s is not blank', async (_name, docJson) => {
+      await repo.save({ ...baseDoc(''), title: 'only an atom', docJson: docJson as JSONContent });
+      await repo.importDocx(plain, { title: 'x' });
+      expect((await repo.listBackups()).filter(b => b.replacedByImport).map(b => b.row.title)).toEqual(['only an atom']);
+    });
+
+    it('keeps five replaced documents by default', async () => {
+      for (let i = 0; i < 6; i++) {
+        await repo.save({ ...baseDoc('work ' + i), title: 'W' + i });
+        await repo.importDocx(plain, { title: 'import ' + i });
+      }
+      const kept = (await repo.listBackups()).filter(b => b.replacedByImport);
+      expect(kept.map(b => b.row.title)).toEqual(['W5', 'W4', 'W3', 'W2', 'W1']);
+    });
+
+    it('peekRevert names the newest replaced document, which is what revertImport restores', async () => {
+      expect(await repo.peekRevert()).toBeNull();
+      await repo.save({ ...baseDoc('first work'), title: 'First' });
+      await repo.importDocx(plain, { title: 'one' });
+      await repo.save({ ...(await repo.load()).doc!, title: 'one, edited' });
+      await repo.importDocx(imported, { title: 'two' });
+      const peek = await repo.peekRevert();
+      expect(peek?.title).toBe('one, edited');
+      await repo.revertImport();
+      expect((await repo.load()).doc?.title).toBe(peek?.title);
+    });
+
+    it('after an import over a blank document the restore still names an EARLIER document, so the interface can say which', async () => {
+      await repo.save({ ...baseDoc('first work'), title: 'First' });
+      await repo.importDocx(plain, { title: 'one' }); // backs up First
+      await repo.save({ ...baseDoc(''), title: 'blank' }); // New Manuscript
+      await repo.importDocx(imported, { title: 'two' }); // over a blank document: no new backup
+      expect((await repo.peekRevert())?.title).toBe('First');
+    });
+  });
 });

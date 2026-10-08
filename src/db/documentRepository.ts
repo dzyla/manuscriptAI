@@ -74,6 +74,8 @@ export interface DocumentRepository {
    * a loss). Rejects when there is nothing to restore.
    */
   revertImport(): Promise<void>;
+  /** What `revertImport` would restore right now (its title and when it was backed up), or null. Lets the interface name it. */
+  peekRevert(): Promise<{ title: string; savedAt: number } | null>;
   listBackups(): Promise<BackupRow[]>;
   restoreBackup(seq: number): Promise<LoadedDocument>;
 }
@@ -158,11 +160,10 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
     if (row.importId || row.comments?.length) return false;
     const converted = rowToDoc(row);
     if (!converted) return false; // unreadable is never "nothing"
-    if (collectAssetIds(converted.doc.docJson).size) return false;
     const parts: string[] = [];
     const walk = (n: JSONContent): void => {
       if (n.type === 'text') parts.push(n.text ?? '');
-      else if (n.type && n.type !== 'doc' && n.type !== 'paragraph' && n.type !== 'heading' && !n.content) parts.push('\u0000'); // an atom, an image, a rule: content
+      else if (n.type && n.type !== 'doc' && n.type !== 'paragraph' && n.type !== 'heading' && !n.content) parts.push('\u0000'); // any other leaf (an image, a line break, a rule) is content
       n.content?.forEach(walk);
     };
     walk(converted.doc.docJson);
@@ -405,10 +406,18 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
     return { importId };
   }
 
+  /**
+   * The newest backup an import took of the document it replaced and that can be opened again. `replacedByImport` is what keeps a
+   * pinned legacy-migration backup (also pinned, but not an import's) from being chosen; a readable-row check is kept as a guard
+   * (pinned import backups are always readable, so the two overlap).
+   */
+  function pickRevertTarget(backupsOldestFirst: BackupRow[]): BackupRow | undefined {
+    return [...backupsOldestFirst].reverse().find(b => b.replacedByImport && b.pinned && rowToDoc(b.row));
+  }
+
   async function doRevert(): Promise<void> {
     await db.transaction('rw', REPLACE_TABLES, async () => {
-      const all = (await db.autosaveBackups.orderBy('seq').toArray()).reverse();
-      const target = all.find(b => b.replacedByImport && b.pinned && rowToDoc(b.row));
+      const target = pickRevertTarget(await db.autosaveBackups.orderBy('seq').toArray());
       if (!target) throw new Error('There is no replaced document to restore.');
       const parts = await db.importBackupParts.get(target.seq!);
       await replaceCurrent({
@@ -468,6 +477,11 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
       const run = queue.then(() => doRevert());
       queue = run.catch(() => undefined);
       return run;
+    },
+
+    async peekRevert() {
+      const target = pickRevertTarget(await db.autosaveBackups.orderBy('seq').toArray());
+      return target ? { title: target.row.title, savedAt: target.savedAt } : null;
     },
 
     getPackage: () => db.docxPackages.get('current'),

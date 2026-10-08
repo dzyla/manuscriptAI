@@ -112,6 +112,14 @@ interface DocumentState {
   /** The user explicitly replaced the document (workspace load, template): lift blockedByUnreadable. */
   allowOverwrite: () => void;
 
+  /**
+   * Replace the whole document with HTML that is NOT the open document's own text: a Version History snapshot, a text file. The
+   * document is no longer the editable form of any .docx import, so (like allowOverwrite, which this calls) it ends its tie to the
+   * import and the next save detaches the package; and its body is read from `content` until the editor reports its own JSON, rather
+   * than the replaced document's JSON being saved under the new text. The caller also gives the HTML to the editor.
+   */
+  replaceWithHtml: (title: string, content: string) => void;
+
   /** Load from Dexie, migrating from localforage if needed. */
   initialize: () => Promise<void>;
 
@@ -264,6 +272,11 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
    * It also ends the document's tie to a .docx import (`importId`): what the user supplies here is not that import.
    */
   allowOverwrite: () => set(s => ({ blockedByUnreadable: false, importId: null, loadStatus: s.loadStatus === 'failed' ? 'ready' : s.loadStatus })),
+
+  replaceWithHtml: (title, content) => {
+    get().allowOverwrite();
+    set({ title, content, docJson: null, pendingDocument: null, saveState: 'Draft' });
+  },
 
   initialize: async () => {
     let result: Awaited<ReturnType<typeof documentRepository.load>>;

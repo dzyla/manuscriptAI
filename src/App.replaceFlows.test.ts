@@ -18,20 +18,43 @@ function handler(name: string): string {
   return src.slice(start, next < 0 ? undefined : next);
 }
 
+/** Every `const handleX = ` at the top level of the component that contains `needle`. */
+function handlersContaining(needle: RegExp): string[] {
+  return [...src.matchAll(/\n  const (\w+) = [^\n]*/g)].map(m => m[1]).filter(name => needle.test(handler(name)));
+}
+
+const REPLACE_CALL = /resetDocument\(\)|allowOverwrite\(\)|replaceWithHtml\(/;
+
 describe('flows that replace the open document end its tie to a .docx import', () => {
   it.each([
     ['handleNewManuscript', /resetDocument\(\)/],
     ['handleApplyGrantTemplate', /allowOverwrite\(\)/],
     ['handleLoadWorkspace', /allowOverwrite\(\)/],
     ['handleImportText', /allowOverwrite\(\)/],
+    ['handleRestoreSnapshot', /replaceWithHtml\(/],
   ])('%s', (name, call) => {
     expect(handler(name)).toMatch(call);
   });
 
-  it('the handlers above are the only users of the replace calls (a new flow must be added here)', () => {
-    const users = [...src.matchAll(/\n  const (handle\w+) = [^\n]*/g)]
-      .map(m => m[1])
-      .filter(name => /allowOverwrite\(\)|resetDocument\(\)/.test(handler(name)));
-    expect(users.sort()).toEqual(['handleApplyGrantTemplate', 'handleImportText', 'handleLoadWorkspace', 'handleNewManuscript']);
+  it('every handler that puts HTML into the editor is either a listed replace flow or a listed edit of the same document', () => {
+    // An edit (append a bibliography, undo an applied suggestion) changes the open document in place and keeps its identity.
+    const edits = ['handleAnalyzeSection', 'handleRevertHistory'];
+    const putsHtml = handlersContaining(/editorRef\.current\?\.setContent\(/);
+    expect(putsHtml.length).toBeGreaterThanOrEqual(6);
+    for (const name of putsHtml) {
+      if (edits.includes(name)) continue;
+      expect(handler(name), `${name} replaces the document with HTML but does not end its tie to the import`).toMatch(REPLACE_CALL);
+    }
+    expect(putsHtml).toEqual(expect.arrayContaining(['handleRestoreSnapshot', 'handleImportText', 'handleNewManuscript', 'handleApplyGrantTemplate', 'handleLoadWorkspace']));
+  });
+
+  it('the replace calls are used by exactly these handlers (a new flow must be added here)', () => {
+    expect(handlersContaining(REPLACE_CALL).sort()).toEqual(['handleApplyGrantTemplate', 'handleImportText', 'handleLoadWorkspace', 'handleNewManuscript', 'handleRestoreSnapshot']);
+  });
+
+  it('the "has content" checks use the exact blank test, not a prefix match that treats work typed into the placeholder as nothing', () => {
+    expect(src).not.toMatch(/replace\(\/Start writing your manuscript here/);
+    expect(handler('handleImportText')).toMatch(/isBlankText\(/);
+    expect(src).toMatch(/documentHasContent=\{!isBlankText\(/);
   });
 });

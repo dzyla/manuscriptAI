@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from 'vitest';
 import { db } from '../db/manuscriptDb';
-import { snapshotBeforeImport, isBlankHtml } from './importSafety';
+import { snapshotBeforeImport, isBlankHtml, revertLabel } from './importSafety';
 
 beforeEach(async () => {
   await db.delete();
@@ -44,5 +44,14 @@ describe('snapshotBeforeImport', () => {
     expect(await db.versionSnapshots.count()).toBe(0);
     const broken = { versionSnapshots: { put: async () => { throw new Error('quota'); } }, assets: db.assets } as never;
     expect(await snapshotBeforeImport(broken, { title: 't', content: '<p>real</p>', importing: 'a.docx' })).toBeNull();
+  });
+});
+
+describe('revertLabel', () => {
+  it('names the document it will restore, keeps the "Restore previous document" wording, and shortens a long title', () => {
+    expect(revertLabel({ title: 'My R01' })).toBe('Restore previous document: "My R01"');
+    expect(revertLabel({ title: '  ' })).toBe('Restore previous document: "Untitled Manuscript"');
+    const long = revertLabel({ title: 'x'.repeat(100) });
+    expect(long).toBe(`Restore previous document: "${'x'.repeat(39)}…"`);
   });
 });

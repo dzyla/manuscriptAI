@@ -41,3 +41,13 @@ export async function snapshotBeforeImport(
     return null;
   }
 }
+
+/**
+ * The button text for restoring the document an import replaced. It names that document: the restore goes to the newest backup an
+ * import took, which after an import over a blank document is an EARLIER one, and a button that only said "previous document" would
+ * not say which.
+ */
+export function revertLabel(target: { title: string }): string {
+  const t = target.title.trim() || 'Untitled Manuscript';
+  return `Restore previous document: "${t.length > 40 ? `${t.slice(0, 39)}…` : t}"`;
+}
