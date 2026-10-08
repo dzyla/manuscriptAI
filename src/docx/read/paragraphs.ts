@@ -8,7 +8,7 @@
  */
 import type { JSONContent } from '@tiptap/core';
 import { recordFeature } from '../fidelity';
-import { isBlockUntouched, stampProvenance } from '../preserve/hash';
+import { blockHash, isBlockUntouched, stampProvenance } from '../preserve/hash';
 import type { PreservationStore } from '../preserve/types';
 import { captureFragment, parseXml } from '../preserve/xml';
 import { specNormalizeNode } from '../../extensions/schemaSpecs';
@@ -202,7 +202,7 @@ export function readParagraph(p: Element, ctx: ReadContext): JSONContent | JSONC
   const record = images.flatMap((image, k) => {
     const el = drawingSource.get(image);
     const drawingIndex = el ? drawings.indexOf(el) : -1;
-    return drawingIndex >= 0 ? [{ fragmentId: lifted[k].attrs!.fragmentId as string, drawingIndex }] : [];
+    return drawingIndex >= 0 ? [{ fragmentId: lifted[k].attrs!.fragmentId as string, drawingIndex, sourceHash: blockHash(lifted[k]) }] : [];
   });
   if (record.length) ctx.preservation.blocks[blockId].lifted = record;
   return [...lifted, stampProvenance(normalized, blockId)];

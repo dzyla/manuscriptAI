@@ -15,7 +15,7 @@ import { createReport, FIDELITY } from '../fidelity';
 import { emptyPreservationStore } from '../preserve/types';
 import { collectFragmentIds } from '../preserve/refs';
 import { planLiftedDrawings } from '../preserve/lifted';
-import { isBlockUntouched } from '../preserve/hash';
+import { blockHash, isBlockUntouched } from '../preserve/hash';
 import { parseXml } from '../preserve/xml';
 import { getSpecSchema } from '../../extensions/schemaSpecs';
 import { collectAssetIds } from '../../db/assetStore';
@@ -724,8 +724,8 @@ describe('lifted pictures: the read-time record lets a writer see a delete, a mo
     const { r, a, b, c } = await load();
     const hostH = r.ctx.preservation.blocks[a.attrs!.anchorBlockId as string];
     const hostK = r.ctx.preservation.blocks[c.attrs!.anchorBlockId as string];
-    expect(hostH.lifted).toEqual([{ fragmentId: a.attrs!.fragmentId, drawingIndex: 0 }, { fragmentId: b.attrs!.fragmentId, drawingIndex: 1 }]);
-    expect(hostK.lifted).toEqual([{ fragmentId: c.attrs!.fragmentId, drawingIndex: 0 }]);
+    expect(hostH.lifted).toEqual([{ fragmentId: a.attrs!.fragmentId, drawingIndex: 0, sourceHash: blockHash(a) }, { fragmentId: b.attrs!.fragmentId, drawingIndex: 1, sourceHash: blockHash(b) }]);
+    expect(hostK.lifted).toEqual([{ fragmentId: c.attrs!.fragmentId, drawingIndex: 0, sourceHash: blockHash(c) }]);
     expect(Array.from(parseXml(hostH.xml).documentElement.getElementsByTagNameNS(W_NS, 'drawing'))).toHaveLength(2);
     // a figure that stands for its paragraph is not lifted and has no record
     expect(Object.values(r.ctx.preservation.blocks).filter(f => f.lifted).length).toBe(2);
@@ -775,7 +775,7 @@ describe('lifted pictures: the read-time record lets a writer see a delete, a mo
     const copy = { ...structuredClone(a), attrs: { ...a.attrs, fragmentId: 'f_copy' } }; // what OpaqueFragmentGuard does to a pasted duplicate
     const plan = planLiftedDrawings({ ...doc, content: [...doc.content!, copy] }, r.ctx.preservation);
     expect(plan.strip).toEqual([]);
-    expect(plan.emit.map(e => [e.fragmentId, e.why])).toEqual([['f_copy', 'copy']]);
+    expect(plan.emit.map(e => [e.fragmentId, e.why, e.hostBlockId])).toEqual([['f_copy', 'copy', null]]);
   });
 
   it('a picture in front of its recorded host but no longer named for it (re-anchored) is moved, not in place', async () => {
@@ -790,7 +790,7 @@ describe('lifted pictures: the read-time record lets a writer see a delete, a mo
   it('two nodes with one fragment id (a duplicate the paste guard has not yet renamed): the first is the original, the second a copy', async () => {
     const { r, a, doc } = await load();
     const plan = planLiftedDrawings({ ...doc, content: [...doc.content!, structuredClone(a)] }, r.ctx.preservation);
-    expect(plan.emit.map(e => [e.fragmentId, e.why])).toEqual([[a.attrs!.fragmentId, 'copy']]);
+    expect(plan.emit.map(e => [e.fragmentId, e.why, e.hostBlockId])).toEqual([[a.attrs!.fragmentId, 'copy', a.attrs!.anchorBlockId]]);
     expect(plan.strip).toEqual([]);
   });
 
@@ -811,6 +811,104 @@ describe('lifted pictures: the read-time record lets a writer see a delete, a mo
     const plan = planLiftedDrawings({ ...doc, content }, r.ctx.preservation);
     expect(plan.emit.map(e => [e.fragmentId, e.why])).toEqual([[c.attrs!.fragmentId, 'moved']]);
     expect(plan.strip).toEqual([]);
+  });
+
+  it('STRIPS COME OUT DESCENDING: deleting both pictures of a host lists the later ordinal first, so applying them in order never shifts one', async () => {
+    const { r, a, b, doc } = await load();
+    const plan = planLiftedDrawings(without(without(doc, a.attrs!.fragmentId as string), b.attrs!.fragmentId as string), r.ctx.preservation);
+    expect(plan.strip.map(s => s.drawingIndex)).toEqual([1, 0]);
+    // and a splice sweep in that order removes exactly the two pictures, leaving the host\'s text run
+    const xml = parseXml(r.ctx.preservation.blocks[a.attrs!.anchorBlockId as string].xml);
+    const drawings = Array.from(xml.documentElement.getElementsByTagNameNS(W_NS, 'drawing'));
+    for (const s of plan.strip) drawings[s.drawingIndex].parentNode!.removeChild(drawings[s.drawingIndex]);
+    expect(xml.documentElement.getElementsByTagNameNS(W_NS, 'drawing')).toHaveLength(0);
+    expect(xml.documentElement.getElementsByTagNameNS(W_NS, 't')[0].textContent).toBe('Host H text.');
+  });
+
+  it('strips are ordered by host, then DESCENDING by ordinal, whatever order the records were made in', () => {
+    const entry = (lifted: Array<{ fragmentId: string; drawingIndex: number }>) => ({ xml: '<w:p/>', relIds: [], nsDecls: {}, lifted });
+    const store = { blocks: { b2: entry([{ fragmentId: 'f3', drawingIndex: 0 }, { fragmentId: 'f4', drawingIndex: 1 }]), b1: entry([{ fragmentId: 'f1', drawingIndex: 0 }, { fragmentId: 'f2', drawingIndex: 2 }, { fragmentId: 'f5', drawingIndex: 1 }]) } };
+    const host = (id: string): JSONContent => ({ type: 'paragraph', attrs: { ooxml: { blockId: id, sourceHash: 'x' } } });
+    const plan = planLiftedDrawings({ type: 'doc', content: [host('b1'), host('b2')] }, store);
+    expect(plan.strip.map(s => `${s.hostBlockId}:${s.drawingIndex}`)).toEqual(['b1:2', 'b1:1', 'b1:0', 'b2:1', 'b2:0']);
+  });
+
+  it('EDITED IN PLACE: resizing, re-captioning or cropping a lifted picture whose host is untouched is reported, not lost', async () => {
+    const { r, a, doc } = await load();
+    const edit = (change: (attrs: Record<string, unknown>) => void) => {
+      const copy: JSONContent = JSON.parse(JSON.stringify(doc));
+      change(copy.content!.find(n => n.attrs?.fragmentId === a.attrs!.fragmentId)!.attrs!);
+      return planLiftedDrawings(copy, r.ctx.preservation);
+    };
+    for (const [name, change] of [
+      ['widthIn', (x: Record<string, unknown>) => (x.widthIn = 1)],
+      ['width (what a resize in the editor changes)', (x: Record<string, unknown>) => (x.width = '30%')],
+      ['alt', (x: Record<string, unknown>) => (x.alt = 'New alt')],
+      ['title', (x: Record<string, unknown>) => (x.title = 'New title')],
+      ['crop', (x: Record<string, unknown>) => (x.crop = { l: 1, t: 0, r: 0, b: 0 })],
+      ['wrap', (x: Record<string, unknown>) => (x.wrap = 'right')],
+      ['align', (x: Record<string, unknown>) => (x.align = 'center')],
+    ] as const) {
+      const plan = edit(change);
+      expect(plan.strip, name).toEqual([]);
+      expect(plan.emit.map(e => [e.why, e.fragmentId, e.hostBlockId]), name).toEqual([['edited', a.attrs!.fragmentId, a.attrs!.anchorBlockId]]);
+    }
+    // not an edit: the blob: URL a document gets when it is opened
+    expect(edit(x => (x.src = 'blob:http://localhost/abc'))).toEqual({ strip: [], emit: [] });
+    expect(edit(() => undefined)).toEqual({ strip: [], emit: [] });
+  });
+
+  it('a picture edited AND a host edited is one emit (host-edited): the rebuilt host is written from the node anyway', async () => {
+    const { r, c, doc } = await load();
+    const copy: JSONContent = JSON.parse(JSON.stringify(doc));
+    copy.content!.find(n => n.attrs?.fragmentId === c.attrs!.fragmentId)!.attrs!.widthIn = 1;
+    copy.content!.find(n => (n.attrs?.ooxml as { blockId?: string } | undefined)?.blockId === c.attrs!.anchorBlockId)!.content = [{ type: 'text', text: 'changed' }];
+    expect(planLiftedDrawings(copy, r.ctx.preservation).emit.map(e => e.why)).toEqual(['host-edited']);
+  });
+
+  it('deleting a picture AND its host together leaves nothing to strip from a paragraph that is gone', async () => {
+    const { r, a, b, doc } = await load();
+    const hostH = a.attrs!.anchorBlockId;
+    const content = doc.content!.filter(n => n.attrs?.fragmentId !== a.attrs!.fragmentId && n.attrs?.fragmentId !== b.attrs!.fragmentId && (n.attrs?.ooxml as { blockId?: string } | undefined)?.blockId !== hostH);
+    expect(planLiftedDrawings({ ...doc, content }, r.ctx.preservation)).toEqual({ strip: [], emit: [] });
+  });
+
+  it('a duplicate of a picture keeps the host it was copied from in its emit', async () => {
+    const { r, a, doc } = await load();
+    const copy = { ...structuredClone(a), attrs: { ...a.attrs, fragmentId: 'f_x' } };
+    expect(planLiftedDrawings({ ...doc, content: [...doc.content!, copy] }, r.ctx.preservation).emit[0]).toMatchObject({ why: 'copy', hostBlockId: null }); // unrecorded id: unknown host
+  });
+
+  // hosts and pictures that are not at the top level of the document: a table cell, a list, a list in a cell
+  const nested = async (body: string) => {
+    const r = await readData(await build({ body, ...STD }));
+    const deep = (n: JSONContent, fragmentId: string): JSONContent => ({ ...n, ...(n.content ? { content: n.content.filter(c => c.attrs?.fragmentId !== fragmentId).map(c => deep(c, fragmentId)) } : {}) });
+    return { r, doc: r.doc, lifted: images(r.blocks).filter(i => i.attrs!.anchorBlockId), deep };
+  };
+  const item = (text: string) => `<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="2"/></w:numPr></w:pPr>${anchorPic('rId10')}<w:r><w:t>${text}</w:t></w:r></w:p>`;
+
+  it('a host inside a LIST: the picture is in front of the whole list and is still found in place', async () => {
+    const { r, doc, lifted, deep } = await nested(li('first') + item('second') + li('third'));
+    expect(r.blocks.map(b => b.type)).toEqual(['resizableImage', 'orderedList']);
+    expect(planLiftedDrawings(doc, r.ctx.preservation)).toEqual({ strip: [], emit: [] });
+    expect(planLiftedDrawings(deep(doc, lifted[0].attrs!.fragmentId as string), r.ctx.preservation).strip.map(s => s.why)).toEqual(['deleted']);
+  });
+
+  it('a host inside a TABLE CELL (a figure in a cell is an ordinary grant shape): found in place; deleted, copied and edited there', async () => {
+    const { r, doc, lifted, deep } = await nested(tbl(`<w:p>${anchorPic('rId10')}<w:r><w:t>in a cell</w:t></w:r></w:p>`));
+    expect(all(r.blocks, n => n.type === 'tableCell')[0].content!.map(c => c.type)).toEqual(['resizableImage', 'paragraph']);
+    expect(planLiftedDrawings(doc, r.ctx.preservation)).toEqual({ strip: [], emit: [] });
+    expect(planLiftedDrawings(deep(doc, lifted[0].attrs!.fragmentId as string), r.ctx.preservation).strip).toMatchObject([{ drawingIndex: 0, why: 'deleted' }]);
+    const edited: JSONContent = JSON.parse(JSON.stringify(doc));
+    all(edited.content!, n => n.type === 'resizableImage')[0].attrs!.alt = 'edited in a cell';
+    expect(planLiftedDrawings(edited, r.ctx.preservation).emit.map(e => e.why)).toEqual(['edited']);
+  });
+
+  it('a host that is a list item inside a table cell', async () => {
+    const { r, doc } = await nested(tbl(li('one') + item('two')));
+    const cell = all(r.blocks, n => n.type === 'tableCell')[0];
+    expect(cell.content!.map(c => c.type)).toEqual(['resizableImage', 'orderedList']);
+    expect(planLiftedDrawings(doc, r.ctx.preservation)).toEqual({ strip: [], emit: [] });
   });
 
   it('a figure that is its own paragraph, and an image the author inserted, are not part of any of this', async () => {
@@ -930,6 +1028,44 @@ describe('captions', () => {
     expect(pairs([img(), para('Fig. 1. a'), img(), para('Supplementary Fig. S1. s'), img(), para('Fig. 2. b')])).toEqual([[0, 1, 'label'], [2, 3, 'label'], [4, 5, 'label']]);
     // a rejected candidate does not stop a later one in reach from being taken
     expect(pairs([img(), para('Fig. 7. Another figure.'), para('Styled', 'caption')])).toEqual([[0, 2, 'style']]);
+  });
+
+  const chart = (label = 'chart'): JSONContent => ({ type: 'paragraph', attrs: {}, content: [{ type: 'opaqueInline', attrs: { label } }] });
+
+  it('a skipped number is trusted when an opaque drawing between the figures explains it (a chart is an atom, not an image)', () => {
+    expect(pairs([img(), para('Fig. 1. a'), chart(), img(), para('Fig. 3. c'), img(), para('Fig. 4. d')])).toEqual([[0, 1, 'label'], [3, 4, 'label'], [5, 6, 'label']]);
+    for (const label of ['drawing', 'chart', 'SmartArt', 'text box', 'shape', 'picture', 'embedded object']) {
+      expect(pairs([img(), para('Fig. 1. a'), chart(label), img(), para('Fig. 3. c')]), label).toEqual([[0, 1, 'label'], [3, 4, 'label']]);
+    }
+    expect(pairs([img(), para('Fig. 1. a'), chart('field'), img(), para('Fig. 3. c')]), 'a field is not a drawing').toEqual([[0, 1, 'label'], [3, null, null]]);
+  });
+
+  it('each skipped number needs a drawing of its own', () => {
+    expect(pairs([img(), para('Fig. 1. a'), chart(), img(), para('Fig. 4. d')])).toEqual([[0, 1, 'label'], [3, null, null]]);
+    expect(pairs([img(), para('Fig. 1. a'), chart(), chart(), img(), para('Fig. 4. d')])).toEqual([[0, 1, 'label'], [4, 5, 'label']]);
+  });
+
+  it('an UNEXPLAINED gap is not trusted, and the captions after it that depend on it are lost with it (a known cost)', () => {
+    expect(pairs([img(), para('Fig. 1. a'), img(), para('Fig. 3. c'), img(), para('Fig. 4. d')])).toEqual([[0, 1, 'label'], [2, null, null], [4, null, null]]);
+    // a figure that does not start at 1 (an excerpt) is not trusted either, unless drawings before it explain it
+    expect(pairs([img(), para('Fig. 3. c')])).toEqual([[0, null, null]]);
+    expect(pairs([chart(), chart(), img(), para('Fig. 3. c')])).toEqual([[2, 3, 'label']]);
+  });
+
+  it('a drawing only explains the gap between ITS neighbours, and only once', () => {
+    expect(pairs([chart(), img(), para('Fig. 1. a'), img(), para('Fig. 3. c')])).toEqual([[1, 2, 'label'], [3, null, null]]);
+  });
+
+  it('supplementary series, "Supplementary Figure 1", restarts at 1 and panels (1A, 1B) still pair', () => {
+    expect(pairs([img(), para('Fig. 1. a'), img(), para('Supplementary Fig. S1. s'), img(), para('Supplementary Figure 2. t'), img(), para('Fig. 2. b')])).toEqual([[0, 1, 'label'], [2, 3, 'label'], [4, 5, 'label'], [6, 7, 'label']]);
+    expect(pairs([img(), para('Fig. 1A. a'), img(), para('Fig. 1B. b'), img(), para('Fig. 2. c'), img(), para('Fig. 1. restart')])).toEqual([[0, 1, 'label'], [2, 3, 'label'], [4, 5, 'label'], [6, 7, 'label']]);
+  });
+
+  it('end to end: one chart among the figures costs no later caption', async () => {
+    const chartPara = `<w:p><w:r><w:drawing><wp:inline xmlns:wp="${WPNS}"><wp:extent cx="100" cy="100"/><wp:docPr id="9" name="z"/><a:graphic xmlns:a="${ANS}"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"/></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
+    const body = figure('rId10') + p('Fig. 1. a') + chartPara + p('Fig. 2. the chart') + figure('rId11') + p('Fig. 3. c');
+    const r = await readData(await build({ body, ...STD }));
+    expect(r.figures.map(f => [f.image, f.caption])).toEqual([[0, 1], [4, 5]]);
   });
 
   it('a picture lifted out of a paragraph of text reaches the caption written after that paragraph, and does not cross the next figure', () => {

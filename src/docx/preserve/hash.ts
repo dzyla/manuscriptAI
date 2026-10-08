@@ -14,6 +14,12 @@ function stripProvenance(node: JSONContent): JSONContent {
     const { ooxml: _drop, ...rest } = node.attrs;
     out.attrs = rest;
   }
+  // An image's `src` is a session blob: URL that `hydrateAssets` fills in when a document is opened (the stored node has none);
+  // the picture is identified by `assetId`. Counting `src` would make every opened image look edited.
+  if (node.type === 'resizableImage' && out.attrs && 'src' in out.attrs) {
+    const { src: _src, ...rest } = out.attrs;
+    out.attrs = rest;
+  }
   if (node.content) out.content = node.content.map(stripProvenance);
   return out;
 }

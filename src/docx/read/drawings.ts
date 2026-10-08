@@ -31,7 +31,11 @@
  *         at its new position (moved: dragging, or cut and paste, keeps `fragmentId` and `anchorBlockId`);
  *       * a node whose `fragmentId` is in no record (a pasted copy gets a fresh one, and keeps `anchorBlockId`) -> `emit` it from
  *         its fragment;
- *       * a node in place whose host was edited -> `emit` it INTO the rebuilt host.
+ *       * a node in place whose host was edited -> `emit` it INTO the rebuilt host;
+       * a node in place, host untouched, but the PICTURE edited (its `sourceHash` differs: resized, cropped, re-captioned, its
+         alt text changed) -> `emit` with `why: 'edited'`: patch that drawing in the verbatim host (see lifted.ts for which attrs
+         map to which attributes; `width` is what a resize changes, `widthIn` goes stale).
+     Strips are ordered DESCENDING by `drawingIndex`; apply them in that order or snapshot the drawing list first.
  *     STILL OMITTED: where in a rebuilt host a surviving run goes. The original position among the host's runs is lost; put it at
  *     the start of the host's content, in image order. That is faithful for a floating picture (positioned relative to the
  *     paragraph) and NOT for an inline picture lifted from the middle of a sentence, which moves to the front of its paragraph.
@@ -446,17 +450,37 @@ function captionInfo(block: JSONContent): CaptionInfo | null {
  * nodes, so an edit can never leave a stale link. A picture lifted out of a paragraph of text comes immediately before that
  * paragraph, so the caption written after the picture's paragraph is within reach.
  *
- * The label NUMBER is checked against the order of the figures: a caption is taken only if it is the next number of its series
- * (1, 2, 3, ...) or a restart at 1 (a grant whose sections each number from 1), so `[fig 1][Fig. 2 ...][fig 2]` does not give
- * fig 1 the caption that belongs to fig 2. A caption without a number in its text (styled, or a field) is not checked.
+ * The label NUMBER is checked against the order of the figures, so `[fig 1][Fig. 2 ...][fig 2]` does not give fig 1 the caption
+ * that belongs to fig 2. A caption is taken if it is the next number of its series (1, 2, 3, ...), a restart at 1 (a grant whose
+ * sections each number from 1; panels "1A", "1B" share their number), or a number that SKIPS ahead where something explains the
+ * skip: as many opaque drawings (a chart, SmartArt, a shape, an EMF: anything the reader kept as an atom rather than an image)
+ * as numbers skipped, between the previous figure and this one. A skip nothing explains is not trusted, and neither is a first
+ * figure that does not start at 1 (an excerpt): those captions, and every later one that depended on them, are not paired.
+ * A caption without a number in its text (styled, or a field) is not checked.
  * NOT SUPPORTED: a caption written BEFORE its figure (a table-style layout). It pairs with nothing, or with the wrong figure.
  */
+/** What the reader keeps as an opaque atom when it cannot make an image of a drawing. */
+const DRAWING_ATOMS = new Set(['drawing', 'chart', 'SmartArt', 'text box', 'shape', 'picture', 'embedded object']);
+
+function countDrawingAtoms(blocks: JSONContent[], from: number, to: number): number {
+  let n = 0;
+  const visit = (x: JSONContent): void => {
+    if ((x.type === 'opaqueInline' || x.type === 'opaqueBlock') && DRAWING_ATOMS.has(String(x.attrs?.label))) n++;
+    (x.content ?? []).forEach(visit);
+  };
+  for (let k = from; k < to; k++) visit(blocks[k]);
+  return n;
+}
+
 export function matchCaptions(blocks: JSONContent[]): FigureMatch[] {
   const taken = new Set<number>();
   const last = new Map<string, number>(); // series -> the last number paired
   const out: FigureMatch[] = [];
+  let previousImage = -1; // the figure before this one (the opaque drawings between them are what could explain a skipped number)
   blocks.forEach((b, i) => {
     if (b.type !== 'resizableImage') return;
+    const explaining = countDrawingAtoms(blocks, previousImage + 1, i);
+    previousImage = i;
     let found: FigureMatch = { image: i, caption: null, how: null };
     let seen = 0;
     for (let k = i + 1; k < blocks.length && seen < CAPTION_WINDOW; k++) {
@@ -470,7 +494,8 @@ export function matchCaptions(blocks: JSONContent[]): FigureMatch[] {
       if (!info) continue;
       if (info.n !== null) {
         const prev = last.get(info.series) ?? 0;
-        if (info.n !== prev + 1 && info.n !== 1) continue; // another figure's caption
+        const skipped = info.n - prev - 1;
+        if (info.n !== 1 && !(skipped === 0 || (skipped > 0 && explaining >= skipped))) continue; // another figure's caption
         last.set(info.series, info.n);
       }
       taken.add(k);

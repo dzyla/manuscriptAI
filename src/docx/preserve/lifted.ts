@@ -12,10 +12,24 @@
  * `planLiftedDrawings` compares the record with the document and says what a writer must do:
  *   - `strip`: remove the `drawingIndex`-th `w:drawing` from the host paragraph's original XML before re-emitting it verbatim
  *     (its picture was deleted, or moved elsewhere). When the host is REBUILT instead, strips are implicit: nothing is carried over.
+ *   - STRIPS ARE ORDERED DESCENDING by `drawingIndex` within a host (hosts in `hostBlockId` order). Apply them in the order given, or
+ *     snapshot the host's `w:drawing` list before removing anything: removing `drawings[1]` first shifts every later ordinal down by
+ *     one, and an ascending sweep strips the wrong pictures.
  *   - `emit`: write this image from its fragment (`preservation.fragments[fragmentId]`, the `<w:r>` with the whole drawing) at its
  *     place in the model, because it is a copy (its `fragmentId` is in no record: the paste guard gave the copy a fresh one), or
  *     was moved away from its host, or its host paragraph was deleted. `why: 'host-edited'` marks a picture still in place but
  *     whose host was edited and so is rebuilt: put the run back INTO that host.
+ *
+ * AN EDIT TO A PICTURE THAT STAYS IN PLACE. The host is untouched, so on its own it would be re-emitted verbatim, silently losing the
+ * edit. The read therefore also records each picture's `sourceHash` (the `blockHash` of the node as read; `src`, a session blob:
+ * URL, is not part of it), and a node in place whose hash has changed is reported as `emit` with `why: 'edited'`: re-emit the host
+ * verbatim with THIS drawing patched from the node (or, if the host is also rebuilt, it is `host-edited` and is written from the
+ * node anyway). Patch from these attrs: the size from `width` (the share of the text area the editor changes when the user
+ * resizes; `widthIn` / `heightIn` are the size AS READ and go stale; keep the aspect ratio of `widthIn`:`heightIn`) into `wp:extent`
+ * and the picture's `a:ext`; `alt` and `title` into `wp:docPr@descr` / `@title`; `crop` into `a:srcRect` (percent x 1000);
+ * `wrap` and `align` into the `wp:wrap*` and `wp:positionH` of the anchor (a change of side is `wp:positionH`; a change to
+ * `inline` or `block` cannot be expressed in the anchor, so rebuild the drawing as inline or topAndBottom). A record without a
+ * `sourceHash` (an older import) cannot detect this.
  *
  * WHAT THE CONTRACT STILL OMITS. Where in a REBUILT host a surviving run goes is not recorded: the picture's original position in
  * the paragraph's runs is gone with the verbatim XML. The rule is to put the run at the START of the host's content, in image
@@ -25,7 +39,7 @@
  * lifted, so none of this applies to it.
  */
 import type { JSONContent } from '@tiptap/core';
-import { isBlockUntouched } from './hash';
+import { blockHash, isBlockUntouched } from './hash';
 import type { PreservationStore } from './types';
 
 export interface LiftedStrip {
@@ -38,7 +52,7 @@ export interface LiftedStrip {
 export interface LiftedEmit {
   node: JSONContent;
   fragmentId: string;
-  why: 'copy' | 'moved' | 'host-edited';
+  why: 'copy' | 'moved' | 'host-edited' | 'edited';
   /** The paragraph the picture was lifted from, when the record knows it (null for a copy of an unrecorded picture). */
   hostBlockId: string | null;
 }
@@ -54,9 +68,9 @@ const holds = (n: JSONContent, blockId: string): boolean => blockIdOf(n) === blo
 
 export function planLiftedDrawings(doc: JSONContent, store: Pick<PreservationStore, 'blocks'>): LiftedPlan {
   // what the read recorded: fragmentId -> its host and ordinal
-  const recorded = new Map<string, { hostBlockId: string; drawingIndex: number }>();
+  const recorded = new Map<string, { hostBlockId: string; drawingIndex: number; sourceHash?: string }>();
   for (const [hostBlockId, entry] of Object.entries(store.blocks)) {
-    for (const l of entry.lifted ?? []) recorded.set(l.fragmentId, { hostBlockId, drawingIndex: l.drawingIndex });
+    for (const l of entry.lifted ?? []) recorded.set(l.fragmentId, { hostBlockId, drawingIndex: l.drawingIndex, sourceHash: l.sourceHash });
   }
   if (!recorded.size) return { strip: [], emit: [] }; // nothing was lifted at read time
 
@@ -92,15 +106,18 @@ export function planLiftedDrawings(doc: JSONContent, store: Pick<PreservationSto
     const host = hosts.get(rec.hostBlockId);
     if (img.node.attrs?.anchorBlockId === rec.hostBlockId && host && inPlace(img, rec.hostBlockId)) {
       if (!isBlockUntouched(host)) plan.emit.push({ node: img.node, fragmentId, why: 'host-edited', hostBlockId: rec.hostBlockId });
+      else if (rec.sourceHash !== undefined && blockHash(img.node) !== rec.sourceHash) {
+        plan.emit.push({ node: img.node, fragmentId, why: 'edited', hostBlockId: rec.hostBlockId });
+      }
     } else {
       plan.emit.push({ node: img.node, fragmentId, why: 'moved', hostBlockId: rec.hostBlockId });
-      if (host) plan.strip.push({ ...rec, fragmentId, why: 'moved' });
+      if (host) plan.strip.push({ hostBlockId: rec.hostBlockId, drawingIndex: rec.drawingIndex, fragmentId, why: 'moved' });
     }
   }
   for (const [fragmentId, rec] of recorded) {
-    if (!seen.has(fragmentId) && hosts.has(rec.hostBlockId)) plan.strip.push({ ...rec, fragmentId, why: 'deleted' });
+    if (!seen.has(fragmentId) && hosts.has(rec.hostBlockId)) plan.strip.push({ hostBlockId: rec.hostBlockId, drawingIndex: rec.drawingIndex, fragmentId, why: 'deleted' });
   }
-  const order = (a: LiftedStrip, b: LiftedStrip) => a.hostBlockId.localeCompare(b.hostBlockId) || a.drawingIndex - b.drawingIndex;
+  const order = (a: LiftedStrip, b: LiftedStrip) => a.hostBlockId.localeCompare(b.hostBlockId) || b.drawingIndex - a.drawingIndex;
   plan.strip.sort(order);
   return plan;
 }

@@ -16,6 +16,19 @@ describe('stableStringify', () => {
   });
 });
 
+describe('an image\'s src is not part of its hash', () => {
+  it('opening a document fills in a session blob: URL as src; that is not an edit, but a different asset or size is', () => {
+    const image = normalizeDoc({ type: 'doc', content: [{ type: 'resizableImage', attrs: { assetId: 'a_1', width: '50%' } }] }).content![0];
+    const stamped = stampProvenance(image, 'b1');
+    const hydrated = { ...stamped, attrs: { ...stamped.attrs, src: 'blob:http://localhost/abc' } };
+    expect(isBlockUntouched(hydrated)).toBe(true);
+    expect(isBlockUntouched({ ...stamped, attrs: { ...stamped.attrs, width: '60%' } })).toBe(false);
+    expect(isBlockUntouched({ ...stamped, attrs: { ...stamped.attrs, assetId: 'a_2' } })).toBe(false);
+    // other node types keep counting every attribute
+    expect(blockHash({ type: 'paragraph', attrs: { src: 'x' } })).not.toBe(blockHash({ type: 'paragraph', attrs: { src: 'y' } }));
+  });
+});
+
 describe('block provenance', () => {
   it('stamped block is untouched until its content changes', () => {
     const p = stampProvenance(para('hello'), 'b1');

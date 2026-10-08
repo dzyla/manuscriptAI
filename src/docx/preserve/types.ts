@@ -12,7 +12,12 @@ export interface Fragment {
    * pruned, so this survives the deletion of the image node, which is what lets a writer see that a lifted picture was removed.
    * See `planLiftedDrawings` (preserve/lifted.ts).
    */
-  lifted?: Array<{ fragmentId: string; drawingIndex: number }>;
+  lifted?: Array<{
+    fragmentId: string;
+    drawingIndex: number;
+    /** `blockHash` of the image node as it was read: an in-place picture whose hash differs has been edited (resized, cropped, re-captioned...). */
+    sourceHash?: string;
+  }>;
 }
 
 export interface PackageRel {

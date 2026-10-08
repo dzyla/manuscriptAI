@@ -436,6 +436,21 @@ describe.skipIf(docs.length === 0)('private real-world documents', () => {
           { hostBlockId: i.attrs!.anchorBlockId, drawingIndex: ctx.preservation.blocks[i.attrs!.anchorBlockId as string].lifted!.find(l => l.fragmentId === i.attrs!.fragmentId)!.drawingIndex, fragmentId: i.attrs!.fragmentId, why: 'deleted' },
         ]);
       }
+      // an edit to a picture that stays in place (r01's likely first edit: a resize) is seen, for each of them in turn
+      for (const i of lifted) {
+        const resized = { ...doc, content: blocks.map(b => (b === i ? { ...b, attrs: { ...b.attrs, width: '10%' } } : b)) };
+        const plan = planLiftedDrawings(resized, ctx.preservation);
+        expect(plan.strip).toEqual([]);
+        expect(plan.emit.map(e => [e.why, e.fragmentId])).toEqual([['edited', i.attrs!.fragmentId]]);
+        expect(ctx.preservation.blocks[i.attrs!.anchorBlockId as string].lifted!.every(l => typeof l.sourceHash === 'string')).toBe(true);
+      }
+      // strips come out descending: delete both pictures of the one r01 host that holds two
+      const pair = lifted.filter(i => ctx.preservation.blocks[i.attrs!.anchorBlockId as string].lifted!.length === 2);
+      expect(pair).toHaveLength(isSnsf ? 0 : 2);
+      if (pair.length) {
+        const plan = planLiftedDrawings({ ...doc, content: blocks.filter(b => !pair.includes(b)) }, ctx.preservation);
+        expect(plan.strip.map(x => x.drawingIndex)).toEqual([1, 0]);
+      }
       // r01: one host holds two of the pictures, so its second has ordinal 1
       if (!isSnsf) expect(Object.values(ctx.preservation.blocks).flatMap(b => (b.lifted ?? []).map(l => l.drawingIndex)).sort()).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
 
