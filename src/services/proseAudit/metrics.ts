@@ -9,7 +9,13 @@ function isHeadingLine(line: string): boolean {
   return t.split(/\s+/).length <= 8 && !/[.!?;:]$/.test(t);
 }
 
-const REFERENCE_HEADING = /^(?:references|bibliography|literature cited|works cited)\s*$/i;
+/**
+ * A bibliography heading, in the forms real grants use: "References", "References Cited", "Bibliography and References Cited"
+ * (the NIH section name), "Literature Cited", "Works Cited", with optional leading numbering or lettering ("3. Bibliography",
+ * "B) References") and an optional trailing colon ("LITERATURE CITED:").
+ */
+export const REFERENCE_HEADING =
+  /^(?:(?:\d{1,2}|[a-z]|[ivx]{1,4})[.)]\s*)?(?:bibliography(?:\s+and\s+references(?:\s+cited)?)?|references(?:\s+cited)?|literature\s+cited|works\s+cited)\s*:?\s*$/i;
 
 /**
  * Prose regions of the text, with headings and anything after a References
@@ -72,7 +78,8 @@ function splitSections(text: string): { title: string; start: number; end: numbe
   const out: { title: string; start: number; end: number }[] = [];
   let offset = 0;
   for (const line of text.split('\n')) {
-    if (isHeadingLine(line) && !REFERENCE_HEADING.test(line.trim())) {
+    // A title must start with a letter or digit: rulers like "-------- 1 page limit ------" are blanked as headings but are not sections.
+    if (isHeadingLine(line) && !REFERENCE_HEADING.test(line.trim()) && /^[\p{L}\p{N}]/u.test(line.trim())) {
       if (out.length) out[out.length - 1].end = offset;
       out.push({ title: line.trim(), start: offset + line.length + 1, end: text.length });
     }
@@ -94,4 +101,17 @@ export function auditText(text: string): AuditMetrics {
 
 export function worstSentences(m: AuditMetrics, k = 10): SentenceAudit[] {
   return [...m.sentences].sort((a, b) => b.severity - a.severity).slice(0, k);
+}
+
+/**
+ * A sentence is only worth flagging when it is long or carries tells: below this severity (words + 8 x weighted tells)
+ * a 12-word sentence with no tells would head the list of a clean draft.
+ */
+export const MIN_FLAG_SEVERITY = 30;
+/** Beyond this many words a sentence is not offered for rewriting (the model's reply budget cannot hold it, and it is probably not one sentence). */
+export const MAX_REWRITE_WORDS = 80;
+
+/** `worstSentences` restricted to sentences that are actually worth showing or highlighting. */
+export function flaggedSentences(m: AuditMetrics, k = 10): SentenceAudit[] {
+  return worstSentences({ ...m, sentences: m.sentences.filter(s => s.severity >= MIN_FLAG_SEVERITY) }, k);
 }

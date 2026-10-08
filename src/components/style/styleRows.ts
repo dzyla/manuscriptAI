@@ -23,6 +23,8 @@ export interface StyleReadout {
    * reference has no measured value (the generic baseline).
    */
   lengthCv: { draft: number; voice: number | null };
+  /** Triples per 100 sentences. Measured, not scored: the author's own prose saturates it (see profile.ts). */
+  tricolon: { draft: number; voice: number | null };
 }
 
 /** Pure view-model for the panel: everything the table and score card render. */
@@ -40,5 +42,28 @@ export function styleRows(draft: AuditSummary, voice: AuditSummary): StyleReadou
     band,
     rows,
     lengthCv: { draft: draft.lengthCv ?? 0, voice: voice.lengthCv > 0 ? voice.lengthCv : null },
+    tricolon: { draft: draft.rates?.tricolon ?? 0, voice: voice.rates?.tricolon ?? null },
   };
+}
+
+/** Below this many sentences a section's score is noise (one sentence can swing every rate), so it is shown as "not measured". */
+export const MIN_SECTION_SENTENCES = 5;
+
+export interface SectionRow {
+  title: string;
+  sentences: number;
+  /** null when the section is too short to measure */
+  score: number | null;
+  band: 'close' | 'drifting' | 'far' | null;
+}
+
+/** Per-section rows. A section with no sentences is not a section (form boilerplate that looked like a heading) and is dropped. */
+export function sectionRows(sections: { title: string; summary: AuditSummary }[], voice: AuditSummary): SectionRow[] {
+  return sections
+    .filter(sec => sec.summary.sentences > 0)
+    .map(sec => {
+      if (sec.summary.sentences < MIN_SECTION_SENTENCES) return { title: sec.title, sentences: sec.summary.sentences, score: null, band: null };
+      const r = styleDistance(sec.summary, voice);
+      return { title: sec.title, sentences: sec.summary.sentences, score: r.score, band: r.band };
+    });
 }

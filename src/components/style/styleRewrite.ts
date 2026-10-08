@@ -1,5 +1,6 @@
 import { auditMatchesDoc, type StyleAuditSnapshot } from './styleSync';
 import { sentenceId } from './StylePanel';
+import { MAX_REWRITE_WORDS } from '../../services/proseAudit/metrics';
 import { rewriteSentence, neighbourSentences } from '../../services/proseAudit/rewrite';
 import type { FlatSentenceTarget } from '../../extensions/StyleHighlights';
 import type { AISettings, SentenceAudit } from '../../types';
@@ -41,6 +42,10 @@ export async function performStyleRewrite(args: {
   const rewrite = args.rewrite ?? rewriteSentence;
   const editor = getEditor();
   if (!editor || inFlight.current) return;
+  if (s.words > MAX_REWRITE_WORDS) {
+    toast('That sentence is too long to rewrite in one step. Split it by hand first.', 'info');
+    return;
+  }
   const plain = editor.getPlainText();
   if (!auditMatchesDoc(audit, plain)) {
     toast('The document changed since this sentence was measured. The panel is refreshing.', 'info');
@@ -65,7 +70,7 @@ export async function performStyleRewrite(args: {
       return;
     }
     toast(
-      result.warnings.length ? `Rewritten, but check facts: ${result.warnings[0]} Ctrl+Z undoes it.` : 'Sentence rewritten. Ctrl+Z undoes it.',
+      result.warnings.length ? `Rewritten, but it may still read machine-like: ${result.warnings[0]} Ctrl+Z undoes it.` : 'Sentence rewritten. Ctrl+Z undoes it.',
       result.warnings.length ? 'info' : 'success',
     );
   } catch (e) {

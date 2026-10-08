@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { auditText } from './metrics';
 import { buildProfile, activeSummary, GENERIC_HUMAN_SUMMARY, MACHINE_REFERENCE, MIN_PROFILE_WORDS } from './profile';
 import { styleDistance, WEIGHTS } from './score';
+import type { MetricDeviation } from './score';
 import { PATTERN_NAMES } from './patterns';
 import type { AuditSummary } from '../../types';
 
@@ -196,10 +197,70 @@ describe('styleDistance', () => {
     expect(styleDistance(tells, GENERIC_HUMAN_SUMMARY).score).toBeGreaterThan(base);
   });
 
-  it('reports per-metric deviations sorted worst first', () => {
-    const r = styleDistance(MACHINE_REFERENCE, GENERIC_HUMAN_SUMMARY);
-    expect(r.deviations.length).toBeGreaterThan(3);
-    expect(r.deviations[0].deviation).toBeGreaterThanOrEqual(r.deviations[1].deviation);
-    expect(r.deviations[0]).toHaveProperty('label');
+});
+
+describe('scoring constants (final review)', () => {
+  const sem = (n: number): AuditSummary => ({ ...GENERIC_HUMAN_SUMMARY, rates: { ...GENERIC_HUMAN_SUMMARY.rates, semicolon: n } });
+  const dev = (r: ReturnType<typeof styleDistance>, m: string): MetricDeviation => r.deviations.find(d => d.metric === m)!;
+  const lerp = (f: number): AuditSummary => {
+    const rates: Record<string, number> = {};
+    for (const k of Object.keys(MACHINE_REFERENCE.rates)) rates[k] = GENERIC_HUMAN_SUMMARY.rates[k] + f * (MACHINE_REFERENCE.rates[k] - GENERIC_HUMAN_SUMMARY.rates[k]);
+    return { ...GENERIC_HUMAN_SUMMARY, meanWords: 17.6 + f * (26.8 - 17.6), pctOver35: 1 + f * 26, rates };
+  };
+
+  it('pins the weights', () => {
+    expect(WEIGHTS).toEqual({
+      meanWords: 2, pctOver35: 2, 'rather than': 2, semicolon: 1.5, 'which is appositive': 1.5, 'is what cleft': 1.5, 'initial Because': 1,
+      'not X but/instead': 0.5, 'instead of': 0.5, 'This/That anaphora': 0.5, 'throat-clearing': 0.5, 'em dash': 0.5,
+      'not only but also': 0.5, 'paragraph connective': 0.5, 'summary flourish': 0.5, 'stock vocabulary': 0.5,
+    });
+  });
+
+  it('does not score tricolon: the author\'s own prose saturates it', () => {
+    expect(WEIGHTS).not.toHaveProperty('tricolon');
+    const base = styleDistance(GENERIC_HUMAN_SUMMARY, GENERIC_HUMAN_SUMMARY);
+    const heavy = styleDistance({ ...GENERIC_HUMAN_SUMMARY, rates: { ...GENERIC_HUMAN_SUMMARY.rates, tricolon: 40 } }, GENERIC_HUMAN_SUMMARY);
+    expect(heavy.score).toBe(base.score);
+    expect(heavy.deviations.map(d => d.metric)).not.toContain('tricolon');
+  });
+
+  it('clamps one metric\'s drift at 1.5 (neither removed nor widened)', () => {
+    expect(dev(styleDistance(sem(1000), sem(0)), 'semicolon').deviation).toBe(1.5);
+    expect(dev(styleDistance(sem(21 * 1.5), sem(0)), 'semicolon').deviation).toBe(1.5);
+    expect(dev(styleDistance(sem(21 * 1.2), sem(0)), 'semicolon').deviation).toBe(1.2);
+  });
+
+  it('keeps a floor under the scale when the voice sits at the machine value (9 words for mean length, 26 for >35, 5 otherwise)', () => {
+    const atMachine = (over: Partial<AuditSummary>): AuditSummary => ({ ...MACHINE_REFERENCE, ...over });
+    expect(dev(styleDistance(atMachine({ meanWords: 26.8 + 4.5 }), MACHINE_REFERENCE), 'meanWords').deviation).toBe(0.5);
+    expect(dev(styleDistance(atMachine({ pctOver35: 27 + 13 }), MACHINE_REFERENCE), 'pctOver35').deviation).toBe(0.5);
+    const r = { ...MACHINE_REFERENCE.rates, semicolon: 21 + 2.5 };
+    expect(dev(styleDistance({ ...MACHINE_REFERENCE, rates: r }, MACHINE_REFERENCE), 'semicolon').deviation).toBe(0.5);
+  });
+
+  it('caps the score at 100 even when every metric overshoots', () => {
+    const huge: AuditSummary = { ...MACHINE_REFERENCE, meanWords: 200, pctOver35: 100, rates: Object.fromEntries(Object.keys(MACHINE_REFERENCE.rates).map(k => [k, 1000])) };
+    expect(styleDistance(huge, GENERIC_HUMAN_SUMMARY).score).toBe(100);
+    // at 1.5 per metric the unclamped value would be 150
+  });
+
+  it('puts the band boundaries at 25 and 50 exactly', () => {
+    const seen = new Map<number, string>();
+    for (let i = 0; i <= 300; i++) {
+      const r = styleDistance(lerp(i / 300), GENERIC_HUMAN_SUMMARY);
+      seen.set(r.score, r.band);
+    }
+    expect(seen.get(24)).toBe('close');
+    expect(seen.get(25)).toBe('drifting');
+    expect(seen.get(50)).toBe('drifting');
+    expect(seen.get(51)).toBe('far');
+  });
+
+  it('sorts deviations worst first even when the worst metric is listed last', () => {
+    // meanWords (listed first) is at the voice; the heaviest drift is in a later metric.
+    const draft: AuditSummary = { ...GENERIC_HUMAN_SUMMARY, rates: { ...GENERIC_HUMAN_SUMMARY.rates, 'stock vocabulary': 5, semicolon: 10, 'rather than': 25 } };
+    const devs = styleDistance(draft, GENERIC_HUMAN_SUMMARY).deviations.map(d => d.deviation);
+    expect(devs).toEqual([...devs].sort((a, b) => b - a));
+    expect(devs[0]).toBeGreaterThan(devs[devs.length - 1]);
   });
 });

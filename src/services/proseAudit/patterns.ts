@@ -5,7 +5,10 @@ export interface TellPattern {
   kernel: boolean;   // part of the human-prose-audit kernel (parity-tested)
 }
 
-/** Vocabulary over-represented in LLM prose. Counted as one tell per occurrence. */
+/**
+ * Vocabulary over-represented in LLM prose. Counted as one tell per occurrence. The spec also lists robust, comprehensive and
+ * crucial; they are left out because they are ordinary scientific words ("robust fit", "comprehensive screen") and would flag legitimate prose.
+ */
 export const STOCK_WORDS =
   /\b(?:delve[sd]?|underscore[sd]?|pivotal|intricate|tapestry|landscape|multifaceted|nuanced|foster(?:ing|s)?|showcase[sd]?|leverag(?:e|es|ing)|seamless(?:ly)?|paramount|realm|testament)\b/gi;
 

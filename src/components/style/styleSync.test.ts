@@ -6,7 +6,7 @@ import { auditText } from '../../services/proseAudit/metrics';
 import { flattenDoc } from '../../utils/textMatch';
 import { sentencesToDraw, auditMatchesDoc, flatRangeToPm, type StyleAuditSnapshot } from './styleSync';
 
-const TEXT = 'The problem matters; it matters a great deal to patients, clinicians, and funders. We purified the complex by gel filtration in three runs.';
+const TEXT = 'The problem matters rather than the cost, which is clear; it matters a great deal to patients, clinicians, and funders. We purified the complex by gel filtration in three runs.';
 const snapshot = (text: string): StyleAuditSnapshot => ({ metrics: auditText(text), text });
 
 describe('staleness guard (sentencesToDraw)', () => {

@@ -1,5 +1,5 @@
 import type { Node as PMNode } from '@tiptap/pm/model';
-import { worstSentences } from '../../services/proseAudit/metrics';
+import { flaggedSentences } from '../../services/proseAudit/metrics';
 import { flattenDoc, flatSpanToPm } from '../../utils/textMatch';
 import type { AuditMetrics, SentenceAudit } from '../../types';
 
@@ -24,7 +24,7 @@ export function sentencesToDraw(
   draw: boolean,
   k = 12,
 ): SentenceAudit[] {
-  return draw && auditMatchesDoc(audit, currentText) ? worstSentences(audit.metrics, k) : [];
+  return draw && auditMatchesDoc(audit, currentText) ? flaggedSentences(audit.metrics, k) : [];
 }
 
 /** Map a span in flattenDoc text offsets to document positions, or null when it is out of range / unmappable. */

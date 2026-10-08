@@ -554,3 +554,19 @@ describe('replaceFlatSentence keeps citation atoms', () => {
     e.destroy();
   });
 });
+
+describe('sentenceDecorations: tint and tooltip', () => {
+  const mkS = (severity: number, tells: string[] = ['semicolon']) => ({ start: 0, end: 20, words: 12, tells, severity });
+  const attrs = (severity: number, tells?: string[]) => {
+    const e = editorWith('<p>We purified the complex by gel filtration. Binding fell.</p>');
+    const d = sentenceDecorations(e.state.doc, [mkS(severity, tells)])[0] as unknown as { type: { attrs: { class: string; title: string } } };
+    e.destroy();
+    return d.type.attrs;
+  };
+  it.each([[100, 'high'], [60, 'high'], [59, 'mid'], [40, 'mid'], [39, 'low'], [30, 'low']])('severity %i is tinted %s', (sev, band) => {
+    expect(attrs(sev).class).toBe(`style-tell style-tell-${band}`);
+  });
+  it('shows the word count and the tells in the hover title', () => {
+    expect(attrs(50, ['semicolon', 'rather than']).title).toBe('12 words · semicolon, rather than');
+  });
+});

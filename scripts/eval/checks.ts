@@ -5,7 +5,7 @@
 import { trimSectionToLimit, generateCompletion, countWords } from '../../src/services/ai';
 import { rewriteSentence, checkRewrite } from '../../src/services/proseAudit/rewrite';
 import { auditText } from '../../src/services/proseAudit/metrics';
-import type { AISettings } from '../../src/types';
+import type { AISettings, VoiceProfile } from '../../src/types';
 import { FIXTURE_MANUSCRIPT } from './fixture';
 
 const THINKING_MARKERS = [
@@ -61,6 +61,16 @@ const REWRITE_SEEDS = [
   'This single misconfiguration is the shared root cause of failures 1, 3, and part of 2.',
 ];
 
+/**
+ * A voice profile built only from text already in the repo (the eval fixture), so the voice-profile prompt path
+ * (examples and the target sentence length) is exercised, not just the generic prompt.
+ */
+const EVAL_PROFILE: VoiceProfile = {
+  id: 'eval', name: 'eval fixture', createdAt: 0, sampleWords: 0,
+  summary: auditText(FIXTURE_MANUSCRIPT).summary,
+  exampleSentences: ['Cells were treated with compound X.', 'We used a t-test.', 'Treatment significantly improved survival.'],
+};
+
 /** Rewrite quality: guards pass, severity drops, facts survive, no thinking leak. */
 export async function runRewriteChecks(settings: AISettings): Promise<void> {
   console.log('\nRewrite in my voice');
@@ -69,7 +79,7 @@ export async function runRewriteChecks(settings: AISettings): Promise<void> {
   let pass = 0;
   for (const sentence of REWRITE_SEEDS) {
     try {
-      const r = await rewriteSentence({ sentence, settings });
+      const r = await rewriteSentence({ sentence, settings, profile: EVAL_PROFILE });
       const guards = checkRewrite(sentence, r.text);
       const ok = guards.ok && r.warnings.length === 0 && !looksLikeThinking(r.text);
       if (ok) pass++;

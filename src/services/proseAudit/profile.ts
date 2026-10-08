@@ -41,7 +41,8 @@ function summaryFrom(partial: { meanWords: number; pctOver35: number; rates: Rec
  * Measured from the user's own 2020-22 grant corpus (16.7k words, 787 sentences):
  * human 'tricolon' 4.4.
  *
- * Estimate, not measured: machine-side 'tricolon' 12.
+ * Estimate, not measured: machine-side 'tricolon' 12. It is NOT scored: the author's own unassisted R01 prose measures
+ * 11.1 per 100, almost the whole scale, so the metric cannot tell the author from the machine. It is shown as information.
  *
  * Chosen thresholds, not measured: machine-side 5 for 'not X but/instead', 'instead of',
  * 'This/That anaphora', 'throat-clearing', 'em dash', 'not only but also',

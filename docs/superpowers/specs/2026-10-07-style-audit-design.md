@@ -34,8 +34,12 @@ sentences; semicolons 0 vs 21; ", which is" 0 vs 7; "is what" 0 vs 4; initial "B
 
 Measured on the user's own 2020–22 grant writing (16.7k words, 787 sentences): mean 19.7 words,
 7.8% >35, semicolons 0.6/100, tricolon 4.4/100, ", which is" 0.5/100, "rather than" 0.0, em dash
-0.5/100, length CV 0.52. The 2025 R01 draft measures 22.6 / 13.5% / semicolons 14.4/100 (24×) /
-tricolon 8.3/100 — the audit must surface exactly this kind of deviation.
+0.5/100, length CV 0.52. The 2025 R01 draft was first recorded here as 22.6 / 13.5% / semicolons
+14.4/100 (24×) / tricolon 8.3/100. **That line was contaminated** (corrected in the final review): those figures were
+measured with the draft's reference list counted as prose, because the audit did not recognise a bibliography headed
+"LITERATURE CITED:" or "3. Bibliography". Measured on the real document with the bibliography excluded, the draft's
+prose is mean 24.6 words, 17.4% > 35, semicolons 3.0/100 (about 5× the author's 2020–22 rate, not 24×), length CV 0.52,
+tricolon 11.1/100. The audit still surfaces the genuine drift (longer sentences, more semicolons), at a realistic size.
 
 ## Non-goals
 
@@ -84,9 +88,21 @@ auto-rewriting text without the author's action; detecting other people's AI use
 - Per metric m: `d_m = clamp((draft_m − voice_m) / (machine_m − voice_m), 0, 1.5)`; metrics where the
   machine reference is not above the voice value use a fixed per-metric scale instead.
 - **Distance from your voice** = weighted mean of `d_m` (weights: mean length 2, % > 35 2,
-  contrastive patterns 2, semicolon 1.5, others 1), reported as 0–100 with bands
+  contrastive patterns 2, semicolon 1.5, others 1; the nine untabulated tells 0.5), reported as 0–100 with bands
   *close* (< 25), *drifting* (25–50), *far* (> 50). Labeled as style distance, with a one-line note
-  that it does not prove authorship.
+  that it does not prove authorship. With no voice profile the reference is the generic baseline and the panel
+  says "typical-writing baseline", never "your voice".
+- **Tricolon is measured and shown, not scored.** The machine value (12 per 100) was always an estimate, and the
+  author's own unassisted R01 prose measures 11.1 per 100, almost the whole scale, so the metric cannot discriminate.
+- **Density semantics (what is and is not guaranteed).** Every tell metric is a density (per 100 sentences, or a
+  mean), so the score is not a count. Guaranteed: raising any one scored metric's draft value, others fixed, never
+  lowers the distance, and drift below the voice scores 0. Not guaranteed: adding text never lowers it. Appending
+  clean sentences dilutes every rate and can lower the score (20 long tell-free sentences moved one draft from 82
+  to 80), and in the clamp regime tripling clean prose at the same absolute tell count can drop it sharply. This is
+  intended: the score measures the style of the whole draft, and per-sentence severity (words + 8 x tells) is
+  the place to look for individual tells.
+- A section with fewer than 5 sentences is shown as "not measured" with its sentence count; a section with none is
+  not shown.
 - Per section (split on H1–H3 headings) and per document.
 
 ### 4. UI
@@ -129,8 +145,8 @@ app code.
 ## Testing
 
 - Unit: each tell pattern (positive + negative cases incl. "however", passive voice, decimals);
-  sentence filtering (headings, references); kernel parity; scoring monotonicity (adding a
-  semicolon/long sentence never lowers distance); profile building; rewrite guards (numbers,
+  sentence filtering (headings, references); kernel parity; scoring monotonicity per metric (raising one
+  metric's draft value never lowers the distance; see density semantics above); profile building; rewrite guards (numbers,
   citations, severity).
 - Decoration plugin: offsets map to the right document ranges across headings, citations and
   tables (jsdom editor test).

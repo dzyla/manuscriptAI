@@ -38,17 +38,6 @@ describe('rewriteSentence', () => {
     expect(mock.mock.calls[1][0]).toMatch(/number 42 is missing/);
   });
 
-  it('after two failures returns the better attempt flagged', async () => {
-    const dropsBoth = 'Kinetics select the state. We measured complexes at pH 5.5.';
-    const dropsOne = 'Kinetics select the state. We measured complexes at pH 5.5 [3].';
-    mock.mockResolvedValueOnce(dropsBoth).mockResolvedValueOnce(dropsOne);
-    const r = await rewriteSentence({ sentence, settings });
-    expect(mock).toHaveBeenCalledTimes(2);
-    expect(r.retried).toBe(true);
-    expect(r.text).toBe(dropsOne);
-    expect(r.warnings.join(' ')).toMatch(/42/);
-  });
-
   it('fails when the model keeps returning the sentence unchanged', async () => {
     mock.mockResolvedValue(sentence);
     await expect(rewriteSentence({ sentence, settings })).rejects.toThrow(/usable rewrite/);
@@ -90,36 +79,11 @@ describe('rewriteSentence: round-1 pins', () => {
     expect(r).toEqual({ text: reply, retried: false, warnings: [] });
   });
 
-  it('does not let lint re-append dropped citations: a reply with none is flagged, not silently repaired', async () => {
-    const reply = 'Kinetics select the state. We measured 42 complexes at pH 5.5.';
-    mock.mockResolvedValue(reply);
-    const r = await rewriteSentence({ sentence, settings });
-    expect(r.text).toBe(reply);
-    expect(r.warnings.join(' ')).toMatch(/\[3\] is missing/);
-  });
-
   it('collapses a multi-line reply to one line (a newline would become a hard break in the editor)', async () => {
     mock.mockResolvedValueOnce('Kinetics select the state.\nWe measured 42 complexes at pH 5.5 [3].');
     const r = await rewriteSentence({ sentence, settings });
     expect(r.text).toBe('Kinetics select the state. We measured 42 complexes at pH 5.5 [3].');
     expect(r.text).not.toMatch(/\n/);
-  });
-
-  it('returns the attempt with fewer failed guards, whichever order they come in', async () => {
-    const twoReasons = 'Kinetics select the state. We measured complexes at pH 5.5.';
-    const oneReason = 'Kinetics select the state. We measured complexes at pH 5.5 [3].';
-    mock.mockResolvedValueOnce(twoReasons).mockResolvedValueOnce(oneReason);
-    expect((await rewriteSentence({ sentence, settings })).text).toBe(oneReason);
-    mock.mockReset();
-    mock.mockResolvedValueOnce(oneReason).mockResolvedValueOnce(twoReasons);
-    expect((await rewriteSentence({ sentence, settings })).text).toBe(oneReason);
-  });
-
-  it('on a tie returns the second attempt', async () => {
-    const a = 'Kinetics select the state. We measured complexes at pH 5.5 [3].';
-    const b = 'Kinetics decide the state. We measured complexes at pH 5.5 [3].';
-    mock.mockResolvedValueOnce(a).mockResolvedValueOnce(b);
-    expect((await rewriteSentence({ sentence, settings })).text).toBe(b);
   });
 
   it('targets the profile mean sentence length, floors it at 10 and defaults to 18', async () => {
@@ -132,5 +96,55 @@ describe('rewriteSentence: round-1 pins', () => {
     mock.mockClear();
     await rewriteSentence({ sentence, settings });
     expect(mock.mock.calls[0][0]).toMatch(/about 18 words/);
+  });
+});
+
+describe('rewriteSentence: fact failures are refused, style failures are flagged', () => {
+  const sem = 'Binding fell at low pH; the effect was large in all six replicates.';
+  const styleOne = 'Binding fell at low pH; the effect was large in six replicates.'; // keeps the semicolon: 1 style reason
+  const styleTwo = 'Binding fell at low pH; the effect was large in all six replicates and we think this reflects protonation of interface residues under those conditions.'; // semicolon + much longer: 2
+
+  it('refuses, after one retry, a rewrite that dropped a number: it is never handed back', async () => {
+    mock.mockResolvedValue('Kinetics select the state. We measured complexes at pH 5.5 [3].');
+    await expect(rewriteSentence({ sentence, settings })).rejects.toThrow(/safe rewrite.*number 42/);
+    expect(mock).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses a rewrite that dropped every citation (lint does not repair it silently)', async () => {
+    mock.mockResolvedValue('Kinetics select the state. We measured 42 complexes at pH 5.5.');
+    await expect(rewriteSentence({ sentence, settings })).rejects.toThrow(/\[3\]/);
+  });
+
+  it('prefers the attempt with fewer FACT failures even when it has more failures in all', async () => {
+    const o = 'Binding fell at pH 5; the effect was large in all six replicates.';
+    const oneFact = 'Binding fell. The effect was large in all six replicates.'; // loses the 5: 1 fact, 0 style
+    const twoStyle = 'Binding fell at pH 5; the effect was large in all six replicates and we think this reflects protonation of interface residues.'; // 0 fact, 2 style
+    mock.mockResolvedValueOnce(oneFact).mockResolvedValueOnce(twoStyle);
+    expect((await rewriteSentence({ sentence: o, settings })).text).toBe(twoStyle);
+    mock.mockReset();
+    mock.mockResolvedValueOnce(twoStyle).mockResolvedValueOnce(oneFact);
+    expect((await rewriteSentence({ sentence: o, settings })).text).toBe(twoStyle);
+  });
+
+  it('flags a style-only failure and returns it', async () => {
+    mock.mockResolvedValue(styleOne);
+    const r = await rewriteSentence({ sentence: sem, settings });
+    expect(r.text).toBe(styleOne);
+    expect(r.retried).toBe(true);
+    expect(r.warnings.join(' ')).toMatch(/style score/);
+  });
+
+  it('returns the style attempt with fewer failures, in either order', async () => {
+    mock.mockResolvedValueOnce(styleTwo).mockResolvedValueOnce(styleOne);
+    expect((await rewriteSentence({ sentence: sem, settings })).text).toBe(styleOne);
+    mock.mockReset();
+    mock.mockResolvedValueOnce(styleOne).mockResolvedValueOnce(styleTwo);
+    expect((await rewriteSentence({ sentence: sem, settings })).text).toBe(styleOne);
+  });
+
+  it('on a tie returns the second attempt', async () => {
+    const other = 'Binding fell at low pH; the effect was large across six replicates.';
+    mock.mockResolvedValueOnce(styleOne).mockResolvedValueOnce(other);
+    expect((await rewriteSentence({ sentence: sem, settings })).text).toBe(other);
   });
 });

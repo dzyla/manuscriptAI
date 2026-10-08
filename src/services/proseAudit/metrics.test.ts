@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { auditText, worstSentences } from './metrics';
+import { auditText, worstSentences, flaggedSentences, MIN_FLAG_SEVERITY, MAX_REWRITE_WORDS, REFERENCE_HEADING } from './metrics';
 import { KERNEL_PATTERN_NAMES } from './patterns';
 import { readFileSync } from 'node:fs';
 
@@ -142,5 +142,59 @@ describe('worstSentences', () => {
     const m = audit(text);
     expect(m.sentences.map(s => text.slice(s.start, s.end))).toEqual([first, second]);
     expect(m.summary.counts.semicolon).toBe(0);
+  });
+});
+
+describe('bibliography headings (round: final review B1)', () => {
+  const PROSE = 'We purified the complex by gel filtration in three runs. Binding fell at low pH in every replicate. The structure was solved at three angstrom resolution.';
+  const LIST = 'Smith J, Jones K; Lee P. Structure of the complex; a study. J Mol Biol. 2020;12:100-110.\nBrown A; Green B. Kinetics of binding; revisited. Nature. 2019;5:1-9.';
+  it.each(['References', 'References Cited', 'Bibliography and References Cited', 'REFERENCES:', '3. Bibliography', 'LITERATURE CITED:', 'Works Cited', 'B) References', 'Bibliography'])(
+    'ends analysis at the heading "%s"',
+    heading => {
+      expect(REFERENCE_HEADING.test(heading)).toBe(true);
+      const m = auditText(`Approach\n\n${PROSE}\n\n${heading}\n\n${LIST}`);
+      expect(m.summary.sentences).toBe(3);
+      expect(m.summary.rates.semicolon).toBe(0);
+    },
+  );
+  it('does not treat a sentence that merely starts with the word as a heading', () => {
+    expect(REFERENCE_HEADING.test('References to the earlier work are listed in Table 2')).toBe(false);
+    expect(REFERENCE_HEADING.test('Literature cited here disagreed with the model')).toBe(false);
+  });
+});
+
+describe('section breakdown', () => {
+  const A = 'We purified the complex by gel filtration in three runs. Binding fell at low pH in every replicate. The structure was solved at three angstrom resolution.';
+  const B = 'The state is selected kinetically rather than thermodynamically; the effect was large. The receptor binds the protein; affinity was nanomolar in this assay.';
+  const m = auditText(`Methods\n\n${A}\n\nResults\n\n${B}`);
+  it('counts each section\'s own sentences and rates, not the whole document\'s', () => {
+    expect(m.sections.map(s => s.title)).toEqual(['Methods', 'Results']);
+    expect(m.sections[0].summary.sentences).toBe(3);
+    expect(m.sections[1].summary.sentences).toBe(2);
+    expect(m.sections[0].summary.rates.semicolon).toBe(0);
+    expect(m.sections[1].summary.rates.semicolon).toBe(100);
+    expect(m.summary.sentences).toBe(5);
+  });
+  it('does not take a ruler line as a section title', () => {
+    const r = auditText(`-------- 1 page limit ------\n\n${A}\n\nResults\n\n${B}`);
+    expect(r.sections.map(s => s.title)).toEqual(['Results']);
+  });
+});
+
+describe('flaggedSentences', () => {
+  it('drops clean short sentences instead of listing them as "worst"', () => {
+    const m = auditText('We purified the complex by gel filtration. Binding fell at low pH in every replicate. The structure was solved at three angstrom resolution.');
+    expect(worstSentences(m, 10).length).toBe(3);
+    expect(flaggedSentences(m, 10)).toEqual([]);
+  });
+  it('keeps sentences at or above the severity floor and lists the worst first', () => {
+    const m = auditText('The state is selected kinetically rather than thermodynamically; the effect was large in all six replicates, which is clear. We purified it by gel filtration.');
+    const out = flaggedSentences(m, 10);
+    expect(out.length).toBe(1);
+    expect(out[0].severity).toBeGreaterThanOrEqual(MIN_FLAG_SEVERITY);
+  });
+  it('exposes the rewrite cap used by the panel', () => {
+    expect(MAX_REWRITE_WORDS).toBeGreaterThan(35);
+    expect(MAX_REWRITE_WORDS).toBeLessThan(200);
   });
 });

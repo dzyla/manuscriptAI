@@ -65,11 +65,25 @@ describe('performStyleRewrite', () => {
     expect(t.setBusy).toHaveBeenLastCalledWith(null);
   });
 
-  it('flags a "check facts" rewrite in the toast', async () => {
-    const t = setup({}, { text: 'x y z w.', retried: true, warnings: ['The number 42 is missing from the rewrite.'] });
+  it('flags a style-only warning in the toast (facts never reach here: rewriteSentence refuses them)', async () => {
+    const t = setup({}, { text: 'x y z w.', retried: true, warnings: ['The rewrite does not improve the style score.'] });
     await t.run();
-    expect(t.toast.mock.calls[0][0]).toMatch(/check facts: The number 42 is missing/);
+    expect(t.toast.mock.calls[0][0]).toMatch(/may still read machine-like: The rewrite does not improve/);
     expect(t.toast.mock.calls[0][1]).toBe('info');
+  });
+
+  it('applies nothing and shows the reason when the rewrite is refused for a changed fact', async () => {
+    const t = setup({}, new Error('The model did not produce a safe rewrite. The number 42 is missing from the rewrite.'));
+    await t.run();
+    expect(t.editor.replaceFlatSentence).not.toHaveBeenCalled();
+    expect(t.toast).toHaveBeenCalledWith(expect.stringMatching(/safe rewrite.*number 42/), 'error');
+  });
+
+  it('does not offer a rewrite for a sentence over the word cap and never calls the model', async () => {
+    const t = setup();
+    await performStyleRewrite({ sentence: { ...sentence, words: 520 }, audit, getEditor: () => t.editor, settings, inFlight: t.inFlight, setBusy: t.setBusy, toast: t.toast, rewrite: t.rewrite as never });
+    expect(t.rewrite).not.toHaveBeenCalled();
+    expect(t.toast).toHaveBeenCalledWith(expect.stringMatching(/too long/), 'info');
   });
 
   it('shows the citation toast when the editor refuses a rewrite whose citations differ', async () => {

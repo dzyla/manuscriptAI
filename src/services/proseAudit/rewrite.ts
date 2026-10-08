@@ -136,11 +136,22 @@ export function buildRewritePrompt(args: {
  * A rewrite passes only if it keeps every number (with its unit), every citation marker and every
  * gene or protein name, is not much longer, and is measurably less machine-styled than the original.
  */
-export function checkRewrite(original: string, rewrite: string): { ok: boolean; reasons: string[] } {
-  const reasons: string[] = [];
+export interface RewriteCheck {
+  ok: boolean;
+  reasons: string[];
+  /** Failures that change what the sentence SAYS (numbers, units, ratios, signs, ranges, citations, names). Never applied. */
+  fact: string[];
+  /** Failures of the style goal (still machine-like, much longer). The text is true to the original, so it may be applied, flagged. */
+  style: string[];
+}
+
+export function checkRewriteDetailed(original: string, rewrite: string): RewriteCheck {
+  const fact: string[] = [];
+  const style: string[] = [];
+  const done = (): RewriteCheck => ({ ok: !fact.length && !style.length, reasons: [...fact, ...style], fact, style });
   const text = squash(rewrite);
-  if (!text) return { ok: false, reasons: ['The rewrite is empty.'] };
-  if (text === squash(original)) return { ok: false, reasons: ['The rewrite is identical to the original.'] };
+  if (!text) { fact.push('The rewrite is empty.'); return done(); }
+  if (text === squash(original)) { fact.push('The rewrite is identical to the original.'); return done(); }
 
   // Digits inside citation markers belong to the marker check below, not to the number checks.
   const o2 = stripMarkers(original);
@@ -149,48 +160,54 @@ export function checkRewrite(original: string, rewrite: string): { ok: boolean; 
   const origNumbers = countOf(numericTokens(o2));
   for (const [n, c] of origNumbers) {
     const have = haveNumbers.get(n) ?? 0;
-    if (have === 0) reasons.push(`The number ${n} is missing from the rewrite.`);
-    else if (have < c) reasons.push(`The number ${n} appears ${c} times in the original but ${have} in the rewrite.`);
+    if (have === 0) fact.push(`The number ${n} is missing from the rewrite.`);
+    else if (have < c) fact.push(`The number ${n} appears ${c} times in the original but ${have} in the rewrite.`);
   }
   const rewriteDigits = countOf(numericTokens(t2));
   for (const n of rewriteDigits.keys()) {
-    if (!origNumbers.has(n)) reasons.push(`The rewrite introduces the number ${n}, which is not in the original.`);
+    if (!origNumbers.has(n)) fact.push(`The rewrite introduces the number ${n}, which is not in the original.`);
   }
   const haveUnits = numberUnitPairs(t2);
   for (const u of new Set(numberUnitPairs(o2))) {
     if (!haveUnits.includes(u) && haveNumbers.has(u.match(/^[\d.]+/)![0])) {
-      reasons.push(`The unit in "${u}" is missing or detached from its number.`);
+      fact.push(`The unit in "${u}" is missing or detached from its number.`);
     }
   }
   const haveRatios = ratios(t2);
-  for (const r of new Set(ratios(o2))) if (!haveRatios.includes(r)) reasons.push(`The ratio ${r} is missing or inverted.`);
+  for (const r of new Set(ratios(o2))) if (!haveRatios.includes(r)) fact.push(`The ratio ${r} is missing or inverted.`);
   const haveSigned = signedNumbers(t2);
-  for (const n of new Set(signedNumbers(o2))) if (!haveSigned.includes(n)) reasons.push(`The sign of ${n} was lost.`);
+  for (const n of new Set(signedNumbers(o2))) if (!haveSigned.includes(n)) fact.push(`The sign of ${n} was lost.`);
   const haveRanges = ranges(t2);
   for (const r of new Set(ranges(o2))) {
-    if (!haveRanges.includes(r) && !t2.includes(r.replace('-', ' to '))) reasons.push(`The range ${r} is missing or was split into its endpoints.`);
+    if (!haveRanges.includes(r) && !t2.includes(r.replace('-', ' to '))) fact.push(`The range ${r} is missing or was split into its endpoints.`);
   }
   // Citation markers compare as a multiset: dropped, duplicated, invented and merged markers all differ.
   const cites = compareMarkers(original, text);
-  for (const c of cites.missing) reasons.push(`The citation ${c} is missing from the rewrite.`);
-  for (const c of cites.extra) reasons.push(`The rewrite has a citation ${c} that the original does not.`);
+  for (const c of cites.missing) fact.push(`The citation ${c} is missing from the rewrite.`);
+  for (const c of cites.extra) fact.push(`The rewrite has a citation ${c} that the original does not.`);
   for (const id of new Set(identifiers(original))) {
-    if (!text.includes(id)) reasons.push(`The name ${id} is missing from the rewrite.`);
+    if (!text.includes(id)) fact.push(`The name ${id} is missing from the rewrite.`);
   }
   if (words(text) > Math.ceil(words(original) * 1.25)) {
-    reasons.push('The rewrite is much longer than the original.');
+    style.push('The rewrite is much longer than the original.');
   }
 
   const kept = strongTells(original).filter(n => strongTells(text).includes(n));
   const tellsDown = weightedTells(original) === 0 ? weightedTells(text) === 0 : weightedTells(text) < weightedTells(original);
   if (kept.length || !tellsDown || worstSeverity(text) >= worstSeverity(original)) {
-    reasons.push(
+    style.push(
       kept.length
         ? `The rewrite does not improve the style score: it still contains ${kept.map(k => `"${k}"`).join(', ')}.`
         : 'The rewrite does not improve the style score.',
     );
   }
-  return { ok: reasons.length === 0, reasons };
+  return done();
+}
+
+/** The brief's interface: pass/fail with every reason. */
+export function checkRewrite(original: string, rewrite: string): { ok: boolean; reasons: string[] } {
+  const { ok, reasons } = checkRewriteDetailed(original, rewrite);
+  return { ok, reasons };
 }
 
 /**
@@ -224,7 +241,7 @@ export async function rewriteSentence(args: {
     const prompt = extra ? `${base}\n\nYour previous attempt was rejected: ${extra}\nWrite it again and fix that.` : base;
     const raw = await callLLM(prompt, args.settings, SYSTEM, false, undefined, args.signal, 400);
     const text = cleanReply(raw);
-    return { text, check: checkRewrite(args.sentence, text) };
+    return { text, check: checkRewriteDetailed(args.sentence, text) };
   };
 
   const first = await attempt();
@@ -233,10 +250,17 @@ export async function rewriteSentence(args: {
   const second = await attempt(first.check.reasons.join(' '));
   if (second.check.ok) return { text: second.text, retried: true, warnings: [] };
 
-  // Both attempts failed a guard. Hand back the better one, flagged, unless it is unusable.
-  const best = second.check.reasons.length <= first.check.reasons.length ? second : first;
+  // Both attempts failed a guard. A failure that changes a fact (a number, unit, ratio, sign, range, citation or name) is never
+  // handed back: that text would go into the grant. A style-only failure is true to the original, so the better attempt is
+  // returned, flagged. "Better" = fewer fact failures, then fewer failures in all; a tie goes to the second attempt.
+  const better = (a: typeof first, b: typeof first) =>
+    b.check.fact.length !== a.check.fact.length ? b.check.fact.length < a.check.fact.length : b.check.reasons.length <= a.check.reasons.length;
+  const best = better(first, second) ? second : first;
   if (!best.text || squash(best.text) === squash(args.sentence)) {
     throw new Error(`The model did not produce a usable rewrite. ${best.check.reasons[0] ?? ''}`.trim());
+  }
+  if (best.check.fact.length) {
+    throw new Error(`The model did not produce a safe rewrite. ${best.check.fact[0]}`);
   }
   return { text: best.text, retried: true, warnings: best.check.reasons };
 }

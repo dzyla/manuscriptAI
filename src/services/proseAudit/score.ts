@@ -17,8 +17,7 @@ export interface MetricDeviation {
  * keeps full weight for every tell; that is where the tells below are most useful to
  * the author.
  *
- * The first block is the metrics backed by the skill's calibration table (plus the
- * corpus-measured tricolon), weighted by how strong a tell each is. The second block,
+ * The first block is the metrics backed by the skill's calibration table, weighted by how strong a tell each is. The second block,
  * the nine untabulated tells, is deliberately discounted to 0.5: no calibration
  * measurement backs their scale (their machine-side reference values are chosen
  * thresholds, see profile.ts), so they must not dominate the document score.
@@ -32,7 +31,8 @@ export const WEIGHTS: Record<string, number> = {
   'which is appositive': 1.5,
   'is what cleft': 1.5,
   'initial Because': 1,
-  tricolon: 0.5,
+  // tricolon is measured and shown but NOT scored: the author's own unassisted R01 prose measures 11.1 per 100, which all but
+  // saturates the metric's estimated machine value of 12, so it cannot discriminate (see profile.ts).
   // untabulated: evidential discount
   'not X but/instead': 0.5,
   'instead of': 0.5,
