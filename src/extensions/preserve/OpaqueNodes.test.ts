@@ -81,3 +81,68 @@ describe('block provenance uniqueness', () => {
     editor.destroy();
   });
 });
+
+describe('provenance stays on the untouched copy', () => {
+  it('splitting at the start of an imported paragraph keeps provenance on the text', () => {
+    const para = stampProvenance(
+      normalizeDoc({ type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Untouched imported text.' }] }] }).content![0],
+      'b1',
+    );
+    const editor = new Editor({
+      extensions: [...getSchemaExtensions(), OpaqueFragmentGuard],
+      content: { type: 'doc', content: [para] },
+    });
+    editor.commands.setTextSelection(1); // start of the paragraph's text
+    editor.commands.splitBlock();
+    const paras: { text: string; blockId: string | null }[] = [];
+    editor.state.doc.forEach(node => {
+      paras.push({ text: node.textContent, blockId: (node.attrs.ooxml as { blockId?: string } | null)?.blockId ?? null });
+    });
+    const withText = paras.find(p => p.text.includes('Untouched imported text'));
+    const empty = paras.find(p => p.text === '');
+    expect(withText?.blockId).toBe('b1');
+    expect(empty?.blockId).toBeNull();
+    editor.destroy();
+  });
+
+  it('a copy pasted above the original does not steal its provenance', () => {
+    const para = stampProvenance(
+      normalizeDoc({ type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Original imported text.' }] }] }).content![0],
+      'b2',
+    );
+    const editor = new Editor({
+      extensions: [...getSchemaExtensions(), OpaqueFragmentGuard],
+      content: { type: 'doc', content: [para] },
+    });
+    editor.commands.insertContentAt(0, { ...para, content: [{ type: 'text', text: 'Original imported text EDITED.' }] });
+    const kept: string[] = [];
+    editor.state.doc.forEach(node => {
+      if ((node.attrs.ooxml as { blockId?: string } | null)?.blockId === 'b2') kept.push(node.textContent);
+    });
+    expect(kept).toEqual(['Original imported text.']);
+    editor.destroy();
+  });
+
+  it('survivor choice: first untouched wins; with none or several untouched the first in order wins', () => {
+    const edited = (text: string, id: string): JSONContent => ({ ...stampedParagraph('orig', id), content: [{ type: 'text', text }] });
+    const positions = (doc: ReturnType<ReturnType<typeof getDocSchema>['nodeFromJSON']>) => {
+      const out: number[] = [];
+      doc.forEach((_n, offset) => out.push(offset));
+      return out;
+    };
+    const schema = getDocSchema();
+    // edited, untouched, edited -> only the middle one survives
+    const mid = schema.nodeFromJSON({ type: 'doc', content: [edited('x', 'b1'), stampedParagraph('orig', 'b1'), edited('y', 'b1')] });
+    const [p0, p1, p2] = positions(mid);
+    expect(findDuplicateBlockIds(mid)).toEqual([p0, p2]);
+    expect(p1).toBeGreaterThan(p0);
+    // none untouched -> first survives
+    const none = schema.nodeFromJSON({ type: 'doc', content: [edited('x', 'b1'), edited('y', 'b1'), edited('z', 'b1')] });
+    const [, n1, n2] = positions(none);
+    expect(findDuplicateBlockIds(none)).toEqual([n1, n2]);
+    // several untouched (identical text) -> first survives
+    const many = schema.nodeFromJSON({ type: 'doc', content: [stampedParagraph('orig', 'b1'), stampedParagraph('orig', 'b1'), edited('y', 'b1')] });
+    const [, m1, m2] = positions(many);
+    expect(findDuplicateBlockIds(many)).toEqual([m1, m2]);
+  });
+});

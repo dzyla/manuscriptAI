@@ -148,15 +148,20 @@ describe('DocumentRepository', () => {
     expect(await db.assets.count()).toBe(0);
   });
 
-  it('prunes unreferenced preservation fragments on save', async () => {
+  it('prunes fragments no row or remaining backup references', async () => {
+    const small = createDexieRepository(db, { htmlToDoc, isValidDoc, resolver, maxBackups: 1 });
     const store = emptyPreservationStore();
     store.fragments = { f1: { xml: '<a/>', relIds: [], nsDecls: {} }, f2: { xml: '<b/>', relIds: [], nsDecls: {} } };
-    await repo.savePackage({ documentId: 'current', original: new ArrayBuffer(4), fileName: 'x.docx', preservation: store, importedAt: 1 });
+    await small.savePreservation(store);
     const d = baseDoc('chip');
     d.docJson = { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'opaqueInline', attrs: { kind: 'equation', label: 'equation', fragmentId: 'f1' } }] }] };
-    await repo.save(d);
-    const pkg = await repo.getPackage();
-    expect(Object.keys(pkg!.preservation.fragments)).toEqual(['f1']);
+    await small.save(d);
+    // f2 was never referenced by the saved row or any backup: gone. f1 is live.
+    expect(Object.keys((await small.getPreservation())!.fragments)).toEqual(['f1']);
+    await small.save(baseDoc('no chip 1')); // backup still references f1
+    expect(Object.keys((await small.getPreservation())!.fragments)).toEqual(['f1']);
+    await small.save(baseDoc('no chip 2')); // chip-bearing row fell out of the 1-slot ring
+    expect(Object.keys((await small.getPreservation())!.fragments)).toEqual([]);
   });
 
   it('a corrupt backup row never blocks saving or triggers garbage collection', async () => {
@@ -346,5 +351,98 @@ describe('DocumentRepository', () => {
       await repo.load();
       expect((await repo.load()).quarantined).toBe(true);
     });
+  });
+});
+
+describe('preservation storage', () => {
+  it('never rewrites the original package bytes on save', async () => {
+    const big = new ArrayBuffer(1024);
+    await repo.savePackage({ documentId: 'current', original: big, fileName: 'x.docx', importedAt: 1 });
+    await repo.savePreservation({ ...emptyPreservationStore(), fragments: { f1: { xml: '<a/>', relIds: [], nsDecls: {} } } });
+    let packageWrites = 0;
+    const hook = () => { packageWrites++; };
+    db.docxPackages.hook('updating', hook);
+    const d = baseDoc('chip');
+    d.docJson = { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'opaqueInline', attrs: { kind: 'equation', label: 'equation', fragmentId: 'f1' } }] }] };
+    await repo.save(d);
+    await repo.save({ ...d, title: 'again' });
+    db.docxPackages.hook('updating').unsubscribe(hook);
+    expect(packageWrites).toBe(0);
+    expect((await repo.getPackage())?.original.byteLength).toBe(1024);
+  });
+
+  it('keeps a fragment whose atom was deleted until the backup ring forgets it', async () => {
+    await repo.savePreservation({ ...emptyPreservationStore(), fragments: { f1: { xml: '<a/>', relIds: [], nsDecls: {} } } });
+    const withChip = baseDoc('chip');
+    withChip.docJson = { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'opaqueInline', attrs: { kind: 'equation', label: 'equation', fragmentId: 'f1' } }] }] };
+    await repo.save(withChip);
+    await repo.save(baseDoc('deleted the equation'));
+    expect((await repo.getPreservation())?.fragments.f1).toBeDefined(); // still recoverable by undo
+  });
+
+  it('does not write the preservation row when nothing needs pruning', async () => {
+    await repo.savePreservation({ ...emptyPreservationStore(), fragments: { f1: { xml: '<a/>', relIds: [], nsDecls: {} } } });
+    const d = baseDoc('chip');
+    d.docJson = { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'opaqueInline', attrs: { kind: 'equation', label: 'equation', fragmentId: 'f1' } }] }] };
+    await repo.save(d);
+    let writes = 0;
+    const hook = () => { writes++; };
+    db.preservationStores.hook('updating', hook);
+    await repo.save({ ...d, title: 'again' });
+    await repo.save({ ...d, title: 'and again' });
+    db.preservationStores.hook('updating').unsubscribe(hook);
+    expect(writes).toBe(0);
+  });
+});
+
+describe('Dexie v4 upgrade', () => {
+  it('moves an existing preservation field from docxPackages into preservationStores without losing data', async () => {
+    const legacyName = 't-mig-' + Math.random().toString(36).slice(2);
+    const old = new Dexie(legacyName);
+    old.version(3).stores({
+      documents: 'id', sources: 'id, order', chatHistory: 'id, order', suggestions: 'id',
+      historyItems: 'id, timestamp', versionSnapshots: 'id, timestamp', grantTemplates: 'id, updatedAt',
+      assets: 'id, sha256', docxPackages: 'documentId', autosaveBackups: '++seq, documentId, savedAt',
+    });
+    const store = { ...emptyPreservationStore(), fragments: { f1: { xml: '<m:oMath/>', relIds: ['rId5'], nsDecls: { m: 'urn:m' } } } };
+    const bytes = new Uint8Array([1, 2, 3, 4]).buffer;
+    await old.table('docxPackages').put({ documentId: 'current', original: bytes, fileName: 'thesis.docx', preservation: store, importedAt: 42 });
+    await old.table('documents').put({ id: 'current', title: 'keep me', content: '<p>x</p>', saveState: 'Saved', updatedAt: 1 });
+    old.close();
+
+    const upgraded = new ManuscriptDb(legacyName);
+    try {
+      const pres = await upgraded.preservationStores.get('current');
+      expect(pres?.store).toEqual(store);
+      const pkg = (await upgraded.docxPackages.get('current')) as unknown as Record<string, unknown>;
+      expect(pkg.fileName).toBe('thesis.docx');
+      expect(pkg.importedAt).toBe(42);
+      expect(new Uint8Array(pkg.original as ArrayBuffer)).toEqual(new Uint8Array([1, 2, 3, 4]));
+      expect('preservation' in pkg).toBe(false);
+      expect((await upgraded.documents.get('current'))?.title).toBe('keep me');
+    } finally {
+      upgraded.close();
+      await Dexie.delete(legacyName);
+    }
+  });
+
+  it('upgrades a v3 database that has no package at all', async () => {
+    const legacyName = 't-mig-' + Math.random().toString(36).slice(2);
+    const old = new Dexie(legacyName);
+    old.version(3).stores({
+      documents: 'id', sources: 'id, order', chatHistory: 'id, order', suggestions: 'id',
+      historyItems: 'id, timestamp', versionSnapshots: 'id, timestamp', grantTemplates: 'id, updatedAt',
+      assets: 'id, sha256', docxPackages: 'documentId', autosaveBackups: '++seq, documentId, savedAt',
+    });
+    await old.table('documents').put({ id: 'current', title: 'still here', content: '<p>x</p>', saveState: 'Saved', updatedAt: 1 });
+    old.close();
+    const upgraded = new ManuscriptDb(legacyName);
+    try {
+      expect(await upgraded.preservationStores.count()).toBe(0);
+      expect((await upgraded.documents.get('current'))?.title).toBe('still here');
+    } finally {
+      upgraded.close();
+      await Dexie.delete(legacyName);
+    }
   });
 });

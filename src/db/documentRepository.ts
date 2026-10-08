@@ -4,6 +4,7 @@ import type { BackupRow, CommentThread, DocFormat, DocumentMode, DocumentRow, Do
 import { prepareAssets, hydrateAssets, collectAssetIds, liveAssetIds, type AssetUrlResolver } from './assetStore';
 import { stableStringify } from '../docx/preserve/hash';
 import { collectFragmentIds, pruneFragments } from '../docx/preserve/refs';
+import type { PreservationStore } from '../docx/preserve/types';
 import { createFormat } from '../services/formatPresets';
 
 export interface LoadedDocument {
@@ -43,6 +44,8 @@ export interface DocumentRepository {
   save(doc: LoadedDocument): Promise<SaveResult>;
   getPackage(): Promise<DocxPackageRow | undefined>;
   savePackage(pkg: DocxPackageRow): Promise<void>;
+  getPreservation(): Promise<PreservationStore | undefined>;
+  savePreservation(store: PreservationStore): Promise<void>;
   listBackups(): Promise<BackupRow[]>;
   restoreBackup(seq: number): Promise<LoadedDocument>;
 }
@@ -143,7 +146,7 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
     const fingerprint = rowFingerprint(row);
     const live = new Set(deps.liveAssetIds ? deps.liveAssetIds() : liveAssetIds());
     let written = true;
-    await db.transaction('rw', [db.documents, db.assets, db.autosaveBackups, db.docxPackages], async () => {
+    await db.transaction('rw', [db.documents, db.assets, db.autosaveBackups, db.preservationStores], async () => {
       const prev = await db.documents.get('current');
       if (assets.length) await db.assets.bulkPut(assets); // idempotent (content-addressed)
       // Pin only a genuine legacy (pre-v3 HTML) row. A concurrent second migration (e.g. StrictMode
@@ -186,8 +189,16 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
       const dead = allAssetIds.filter(id => !keepAssets.has(id));
       if (dead.length) await db.assets.bulkDelete(dead);
 
-      const pkg = await db.docxPackages.get('current');
-      if (pkg) await db.docxPackages.put({ ...pkg, preservation: pruneFragments(pkg.preservation, keepFragments) });
+      // Fragments are kept while the current row or any remaining backup references them (the same rule as
+      // assets), so undoing a deleted equation still finds its XML. Only the small preservation row is touched,
+      // and only when something actually has to go; the original package bytes are never rewritten.
+      const pres = await db.preservationStores.get('current');
+      if (pres) {
+        const pruned = pruneFragments(pres.store, keepFragments);
+        if (Object.keys(pruned.fragments).length !== Object.keys(pres.store.fragments).length) {
+          await db.preservationStores.put({ ...pres, store: pruned, updatedAt: Date.now() });
+        }
+      }
     });
     return { row, warnings, written };
   }
@@ -260,6 +271,16 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
 
     getPackage: () => db.docxPackages.get('current'),
     async savePackage(pkg) { await db.docxPackages.put(pkg); },
+
+    async getPreservation() {
+      return (await db.preservationStores.get('current'))?.store;
+    },
+    savePreservation(store) {
+      // Queued behind in-flight saves so a prune never interleaves with this write.
+      const run = queue.then(() => db.preservationStores.put({ documentId: 'current', store, updatedAt: Date.now() }));
+      queue = run.catch(() => undefined);
+      return run.then(() => undefined);
+    },
 
     async listBackups() {
       return (await db.autosaveBackups.orderBy('seq').toArray()).reverse();

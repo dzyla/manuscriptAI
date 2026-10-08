@@ -246,8 +246,14 @@ export interface DocxPackageRow {
   documentId: 'current';
   original: ArrayBuffer;
   fileName: string;
-  preservation: PreservationStore;
   importedAt: number;
+}
+
+/** The mutable preservation map, kept apart from the (large, immutable) original package bytes. */
+export interface PreservationRow {
+  documentId: 'current';
+  store: PreservationStore;
+  updatedAt: number;
 }
 
 export interface BackupRow {
