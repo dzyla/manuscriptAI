@@ -323,6 +323,36 @@ describe('readStyles: Word attributes, localised built-ins and derived defaults'
     expect(format.styles.normal.derivedFromDefaults).toBeUndefined();
   });
 
+  const withExtraStyles = async (xml: string) => {
+    const zip = await JSZip.loadAsync(load('localised-styles.docx'));
+    const styles = await zip.file('word/styles.xml')!.async('string');
+    zip.file('word/styles.xml', styles.replace('</w:styles>', `${xml}</w:styles>`));
+    return readStyles(await openPackage(await zip.generateAsync({ type: 'arraybuffer' })));
+  };
+
+  it('counts a value as declared when the style states it, even if it equals the docDefault', async () => {
+    const { format, styleIdByWordId } = await withExtraStyles(
+      '<w:style w:type="paragraph" w:customStyle="1" w:styleId="SameAsDefault"><w:name w:val="Same As Default"/><w:pPr><w:spacing w:after="160"/></w:pPr></w:style>',
+    );
+    const s = format.styles[styleIdByWordId.get('SameAsDefault')!];
+    expect(s.spaceAfterPt).toBe(8); // equal to the docDefault, but written by the style
+    expect(s.derivedFromDefaults).toEqual(['lineSpacing']); // only what it did NOT state
+  });
+
+  it('gives a built-in name to the first style that holds it; a later same-name style falls back to its id', async () => {
+    const { format, styleIdByWordId, headingLevelByStyleId } = await withExtraStyles(
+      '<w:style w:type="paragraph" w:styleId="FirstH3"><w:name w:val="heading 3"/><w:rPr><w:b/></w:rPr></w:style>' +
+        '<w:style w:type="paragraph" w:customStyle="1" w:styleId="SecondH3"><w:name w:val="Heading 3"/><w:rPr><w:i/></w:rPr></w:style>',
+    );
+    expect(styleIdByWordId.get('FirstH3')).toBe('heading3');
+    expect(styleIdByWordId.get('SecondH3')).toBe('secondH3');
+    expect(format.styles.heading3.bold).toBe(true);
+    expect(format.styles.secondH3.italic).toBe(true);
+    expect(format.styles.secondH3.name).toBe('Heading 3'); // the document's name is kept
+    expect(headingLevelByStyleId.get('heading3')).toBe(3);
+    expect(headingLevelByStyleId.get('secondH3')).toBe(3); // still recognised as a heading by name
+  });
+
   it('declares only the namespaces a preserved fragment uses', async () => {
     const { format } = await localised();
     const frags = Object.values(format.styles).flatMap(s => Object.values(s.preserved ?? {}));

@@ -170,14 +170,22 @@ export interface StyleDef {
    * its other children (w:link, w:uiPriority, w:tblPr, w:tblStylePr, …) and its attributes.
    */
   preserved?: { pPrXml?: string; rPrXml?: string; extraXml?: string };
-  /** Word's `w:default="1"`: this is the document's default style for its type. Written back as-is. */
+  /**
+   * Word's `w:default="1"`: this is the document's default style for its type. WRITER RULE: these two
+   * flags (wordDefault, customStyle) are the source of truth. `preserved.extraXml`'s root element also
+   * carries the w:style attributes verbatim (it is a clone of the original element), so the same fact
+   * exists twice; a writer must set default/customStyle from these fields and ignore the attributes
+   * on the extraXml root, copying only its CHILDREN.
+   */
   wordDefault?: boolean;
   /** Word's `w:customStyle="1"`: the author's own style rather than a built-in. Written back as-is. */
   customStyle?: boolean;
   /**
    * Fields on this style whose values were NOT declared by the style but copied in from
    * w:docDefaults/w:pPrDefault (so the app's resolver agrees with Word). A writer must omit them
-   * when re-emitting the style: they are inherited, not authored.
+   * when re-emitting the style: they are inherited, not authored. EDIT CONTRACT: any code that sets or
+   * changes one of these fields on a style (a style editor, an AI edit, a format preset) MUST remove
+   * that field from this list, otherwise a writer that omits listed fields silently drops the edit.
    */
   derivedFromDefaults?: Array<'spaceBeforePt' | 'spaceAfterPt' | 'lineSpacing' | 'indent' | 'align'>;
 }

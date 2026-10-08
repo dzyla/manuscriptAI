@@ -135,3 +135,42 @@ describe('captureChildren', () => {
     expect(kept).not.toContain('xmlns:m=');
   });
 });
+
+describe('captureFragment: namespace trimming', () => {
+  const MC = 'http://schemas.openxmlformats.org/markup-compatibility/2006';
+  const W14 = 'http://schemas.microsoft.com/office/word/2010/wordml';
+  const WIDE = `<w:document xmlns:w="${W}" xmlns:r="${R}" xmlns:m="${M}" xmlns:w14="${W14}" xmlns:mc="${MC}" xmlns:wp="urn:x:wp" xmlns:v="urn:x:v" xmlns:o="urn:x:o"><w:body><w:p><w:r><w:t>plain</w:t></w:r></w:p><w:p><w:r><w:rPr><w14:ligatures w14:val="all"/></w:rPr><w:drawing r:id="rId9"/></w:r><m:oMath><m:r><m:t>x</m:t></m:r></m:oMath></w:p><w:p mc:Ignorable="w14"><w:r><w:t>y</w:t></w:r></w:p></w:body></w:document>`;
+  const paras = () => parseXml(WIDE).getElementsByTagNameNS(W, 'p');
+  const declCount = (xml: string) => (xml.match(/xmlns(:\w+)?=/g) ?? []).length;
+
+  it('declares only the prefixes a plain paragraph uses', () => {
+    const f = captureFragment(paras()[0]);
+    expect(declCount(f.xml)).toBe(1);
+    expect(f.nsDecls).toEqual({ w: W });
+    expect(parseXml(f.xml).documentElement.namespaceURI).toBe(W);
+  });
+
+  it('keeps element, attribute and Ignorable-named prefixes, and re-parses standalone', () => {
+    const f = captureFragment(paras()[1]);
+    expect(Object.keys(f.nsDecls).sort()).toEqual(['m', 'r', 'w', 'w14']);
+    expect(f.xml).not.toContain('xmlns:v=');
+    const re = parseXml(f.xml);
+    expect(re.getElementsByTagNameNS(W14, 'ligatures').length).toBe(1);
+    expect(re.getElementsByTagNameNS(M, 'oMath').length).toBe(1);
+    expect(f.relIds).toEqual(['rId9']);
+    const ign = captureFragment(paras()[2]);
+    expect(Object.keys(ign.nsDecls).sort()).toEqual(['mc', 'w', 'w14']);
+  });
+
+  it('survives remapRelIds with its trimmed declarations intact', () => {
+    const f = remapRelIds(captureFragment(paras()[1]), { rId9: 'rId42' });
+    expect(f.xml).toContain('rId42');
+    expect(Object.keys(f.nsDecls).sort()).toEqual(['m', 'r', 'w', 'w14']);
+    expect(parseXml(f.xml).getElementsByTagNameNS(W, 'drawing').length).toBe(1);
+  });
+
+  it('is much smaller than declaring everything in scope', () => {
+    const f = captureFragment(paras()[0]);
+    expect(f.xml.length).toBeLessThan(120);
+  });
+});

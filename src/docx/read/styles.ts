@@ -444,6 +444,10 @@ export function readStyles(pkg: DocxPackage, report?: ImportReport): StylesResul
     styles.normal = { id: 'normal', name: 'Normal', type: 'paragraph', ...(defaultParagraphId ? { basedOn: defaultParagraphId } : {}) };
     backfilled.add('normal');
   }
+  // WRITER RULES (see StyleDef): (1) wordDefault/customStyle on the StyleDef win over the same attributes
+  // on the root of preserved.extraXml; copy only extraXml's children. (2) derivedFromDefaults lists fields
+  // that were inherited, not declared: omit them on export, and whoever edits such a field must remove it
+  // from the list. (3) `backfilled` ids were never in the document's styles.xml.
   // w:docDefaults paragraph properties are what every root paragraph style inherits in Word. Copy them
   // onto root paragraph styles so the app's resolver agrees, and say so in `derivedFromDefaults`: they
   // are inherited, not authored, and a writer must not emit them back as the style's own. (Table
