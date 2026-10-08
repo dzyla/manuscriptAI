@@ -62,6 +62,17 @@ describe('import report', () => {
     expect(summarizeReport(r)).toContain('186 preserved read-only');
   });
 
+  it('summary says when none of the comments is anchored in the text, and only then', () => {
+    const r = createReport();
+    recordFeature(r, 'comment', 4);
+    r.commentsNotInText = 4;
+    expect(summarizeReport(r)).toBe('Imported 4 comments (none anchored in the text)');
+    r.commentsNotInText = 3;
+    expect(summarizeReport(r)).toBe('Imported 4 comments');
+    delete r.commentsNotInText;
+    expect(summarizeReport(r)).toBe('Imported 4 comments');
+  });
+
   it('summary counts lists, pluralised', () => {
     const r = createReport();
     recordFeature(r, 'list', 5);

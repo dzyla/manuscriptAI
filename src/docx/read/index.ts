@@ -227,10 +227,13 @@ function sidecarParts(pkg: DocxPackage, mainPart: string): Array<{ part: string;
       out.push({ part, kind });
     }
   };
+  const have = new Set(pkg.names().map(n => n.toLowerCase()));
   const find = (suffix: string, conventional: string | null, kind: SidecarKind): void => {
-    const related = relatedParts(pkg, mainPart, suffix);
+    // A relationship that names a part the package does not hold (or one that points outside it) finds nothing, so the
+    // conventional name is tried in that case too: review state must not vanish because a relationship dangles.
+    const related = relatedParts(pkg, mainPart, suffix).filter(part => have.has(part.toLowerCase()));
     for (const part of related) add(part, kind);
-    if (!related.length && conventional && pkg.names().includes(conventional)) add(conventional, kind);
+    if (!related.length && conventional && have.has(conventional)) add(conventional, kind);
   };
   find('footnotes', 'word/footnotes.xml', 'footnotes');
   find('endnotes', 'word/endnotes.xml', 'endnotes');
@@ -359,6 +362,9 @@ function disclose(ctx: ReadContext, mainPart: string, body: Element): void {
   const comments = unmet(anchored.size + unanchored, report.counts.comment);
   const commentsInBody = unmet(main.commentIds.size, report.counts.comment);
   if (comments) recordFeature(report, 'comment', comments);
+  // Comments that are in the file but not in the main text (kept in a footnote or header, or with no anchor at all): the summary says so
+  // when that is ALL of them, so "4 comments" is not taken to mean four places in the text.
+  if (anchoredElsewhere + unanchored > 0) report.commentsNotInText = anchoredElsewhere + unanchored;
   if (commentsInBody) {
     warnOnce(
       report,

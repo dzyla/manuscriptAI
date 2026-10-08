@@ -49,6 +49,8 @@ export interface ImportReport {
    * or bibliography is the four pieces of its field (begin, code, separator, end).
    */
   described?: { trackedChange: number; commentAnchor: number; citationField: number };
+  /** Comments that are in the file but have no anchor in the main text (a footnote or header anchor, or none); set only when there are any. */
+  commentsNotInText?: number;
 }
 
 export function createReport(): ImportReport {
@@ -77,7 +79,7 @@ export function summarizeReport(r: ImportReport): string {
   const c = r.counts;
   const revisions = (c.trackedChange ?? 0) + (c.formatChange ?? 0);
   if (revisions) parts.push(plural(revisions, 'tracked change'));
-  if (c.comment) parts.push(plural(c.comment, 'comment'));
+  if (c.comment) parts.push(plural(c.comment, 'comment') + ((r.commentsNotInText ?? 0) >= c.comment ? ' (none anchored in the text)' : ''));
   if (c.list) parts.push(plural(c.list, 'list'));
   const cites = (c.nativeCitation ?? 0) + (c.externalCitation ?? 0);
   if (cites) parts.push(plural(cites, 'citation'));

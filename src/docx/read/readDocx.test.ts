@@ -708,7 +708,7 @@ describe('review state in the parts other than the body', () => {
     expect(w).toHaveLength(1);
     expect(w[0].category).toBe(3);
     expect(r.report.warnings.some(x => x.message.startsWith('Comments are kept as read-only anchors'))).toBe(true);
-    expect(summarizeReport(r.report)).toContain('1 comment');
+    expect(summarizeReport(r.report)).toContain('1 comment (none anchored in the text)');
   });
 
   it('comment records with no anchor in the text are counted, and only those: records that are anchored are not counted twice', async () => {
@@ -717,7 +717,7 @@ describe('review state in the parts other than the body', () => {
     const none = await readDocx(await pack(plain, { 'word/comments.xml': comments([0, 1, 2, 3]) }, CM_REL));
     expect(none.report.counts.comment).toBe(4);
     expect(none.report.warnings.filter(w => /^4 comments in the comments part have no anchor/.test(w.message))).toHaveLength(1);
-    expect(summarizeReport(none.report)).toContain('4 comments');
+    expect(summarizeReport(none.report)).toContain('4 comments (none anchored in the text)');
     expect(summarizeReport(none.report)).not.toBe('Imported document');
 
     const some = await readDocx(
@@ -729,6 +729,9 @@ describe('review state in the parts other than the body', () => {
     );
     expect(some.report.counts.comment).toBe(3);
     expect(some.report.warnings.filter(w => /^2 comments in the comments part have no anchor/.test(w.message))).toHaveLength(1);
+    expect(some.report.commentsNotInText).toBe(2);
+    expect(summarizeReport(some.report)).toContain('3 comments');
+    expect(summarizeReport(some.report)).not.toContain('none anchored'); // one of the three is in the text
 
     const all = await readDocx(
       await pack(
@@ -739,6 +742,8 @@ describe('review state in the parts other than the body', () => {
     );
     expect(all.report.counts.comment).toBe(1);
     expect(all.report.warnings.filter(w => /no anchor in the text/.test(w.message))).toEqual([]);
+    expect(all.report.commentsNotInText).toBeUndefined();
+    expect(summarizeReport(all.report)).not.toContain('none anchored');
   });
 
   it('a comment anchor with no id names no comment', async () => {
@@ -746,6 +751,87 @@ describe('review state in the parts other than the body', () => {
     expect(r.report.counts.comment).toBeUndefined();
     expect(r.report.warnings.filter(w => w.feature === 'comment')).toEqual([]);
   });
+});
+
+describe('review state in the other parts: every way a part is reached, and every kind', () => {
+  const REVIEWED = (id: number) => `<w:ins w:id="${id}" w:author="A" w:date="2026-01-01T00:00:00Z"><w:r><w:t>t</w:t></w:r></w:ins>`;
+  const SEP = (tag: string) => `<w:${tag} w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:${tag}>`;
+  const plain = `<w:p>${wRun('Body.')}</w:p>${SECT}`;
+  const rel = (id: string, type: string, target: string) => `<Relationship Id="${id}" Type="${R_TYPE}/${type}" Target="${target}"/>`;
+
+  it('a revision inside the text of a comment is in the headline and located "in comments" (decided: counted)', async () => {
+    const r = await readDocx(
+      await pack(
+        plain,
+        { 'word/comments.xml': `<w:comments ${W}><w:comment w:id="0" w:author="A"><w:p>${REVIEWED(1)}</w:p></w:comment></w:comments>` },
+        rel('rId9', 'comments', 'comments.xml'),
+      ),
+    );
+    expect(r.report.counts.trackedChange).toBe(1);
+    expect(r.report.warnings.some(w => /^1 tracked change \(1 in comments\) sit outside the main text/.test(w.message) && w.category === 3)).toBe(true);
+    expect(r.report.counts.comment).toBe(1); // and the comment itself, which has no anchor
+  });
+
+  it('a revision in a footer is counted and located (a header is not the only furniture)', async () => {
+    const r = await readDocx(
+      await pack(plain, { 'word/footer1.xml': `<w:ftr ${W}><w:p>${REVIEWED(1)}</w:p></w:ftr>` }, rel('rId8', 'footer', 'footer1.xml')),
+    );
+    expect(r.report.counts.trackedChange).toBe(1);
+    expect(r.report.warnings.some(w => /^1 tracked change \(1 in headers and footers\)/.test(w.message))).toBe(true);
+  });
+
+  it('endnotes and the comments part are found by their conventional names when no relationship names them', async () => {
+    const r = await readDocx(
+      await pack(plain, {
+        'word/endnotes.xml': `<w:endnotes ${W}>${SEP('endnote')}<w:endnote w:id="2"><w:p>${REVIEWED(1)}</w:p></w:endnote></w:endnotes>`,
+        'word/comments.xml': `<w:comments ${W}><w:comment w:id="0"><w:p><w:r><w:t>c</w:t></w:r></w:p></w:comment></w:comments>`,
+      }),
+    );
+    expect(r.report.counts.trackedChange).toBe(1);
+    expect(r.report.warnings.some(w => /\(1 in endnotes\)/.test(w.message))).toBe(true);
+    expect(r.report.counts.comment).toBe(1);
+    expect(r.report.warnings.some(w => w.feature === 'footnoteRef')).toBe(true);
+  });
+
+  it('a relationship that names a part the package does not hold does not hide the part under its conventional name', async () => {
+    const r = await readDocx(
+      await pack(
+        plain,
+        { 'word/footnotes.xml': `<w:footnotes ${W}>${SEP('footnote')}<w:footnote w:id="2"><w:p>${REVIEWED(1)}</w:p></w:footnote></w:footnotes>` },
+        rel('rId31', 'footnotes', 'missing-footnotes.xml'),
+      ),
+    );
+    expect(r.report.counts.trackedChange).toBe(1);
+    expect(r.report.warnings.some(w => w.feature === 'footnoteRef')).toBe(true);
+    expect(summarizeReport(r.report)).not.toBe('Imported document');
+  });
+
+  it('two relationships to one part, or a relationship plus the name, count the part once', async () => {
+    const header = `<w:hdr ${W}><w:p>${REVIEWED(1)}</w:p></w:hdr>`;
+    const twice = await readDocx(
+      await pack(plain, { 'word/header1.xml': header }, rel('rId7', 'header', 'header1.xml') + rel('rId8', 'header', 'header1.xml')),
+    );
+    expect(twice.report.counts.trackedChange).toBe(1);
+    const fn = `<w:footnotes ${W}>${SEP('footnote')}<w:footnote w:id="2"><w:p>${REVIEWED(1)}</w:p></w:footnote></w:footnotes>`;
+    const both = await readDocx(await pack(plain, { 'word/footnotes.xml': fn }, rel('rId31', 'footnotes', 'footnotes.xml')));
+    expect(both.report.counts.trackedChange).toBe(1);
+  });
+
+  it('a comment record with no id is not a comment', async () => {
+    const r = await readDocx(
+      await pack(plain, { 'word/comments.xml': `<w:comments ${W}><w:comment w:author="A"><w:p><w:r><w:t>c</w:t></w:r></w:p></w:comment></w:comments>` }, rel('rId9', 'comments', 'comments.xml')),
+    );
+    expect(r.report.counts.comment).toBeUndefined();
+    expect(r.report.commentsNotInText).toBeUndefined();
+  });
+
+  it.each(['customXmlInsRangeStart', 'customXmlDelRangeStart', 'customXmlMoveFromRangeStart', 'customXmlMoveToRangeStart', 'tblPrExChange', 'sectPrChange'])(
+    '%s is one formatting change',
+    async name => {
+      const r = await readDocx(await pack(`<w:p>${wRun('t')}</w:p><w:${name} w:id="4" w:author="A"/>${SECT}`));
+      expect(r.report.counts.formatChange).toBe(1);
+    },
+  );
 });
 
 describe('counting that must not over-report', () => {
