@@ -1553,7 +1553,6 @@ export default function App() {
           <Editor
             ref={editorRef}
             content={content}
-            showPageGuides={mode === 'grant'}
             onChange={(html) => setContent(html)}
             onDocChange={setDocJson}
             pendingDocument={pendingDocument}

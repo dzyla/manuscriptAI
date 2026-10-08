@@ -16,7 +16,9 @@ import {
   Table as TableIcon, ImagePlus, Menu, X, ScanEye, Trash2, ShieldCheck, Eye as EyeIcon, Wand2, Loader2, ArrowRight, Hash
 } from 'lucide-react';
 import { getThesaurus, generateCompletion } from '../services/ai';
-import { AISettings } from '../types';
+import { AISettings, DocFormat } from '../types';
+import { PAGE_SIZES_IN, createFormat } from '../services/formatPresets';
+import { contentWidthIn, contentHeightIn } from '../services/pagination';
 import { AutoComplete } from '../extensions/AutoComplete';
 import { StyleHighlights, replaceRangeWithText, resolveFlatSentence, replaceFlatSentence, type FlatSentenceTarget } from '../extensions/StyleHighlights';
 import { NodeSelection } from 'prosemirror-state';
@@ -69,8 +71,8 @@ interface EditorProps {
   aiSettings?: AISettings;
   onAnalyzeImage?: (dataUrl: string, prompt: string, contextText?: string) => void;
   onInsertFigure?: () => void;
-  /** render dashed page-break guides at NIH-format intervals (grant mode) */
-  showPageGuides?: boolean;
+  /** the document's page format; null/undefined falls back to the NIH preset */
+  format?: DocFormat | null;
   /** flagged sentences to tint (sub-project H); empty disables highlighting */
   styleSentences?: SentenceAudit[];
   styleAuditEnabled?: boolean;
@@ -163,8 +165,11 @@ const BUBBLE_ACTIONS: { label: string; instruction: string; agent: AgentType; ic
 /** prosemirror-history's plugin key (it does not export it); the same string addresses the plugin and its transaction metadata. */
 const HISTORY_PLUGIN_KEY = 'history$';
 
-const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocChange, pendingDocument, onPendingDocumentApplied, onDuplicateFragment, loadSettled = false, onDocumentReady, onContentSynced, suggestions, onSuggestionClick, onSelectionQuery, onTransformSelection, onRewriteSection, onAnalyzeSection, onVerifyClaim, onSearchSimilar, sources, citationRegistry, onInsertCitation, isDistractionFree, editorZoom = 100, editorWidth = 'normal', aiSettings, onAnalyzeImage, onInsertFigure, showPageGuides = false, styleSentences, styleAuditEnabled, onStyleAudit }, ref) => {
+const DEFAULT_CANVAS_FORMAT: DocFormat = createFormat('nih');
+
+const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocChange, pendingDocument, onPendingDocumentApplied, onDuplicateFragment, loadSettled = false, onDocumentReady, onContentSynced, suggestions, onSuggestionClick, onSelectionQuery, onTransformSelection, onRewriteSection, onAnalyzeSection, onVerifyClaim, onSearchSimilar, sources, citationRegistry, onInsertCitation, isDistractionFree, editorZoom = 100, editorWidth = 'normal', aiSettings, onAnalyzeImage, onInsertFigure, format, styleSentences, styleAuditEnabled, onStyleAudit }, ref) => {
   const [isMounted, setIsMounted] = useState(false);
+  const canvasFormat = format ?? DEFAULT_CANVAS_FORMAT;
 
   // ── Page guides: dashed page-break lines at NIH-format intervals ──────────
   // Page height scales with rendered content width (7.5in usable width → 10in
@@ -172,24 +177,27 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
   const pageGuideContainerRef = useRef<HTMLDivElement>(null);
   const [pageGuideOffsets, setPageGuideOffsets] = useState<number[]>([]);
   useEffect(() => {
-    if (!showPageGuides) { setPageGuideOffsets([]); return; }
     const el = pageGuideContainerRef.current;
     if (!el) return;
     const compute = () => {
       const prose = el.querySelector('.ProseMirror') as HTMLElement | null;
       if (!prose) return;
-      const pageHeight = (prose.clientWidth / 7.5) * 10;
+      const widthIn = contentWidthIn(format ?? null);
+      if (widthIn <= 0) return;
+      const pageHeight = (prose.clientWidth / widthIn) * contentHeightIn(format ?? null);
       if (pageHeight < 100) return;
       const contentTop = prose.offsetTop;
       const n = Math.floor(prose.scrollHeight / pageHeight);
       setPageGuideOffsets(Array.from({ length: Math.min(n, 200) }, (_, i) => contentTop + (i + 1) * pageHeight));
     };
     compute();
+    // Absent in jsdom and very old webviews; the guides then just measure once per content change.
+    if (typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver(compute);
     const prose = el.querySelector('.ProseMirror');
     if (prose) ro.observe(prose);
     return () => ro.disconnect();
-  }, [showPageGuides, content, editorZoom, editorWidth]);
+  }, [format, content, editorZoom, editorWidth]);
   const [showSelectionBar, setShowSelectionBar] = useState(false);
   const [selectionInstruction, setSelectionInstruction] = useState('');
   const [selectionAgent, setSelectionAgent] = useState<AgentType>('editor');
@@ -1120,13 +1128,23 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
 
         <div
           ref={pageGuideContainerRef}
-          className="px-8 sm:px-12 md:px-16 py-12 md:py-20 relative"
+          data-testid="page-canvas"
+          data-zoom={editorZoom}
+          className="page-canvas relative mx-auto"
           style={{
-            fontSize: `${editorZoom}%`,
-
+            width: `${PAGE_SIZES_IN[canvasFormat.page.size].width}in`,
+            minHeight: `${PAGE_SIZES_IN[canvasFormat.page.size].height}in`,
+            paddingTop: `${canvasFormat.page.marginsIn.top}in`,
+            paddingRight: `${canvasFormat.page.marginsIn.right}in`,
+            paddingBottom: `${canvasFormat.page.marginsIn.bottom}in`,
+            paddingLeft: `${canvasFormat.page.marginsIn.left}in`,
+            fontFamily: canvasFormat.defaults.fontFamily,
+            fontSize: `${canvasFormat.defaults.fontSizePt}pt`,
+            zoom: editorZoom / 100,
           }}
         >
-          {showPageGuides && pageGuideOffsets.map((top, i) => (
+          <div data-testid="page-guides" aria-hidden className="absolute inset-0 pointer-events-none">
+          {pageGuideOffsets.map((top, i) => (
             <div key={i} className="absolute left-0 right-0 pointer-events-none z-10" style={{ top }} aria-hidden>
               <div className="border-t border-dashed border-stone-300 relative">
                 <span className="absolute -top-2.5 right-1 text-[9px] font-bold px-1 rounded" style={{ color: 'var(--text-muted)', background: 'var(--surface-1)' }}>
@@ -1135,6 +1153,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
               </div>
             </div>
           ))}
+          </div>
           <EditorContent editor={editor} />
         </div>
 
