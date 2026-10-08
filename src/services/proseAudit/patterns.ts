@@ -9,18 +9,26 @@ export interface TellPattern {
 export const STOCK_WORDS =
   /\b(?:delve[sd]?|underscore[sd]?|pivotal|intricate|tapestry|landscape|multifaceted|nuanced|foster(?:ing|s)?|showcase[sd]?|leverag(?:e|es|ing)|seamless(?:ly)?|paramount|realm|testament)\b/gi;
 
+/*
+ * Kernel patterns are deliberately case-SENSITIVE, exactly like kernel.py (re.findall
+ * with re.M and no IGNORECASE). A sentence-initial "Rather than" or "Instead of" is
+ * therefore not counted. The skill's calibration rates were measured that way, so
+ * counting the extra sentence-initial hits would inflate a draft against the
+ * reference and distort the score. Only the non-kernel additions below that need
+ * case-insensitivity (stock vocabulary, not only / but also) carry the i flag.
+ */
 export const TELL_PATTERNS: Record<string, TellPattern> = {
   // ─── kernel patterns (parity-tested against kernel.py) ───
-  'rather than': { re: /\brather than\b/gi, weight: 2, label: 'contrastive definition', kernel: true },
-  'not X but/instead': { re: /\b(?:is|are|was|were)\s+not\b[^.]{0,60}\b(?:but|instead)\b/gi, weight: 2, label: 'negated definition', kernel: true },
-  'instead of': { re: /\binstead of\b/gi, weight: 1.5, label: 'contrastive definition', kernel: true },
-  'is what cleft': { re: /\bis what\b/gi, weight: 1.5, label: 'cleft', kernel: true },
-  'which is appositive': { re: /,\s*which is\b/gi, weight: 1.5, label: 'appositive pile-up', kernel: true },
+  'rather than': { re: /\brather than\b/g, weight: 2, label: 'contrastive definition', kernel: true },
+  'not X but/instead': { re: /\b(?:is|are|was|were)\s+not\b[^.]{0,60}\b(?:but|instead)\b/g, weight: 2, label: 'negated definition', kernel: true },
+  'instead of': { re: /\binstead of\b/g, weight: 1.5, label: 'contrastive definition', kernel: true },
+  'is what cleft': { re: /\bis what\b/g, weight: 1.5, label: 'cleft', kernel: true },
+  'which is appositive': { re: /,\s*which is\b/g, weight: 1.5, label: 'appositive pile-up', kernel: true },
   'initial Because': { re: /(?:^|\.\s+)Because\b/gm, weight: 1, label: 'sentence-initial subordination', kernel: true },
   'This/That anaphora': { re: /(?:^|\.\s+)(?:This|That|These|Those)\s+(?:is|are|makes|means|allows)\b/gm, weight: 1, label: 'vague anaphora', kernel: true },
   semicolon: { re: /;/g, weight: 1.5, label: 'semicolon', kernel: true },
-  tricolon: { re: /\b\w+,\s+\w+[^.,;]{0,25},\s+and\s+\w+/gi, weight: 0.5, label: 'list of three', kernel: true },
-  'throat-clearing': { re: /\b(?:It is important to note|Notably|Interestingly|It should be emphasized)\b/gi, weight: 1, label: 'throat-clearing', kernel: true },
+  tricolon: { re: /\b\w+,\s+\w+[^.,;]{0,25},\s+and\s+\w+/g, weight: 0.5, label: 'list of three', kernel: true },
+  'throat-clearing': { re: /\b(?:It is important to note|Notably|Interestingly|It should be emphasized)\b/g, weight: 1, label: 'throat-clearing', kernel: true },
   // ─── additions ───
   'em dash': { re: /—/g, weight: 1, label: 'em dash', kernel: false },
   'not only but also': { re: /\bnot only\b[^.]{0,80}\bbut also\b/gi, weight: 1.5, label: 'paired correlative', kernel: false },

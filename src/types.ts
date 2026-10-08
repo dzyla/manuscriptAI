@@ -197,7 +197,7 @@ export interface SentenceAudit {
   end: number;
   words: number;
   tells: string[];
-  /** kernel severity: words + 8 × weighted tell count */
+  /** ranking score: words + 8 × weighted tell count (weights and non-kernel patterns included) */
   severity: number;
 }
 

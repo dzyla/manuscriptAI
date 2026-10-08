@@ -1,0 +1,28 @@
+{
+  "text": "Rather than relying on a single readout, we combined three assays in every experiment. Instead of pooling replicates, we analysed each one separately in the first round. The state is selected kinetically rather than thermodynamically in this system. The receptor is not a passive scaffold but an active participant in the fusion step. The assay uses a low-salt buffer instead of water for every dilution. We then repeated the whole series of measurements on three independent preparations of the receptor, each purified on a different day by the same protocol, and each tested against the full panel of antibodies and small molecules at every concentration in the dilution series described above.\n\nConverting persistence into a barrier is what makes the measurement quantitative. Choosing the right control is what separates a clean result from an artefact. Normalising to the input is what we did for every blot in the study. We measured the dwell time, which is the quantity that matters most for the model. The mutant shows a longer lifetime, which is consistent with the slower off-rate. The complex was stable at high pH, which is the condition used for crystallisation.\n\nBecause the pH was low, the complex dissociated within minutes in the assay. Because the sample was frozen, the signal decayed slowly during the long run. This is what we expected from the earlier work in the field. That means the barrier is set by the interface and not by the solvent. These data are consistent across the independent replicates of the assay. Those results allow a direct comparison between the wild type and the mutant.\n\nThe barrier is high; the state persists for hours in this assay. We purified the protein; we then tested it by mutagenesis; the result was clear. We tested ligands, buffers, and salts across the full range of the assay. The panel included antibodies, nanobodies, and small molecules in every run. Notably, the receptor bound the envelope protein with high affinity in the assay. Interestingly, the effect was lost in the mutant at low pH in these experiments. It is important to note that the buffer was exchanged before every measurement. It should be emphasized that all values are means of three experiments. The effect was notably smaller in the second cell line than in the first one.",
+  "metrics": {
+    "sentences": 27,
+    "mean_sentence_words": 14.2,
+    "pct_over_35_words": 3.7,
+    "rather than": 1,
+    "rather than_per100": 3.7,
+    "not X but/instead": 1,
+    "not X but/instead_per100": 3.7,
+    "instead of": 1,
+    "instead of_per100": 3.7,
+    "is what cleft": 4,
+    "is what cleft_per100": 14.8,
+    "which is appositive": 3,
+    "which is appositive_per100": 11.1,
+    "initial Because": 2,
+    "initial Because_per100": 7.4,
+    "This/That anaphora": 2,
+    "This/That anaphora_per100": 7.4,
+    "semicolon": 3,
+    "semicolon_per100": 11.1,
+    "tricolon": 2,
+    "tricolon_per100": 7.4,
+    "throat-clearing": 4,
+    "throat-clearing_per100": 14.8
+  }
+}
