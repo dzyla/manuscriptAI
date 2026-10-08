@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { estimatePages, contentWidthIn, contentHeightIn } from './pagination';
+import { estimatePages, contentWidthIn, contentHeightIn, charsPerLine, linesPerPage } from './pagination';
 import type { DocFormat } from '../types';
 
 const letter: DocFormat = {
@@ -142,5 +142,59 @@ describe('degenerate inputs', () => {
     const t = performance.now();
     estimatePages(doc(10000, 3), letter);
     expect(performance.now() - t).toBeLessThan(1000);
+  });
+});
+
+describe('font size changes capacity', () => {
+  const at = (pt: number): DocFormat => ({ ...letter, defaults: { fontFamily: 'Arial', fontSizePt: pt } });
+  it('a smaller font fits more per page, a larger one fewer', () => {
+    const d = doc(2000, 3);
+    const p10 = estimatePages(d, at(10)).pages;
+    const p11 = estimatePages(d, at(11)).pages;
+    const p22 = estimatePages(d, at(22)).pages;
+    expect(p10).toBeLessThan(p11);
+    expect(p11).toBeLessThan(p22);
+  });
+});
+
+describe('line boundaries', () => {
+  const lines = (chars: number, count: number) => ({ type: 'doc', content: Array.from({ length: count }, () => para('x'.repeat(chars))) });
+  const perPage = linesPerPage(letter);
+
+  it('a paragraph of exactly cpl characters is one line; cpl + 1 is two', () => {
+    const cpl = charsPerLine(letter);
+    // perPage one-line paragraphs fill exactly one page; one more spills.
+    expect(estimatePages(lines(cpl, perPage), letter).pages).toBe(1);
+    expect(estimatePages(lines(cpl, perPage + 1), letter).pages).toBe(2);
+    // The same count at cpl + 1 characters is two lines each, hence twice the pages.
+    expect(estimatePages(lines(cpl + 1, perPage), letter).pages).toBe(2);
+  });
+
+  it('charges a paragraph with three hard breaks four lines', () => {
+    const br = { type: 'hardBreak' };
+    const t = (x: string) => ({ type: 'text', text: x });
+    const p = { type: 'paragraph', content: [t('a'), br, t('b'), br, t('c'), br, t('d')] };
+    const n = (k: number) => ({ type: 'doc', content: Array.from({ length: k }, () => p) });
+    expect(estimatePages(n(perPage / 4), letter).pages).toBe(1);
+    expect(estimatePages(n(perPage / 4 + 1), letter).pages).toBe(2);
+  });
+});
+
+describe('guards and floors', () => {
+  it('counts a NaN margin as 0, not as poison', () => {
+    const f: DocFormat = { ...letter, page: { ...letter.page, marginsIn: { top: 0.5, right: 0.5, bottom: 0.5, left: NaN } } };
+    expect(contentWidthIn(f)).toBe(8);
+  });
+
+  it('floors characters per line at 20 and lines per page at 5 for absurd formats', () => {
+    const huge: DocFormat = { ...letter, defaults: { fontFamily: 'Arial', fontSizePt: 1e6 } };
+    expect(charsPerLine(huge)).toBe(20);
+    expect(linesPerPage(huge)).toBe(5);
+    const e = estimatePages(doc(100, 3), huge);
+    expect(Number.isFinite(e.pages)).toBe(true);
+    expect(e.pages).toBe(20); // 100 lines x 20 chars / (20 x 5) per page
+    const crushed: DocFormat = { ...letter, page: { ...letter.page, marginsIn: { top: 20, right: 20, bottom: 20, left: 20 } } };
+    expect(charsPerLine(crushed)).toBe(20);
+    expect(linesPerPage(crushed)).toBe(5);
   });
 });

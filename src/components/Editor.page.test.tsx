@@ -136,4 +136,13 @@ describe('page guides', () => {
     await new Promise(r => setTimeout(r, 30));
     expect(container.querySelectorAll('[data-testid="page-guides"] > div')).toHaveLength(0);
   });
+
+  it('caps the guides at 200 however long the document is', async () => {
+    // One paragraph estimated at ~210 pages (113 chars x 60 lines x 210).
+    const long = `<p>${'x'.repeat(113 * 60 * 210)}</p>`;
+    const { container } = render(<Editor {...props} content={long} format={letter} />);
+    await waitFor(() => {
+      expect(container.querySelectorAll('[data-testid="page-guides"] > div')).toHaveLength(200);
+    }, { timeout: 5000 });
+  }, 15000);
 });

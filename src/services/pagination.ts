@@ -63,12 +63,12 @@ function fontScale(f: DocFormat): number {
 }
 
 /** Characters per line, from the NIH 15-characters-per-inch guidance. */
-function charsPerLine(f: DocFormat): number {
+export function charsPerLine(f: DocFormat): number {
   return Math.max(20, Math.round(contentWidthIn(f) * 15 * fontScale(f)));
 }
 
 /** Lines per page, from the NIH 6-lines-per-inch guidance. */
-function linesPerPage(f: DocFormat): number {
+export function linesPerPage(f: DocFormat): number {
   return Math.max(5, Math.round(contentHeightIn(f) * 6 * fontScale(f)));
 }
 
