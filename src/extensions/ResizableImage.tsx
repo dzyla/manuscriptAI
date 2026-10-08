@@ -64,15 +64,25 @@ function ResizableImageView({ node, updateAttributes, selected, editor }: Resiza
         className="relative inline-block"
         style={{ maxWidth: '100%' }}
       >
-        <img
-          ref={imgRef}
-          src={src}
-          alt={alt || ''}
-          title={title || ''}
-          style={imgStyle}
-          className={`rounded select-none ${selected ? 'ring-2 ring-blue-500 ring-offset-1' : ''}`}
-          draggable={false}
-        />
+        {src ? (
+          <img
+            ref={imgRef}
+            src={src}
+            alt={alt || ''}
+            title={title || ''}
+            style={imgStyle}
+            className={`rounded select-none ${selected ? 'ring-2 ring-blue-500 ring-offset-1' : ''}`}
+            draggable={false}
+          />
+        ) : (
+          // Stored bytes are missing: show a placeholder without touching the node's alt/assetId.
+          <div
+            className={`rounded select-none px-4 py-6 text-xs ${selected ? 'ring-2 ring-blue-500 ring-offset-1' : ''}`}
+            style={{ border: '1px dashed var(--border)', color: 'var(--text-muted)' }}
+          >
+            [missing image]{alt ? ` ${alt}` : ''}
+          </div>
+        )}
 
         {/* Resize handle — bottom-right corner */}
         {selected && (

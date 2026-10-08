@@ -54,7 +54,87 @@ describe('asset store', () => {
     const rows = new Map<string, AssetRow>(assets.map(a => [a.id, a]));
     const out = await hydrateAssets(stored, async id => rows.get(id), { urlFor: r => `url:${r.id}` });
     expect(out.content![0].attrs!.src).toBe(`url:${assets[0].id}`);
-    expect(out.content![1].attrs).toMatchObject({ src: null, alt: '[missing image]' });
+    expect(out.content![1].attrs).toMatchObject({ src: null, assetId: 'a_missing' });
+  });
+
+  it('hydrating a missing asset keeps the original alt text and asset id', async () => {
+    const stored = doc({ type: IMAGE_NODE, attrs: { src: null, assetId: 'a_gone', alt: 'Figure 1: kinetics', title: '', width: '100%', align: 'center' } });
+    const out = await hydrateAssets(stored, async () => undefined, { urlFor: r => `url:${r.id}` });
+    expect(out.content![0].attrs).toMatchObject({ src: null, assetId: 'a_gone', alt: 'Figure 1: kinetics' });
+  });
+
+  it('re-ingests a live blob: src whose asset row no longer exists', async () => {
+    const bytes = dataUrlToBytes(PNG);
+    const id = assetIdFor(await sha256Hex(bytes.data));
+    const fetchBytes = vi.fn().mockResolvedValue(bytes);
+    const { doc: out, assets } = await prepareAssets(doc(img('blob:live', id)), { fetchBytes, existingAssetIds: new Set() });
+    expect(fetchBytes).toHaveBeenCalledWith('blob:live');
+    expect(assets.map(a => a.id)).toEqual([id]);
+    expect(out.content![0].attrs).toMatchObject({ src: null, assetId: id });
+  });
+
+  it('still strips a blob: src whose asset row is known to exist', async () => {
+    const fetchBytes = vi.fn();
+    const { doc: out, assets } = await prepareAssets(doc(img('blob:abc', 'a_known')), { fetchBytes, existingAssetIds: new Set(['a_known']) });
+    expect(fetchBytes).not.toHaveBeenCalled();
+    expect(assets).toHaveLength(0);
+    expect(out.content![0].attrs).toMatchObject({ src: null, assetId: 'a_known' });
+  });
+
+  describe('bad image sources never fail the whole save', () => {
+    const BAD_B64 = 'data:image/png;base64,@@@notbase64';
+    const SVG_UTF8 = 'data:image/svg+xml;utf8,<svg>100%</svg>';
+
+    it('a malformed base64 data URL is left in place with a warning; other images still move', async () => {
+      const { doc: out, assets, warnings } = await prepareAssets(doc(img(BAD_B64), img(PNG)));
+      expect(out.content![0].attrs).toMatchObject({ src: BAD_B64, assetId: null });
+      expect(assets).toHaveLength(1);
+      expect(out.content![1].attrs!.src).toBeNull();
+      expect(warnings).toHaveLength(1);
+    });
+
+    it('a non-base64 data URL with a bare % falls back to raw text bytes', async () => {
+      const { mime, data } = dataUrlToBytes(SVG_UTF8);
+      expect(mime).toBe('image/svg+xml');
+      expect(new TextDecoder().decode(data)).toBe('<svg>100%</svg>');
+      const { assets, warnings } = await prepareAssets(doc(img(SVG_UTF8)));
+      expect(assets).toHaveLength(1);
+      expect(warnings).toEqual([]);
+    });
+
+    it('percent-encoded non-base64 data URLs are still decoded', () => {
+      expect(new TextDecoder().decode(dataUrlToBytes('data:text/plain,a%20b').data)).toBe('a b');
+    });
+
+    it('a failing fetch leaves the blob: node unchanged with a warning', async () => {
+      const fetchBytes = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+      const { doc: out, assets, warnings } = await prepareAssets(doc(img('blob:dead')), { fetchBytes });
+      expect(out.content![0].attrs).toMatchObject({ src: 'blob:dead', assetId: null });
+      expect(assets).toHaveLength(0);
+      expect(warnings).toHaveLength(1);
+    });
+
+    it('a non-ok response is not stored as image bytes', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('not found', { status: 404, headers: { 'content-type': 'text/plain' } })));
+      try {
+        const { doc: out, assets, warnings } = await prepareAssets(doc(img('blob:gone')));
+        expect(assets).toHaveLength(0);
+        expect(out.content![0].attrs!.src).toBe('blob:gone');
+        expect(warnings).toHaveLength(1);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('strips charset parameters from fetched content types', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('<svg/>', { status: 200, headers: { 'content-type': 'image/svg+xml; charset=utf-8' } })));
+      try {
+        const { assets } = await prepareAssets(doc(img('blob:svg')));
+        expect(assets[0].mime).toBe('image/svg+xml');
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
   });
 
   it('collects asset ids at any depth', async () => {
