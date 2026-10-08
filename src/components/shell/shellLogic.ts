@@ -42,3 +42,17 @@ export function usePageEstimate(doc: JSONContent | null, format: DocFormat | nul
   const deferred = useDeferredValue(doc);
   return useMemo(() => estimatePages(deferred, format ?? null), [deferred, format]);
 }
+
+/**
+ * What a rail click does. Clicking the open task closes the panel and leaves the tab alone (`tab: null`);
+ * clicking another opens it on that task's tab. The rail task is never derived from a tab change after the
+ * fact: tab changes go through `revealTab`, which sets both together.
+ */
+export function railSelect(current: RailTask | null, clicked: RailTask): { task: RailTask | null; tab: SidebarTab | null } {
+  return current === clicked ? { task: null, tab: null } : { task: clicked, tab: TASK_TAB[clicked] };
+}
+
+/** A legacy call site revealing a tab: the tab and its owning rail task move together. */
+export function revealTab(tab: SidebarTab): { task: RailTask; tab: SidebarTab } {
+  return { task: TAB_TASK[tab], tab };
+}

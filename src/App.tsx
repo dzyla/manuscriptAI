@@ -4,7 +4,7 @@ import Sidebar from './components/Sidebar';
 import { AppShell } from './components/shell/AppShell';
 import { StatusBar } from './components/shell/StatusBar';
 import type { RailTask } from './components/shell/Rail';
-import { TASK_TAB, TAB_TASK, type SidebarTab, documentPageLimit, voiceFigure, usePageEstimate } from './components/shell/shellLogic';
+import { railSelect, revealTab, type SidebarTab, documentPageLimit, voiceFigure, usePageEstimate } from './components/shell/shellLogic';
 import SettingsModal from './components/SettingsModal';
 import PostDraftingView from './components/PostDraftingView';
 import VersionHistoryPopup from './components/VersionHistoryPopup';
@@ -110,8 +110,8 @@ export default function App() {
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('chat');
   // Rail and tab move together, one way: the legacy call sites below reveal a tab through openTab, which also
   // opens its rail task. Closing the rail never touches the tab.
-  const [railTask, setRailTask] = useState<RailTask | null>(TAB_TASK['chat']);
-  const openTab = useCallback((tab: SidebarTab) => { setSidebarTab(tab); setRailTask(TAB_TASK[tab]); }, []);
+  const [railTask, setRailTask] = useState<RailTask | null>(revealTab('chat').task);
+  const openTab = useCallback((tab: SidebarTab) => { const r = revealTab(tab); setSidebarTab(r.tab); setRailTask(r.task); }, []);
   // Style audit (sub-project H). `text` is the exact editor text the metrics were computed from, so
   // sentence offsets are only ever applied to a document that still matches (see styleSentences below).
   const [styleAudit, setStyleAudit] = useState<{ metrics: AuditMetrics; text: string } | null>(null);
@@ -1292,9 +1292,9 @@ export default function App() {
   };
 
   const handleRailSelect = useCallback((t: RailTask) => {
-    if (railTask === t) { setRailTask(null); return; } // closing leaves the tab alone
-    setRailTask(t);
-    if (U_SHELL_LEGACY_PANEL) setSidebarTab(TASK_TAB[t]);
+    const next = railSelect(railTask, t);
+    setRailTask(next.task);
+    if (next.tab && U_SHELL_LEGACY_PANEL) setSidebarTab(next.tab);
   }, [railTask]);
 
   const pageEstimate = usePageEstimate(docJson, format);

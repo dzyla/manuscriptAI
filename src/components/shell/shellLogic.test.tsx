@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { renderHook } from '@testing-library/react';
-import { TASK_TAB, TAB_TASK, documentPageLimit, voiceFigure, usePageEstimate } from './shellLogic';
+import { TASK_TAB, TAB_TASK, railSelect, revealTab, documentPageLimit, voiceFigure, usePageEstimate } from './shellLogic';
 import { createFormat } from '../../services/formatPresets';
 import type { AuditMetrics } from '../../types';
 
@@ -17,6 +17,23 @@ describe('rail and tab mapping', () => {
   });
   it('the initial chat tab belongs to Review, the initial rail task', () => {
     expect(TAB_TASK.chat).toBe('review');
+  });
+});
+
+describe('railSelect and revealTab', () => {
+  it('clicking the active task closes the panel and leaves the tab alone', () => {
+    for (const t of ['write', 'cite', 'review', 'format'] as const) expect(railSelect(t, t)).toEqual({ task: null, tab: null });
+  });
+  it('clicking another task opens it on its own tab, from closed or from a different task', () => {
+    expect(railSelect(null, 'cite')).toEqual({ task: 'cite', tab: 'sources' });
+    expect(railSelect('review', 'write')).toEqual({ task: 'write', tab: 'outline' });
+  });
+  it('revealing any tab selects the task that owns it', () => {
+    for (const tab of Object.keys(TAB_TASK) as (keyof typeof TAB_TASK)[]) expect(revealTab(tab)).toEqual({ task: TAB_TASK[tab], tab });
+    expect(revealTab('history').task).toBe('write');
+  });
+  it('every tab round-trips through its task to a tab of the same task', () => {
+    for (const tab of Object.keys(TAB_TASK) as (keyof typeof TAB_TASK)[]) expect(TAB_TASK[TASK_TAB[TAB_TASK[tab]]]).toBe(TAB_TASK[tab]);
   });
 });
 
@@ -61,7 +78,15 @@ describe('App wiring', () => {
     expect(app).toMatch(/<Editor[\s\S]{0,120}format=\{format\}/);
     expect(app).toMatch(/usePageEstimate\(docJson, format\)/);
   });
-  it('closing a task does not touch the sidebar tab', () => {
-    expect(app).toMatch(/if \(railTask === t\) \{ setRailTask\(null\); return; \}/);
+  it('closing decides through railSelect', () => {
+    expect(app).toMatch(/railSelect\(railTask, t\)/);
+  });
+  it('never derives the rail task from a tab change: App does not touch the tab-to-task map', () => {
+    expect(app).not.toMatch(/\bTAB_TASK\b/);
+    expect(app).not.toMatch(/useEffect\([^)]*\[sidebarTab\]/);
+  });
+  it('keeps the legacy panel mounted while it is closed', () => {
+    expect(app).toMatch(/keepPanelMounted=\{U_SHELL_LEGACY_PANEL\}/);
+    expect(app).toMatch(/const U_SHELL_LEGACY_PANEL = true;/);
   });
 });
