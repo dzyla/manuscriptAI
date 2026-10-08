@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { auditText } from './metrics';
 import { buildProfile, activeSummary, GENERIC_HUMAN_SUMMARY, MACHINE_REFERENCE, MIN_PROFILE_WORDS } from './profile';
-import { styleDistance } from './score';
+import { styleDistance, WEIGHTS } from './score';
+import { PATTERN_NAMES } from './patterns';
+import type { AuditSummary } from '../../types';
 
 // 15-word sentences. The word after each period is capitalized because splitSentences
 // (correctly) does not treat a period followed by a lowercase word as a boundary.
@@ -34,6 +36,41 @@ describe('buildProfile', () => {
   });
 });
 
+describe('buildProfile examples and boundaries', () => {
+  it('chooses tell-free examples within a sensible band of the mean', () => {
+    const clean = 'Binding fell at low pH in every replicate we measured here. ';
+    const long = 'We purified the complex and then measured binding across a very wide range of conditions at several temperatures in buffers of varying ionic strength over many hours. ';
+    const tells = 'Binding fell at low pH; the effect was larger, which is notable, rather than small. ';
+    const sample = (clean.repeat(60) + long.repeat(20) + tells.repeat(20)).repeat(2) + words(1500);
+    const { profile } = buildProfile('Mixed', [sample]);
+    const mean = profile.summary.meanWords;
+    expect(profile.exampleSentences.length).toBeGreaterThan(0);
+    for (const ex of profile.exampleSentences) {
+      const a = auditText(ex);
+      expect(a.sentences).toHaveLength(1);
+      expect(a.sentences[0].tells).toEqual([]);
+      expect(a.sentences[0].words).toBeGreaterThanOrEqual(10);
+      expect(a.sentences[0].words).toBeLessThanOrEqual(28);
+      expect(Math.abs(a.sentences[0].words - mean)).toBeLessThanOrEqual(10);
+      expect(ex).not.toMatch(/;|rather than|which is/);
+    }
+  });
+
+  it('accepts exactly 1,500 words (with a warning) and rejects 1,499', () => {
+    const ok = buildProfile('Edge', [words(1500)]);
+    expect(ok.profile.sampleWords).toBe(1500);
+    expect(ok.warning).toMatch(/2,?000/);
+    expect(() => buildProfile('Edge', [words(1499)])).toThrow(/1,?500/);
+  });
+
+  it('warns at 1,999 words and not at exactly 2,000', () => {
+    expect(buildProfile('Edge', [words(1999)]).warning).toBeDefined();
+    const at = buildProfile('Edge', [words(2000)]);
+    expect(at.profile.sampleWords).toBe(2000);
+    expect(at.warning).toBeUndefined();
+  });
+});
+
 describe('activeSummary', () => {
   it('falls back to the labeled generic baseline', () => {
     const a = activeSummary(undefined);
@@ -56,7 +93,7 @@ describe('styleDistance', () => {
 
   it('scores the machine reference as far', () => {
     const r = styleDistance(MACHINE_REFERENCE, GENERIC_HUMAN_SUMMARY);
-    expect(r.score).toBeGreaterThan(50);
+    expect(r.score).toBeGreaterThanOrEqual(90);
     expect(r.band).toBe('far');
   });
 
@@ -64,6 +101,66 @@ describe('styleDistance', () => {
     const voice = { ...GENERIC_HUMAN_SUMMARY, meanWords: 0, counts: {}, rates: {} };
     const r = styleDistance(MACHINE_REFERENCE, voice as typeof GENERIC_HUMAN_SUMMARY);
     expect(Number.isFinite(r.score)).toBe(true);
+  });
+
+  it('never returns NaN for a stored profile with a missing metric', () => {
+    const voice = { ...GENERIC_HUMAN_SUMMARY, meanWords: undefined as unknown as number };
+    const r = styleDistance(MACHINE_REFERENCE, voice);
+    expect(Number.isFinite(r.score)).toBe(true);
+    expect(r.deviations.every(d => Number.isFinite(d.deviation) && Number.isFinite(d.voice))).toBe(true);
+    const noRates = { ...GENERIC_HUMAN_SUMMARY, rates: undefined } as unknown as AuditSummary;
+    expect(Number.isFinite(styleDistance(MACHINE_REFERENCE, noRates).score)).toBe(true);
+  });
+
+  it('still reports a row for every metric but scores only informative ones', () => {
+    const r = styleDistance(GENERIC_HUMAN_SUMMARY, GENERIC_HUMAN_SUMMARY);
+    expect(r.deviations.map(d => d.metric).sort()).toEqual(Object.keys(WEIGHTS).sort());
+  });
+
+  it('a tell the references never mention still raises the score', () => {
+    const withDashes: AuditSummary = {
+      ...GENERIC_HUMAN_SUMMARY,
+      rates: { ...GENERIC_HUMAN_SUMMARY.rates, 'em dash': 15 },
+    };
+    const base = styleDistance(GENERIC_HUMAN_SUMMARY, GENERIC_HUMAN_SUMMARY);
+    const r = styleDistance(withDashes, GENERIC_HUMAN_SUMMARY);
+    expect(base.score).toBe(0);
+    expect(r.score).toBeGreaterThan(0);
+    expect(r.deviations[0].metric).toBe('em dash');
+  });
+
+  describe('when the author voice sits near the machine reference', () => {
+    const withSemis = (n: number): AuditSummary => ({
+      ...GENERIC_HUMAN_SUMMARY,
+      rates: { ...GENERIC_HUMAN_SUMMARY.rates, semicolon: n },
+    });
+    const semi = (r: ReturnType<typeof styleDistance>) => r.deviations.find(d => d.metric === 'semicolon')!;
+
+    it('does not saturate on one extra semicolon', () => {
+      const r = styleDistance(withSemis(22), withSemis(20));
+      expect(semi(r).deviation).toBeLessThan(1);
+      expect(semi(r).deviation).toBeGreaterThan(0);
+    });
+
+    it('changes smoothly as the voice value crosses the machine value', () => {
+      const devs = [19, 20, 21].map(v => semi(styleDistance(withSemis(22), withSemis(v))).deviation);
+      expect(devs[0]).toBeGreaterThan(devs[1]);
+      expect(devs[1]).toBeGreaterThan(devs[2]);
+      expect(devs[0] - devs[1]).toBeLessThan(0.3);
+      expect(devs[1] - devs[2]).toBeLessThan(0.3);
+    });
+  });
+
+  it('does not penalize drift below the voice', () => {
+    const terse: AuditSummary = { ...GENERIC_HUMAN_SUMMARY, meanWords: 8 };
+    expect(styleDistance(terse, GENERIC_HUMAN_SUMMARY).score).toBe(0);
+  });
+
+  it('only weights metrics that exist', () => {
+    const special = ['meanWords', 'pctOver35'];
+    for (const key of Object.keys(WEIGHTS)) {
+      if (!special.includes(key)) expect(PATTERN_NAMES).toContain(key);
+    }
   });
 
   it('rises when semicolons or long sentences are added', () => {
