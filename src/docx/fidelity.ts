@@ -73,6 +73,7 @@ export function summarizeReport(r: ImportReport): string {
   if (c.comment) parts.push(plural(c.comment, 'comment'));
   const cites = (c.nativeCitation ?? 0) + (c.externalCitation ?? 0);
   if (cites) parts.push(plural(cites, 'citation'));
+  if (c.externalBibliography) parts.push(plural(c.externalBibliography, 'bibliography', 'bibliographies'));
   if (r.byCategory[3]) parts.push(`${r.byCategory[3]} preserved read-only`);
   if (r.warnings.length) parts.push(plural(r.warnings.length, 'warning'));
   return parts.length ? `Imported ${parts.join(' · ')}` : 'Imported document';

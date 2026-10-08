@@ -47,6 +47,16 @@ describe('import report', () => {
     expect(s).toContain('1 warning');
   });
 
+  it('summary names bibliographies, pluralised, next to citations', () => {
+    const one = createReport();
+    recordFeature(one, 'externalCitation', 22);
+    recordFeature(one, 'externalBibliography');
+    expect(summarizeReport(one)).toContain('22 citations · 1 bibliography');
+    const two = createReport();
+    recordFeature(two, 'externalBibliography', 2);
+    expect(summarizeReport(two)).toContain('2 bibliographies');
+  });
+
   it('summary of an empty report is still readable', () => {
     expect(summarizeReport(createReport())).toBe('Imported document');
   });
