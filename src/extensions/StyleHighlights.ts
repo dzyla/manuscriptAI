@@ -1,4 +1,4 @@
-import { Extension } from '@tiptap/core';
+import { Extension, type Editor, type JSONContent } from '@tiptap/core';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import type { Node as PMNode } from '@tiptap/pm/model';
@@ -133,3 +133,22 @@ export const StyleHighlights = Extension.create<StyleHighlightsOptions, { enable
     ];
   },
 });
+
+/**
+ * Replace an exact document range with LITERAL text (never parsed as HTML, so
+ * `p < 0.05`, `&` and `<control>` survive verbatim). Newlines become hardBreak
+ * nodes inside the same block; no new paragraphs are created. Runs as one
+ * transaction (one undo step). Returns false, changing nothing, when the range
+ * is out of bounds or empty.
+ */
+export function replaceRangeWithText(editor: Editor, from: number, to: number, text: string): boolean {
+  const size = editor.state.doc.content.size;
+  if (from < 0 || to > size || to <= from) return false;
+  const content: JSONContent[] = [];
+  text.split(/\r?\n/).forEach((line, i) => {
+    if (i > 0) content.push({ type: 'hardBreak' });
+    if (line) content.push({ type: 'text', text: line });
+  });
+  if (content.length === 0) return false;
+  return editor.chain().focus().insertContentAt({ from, to }, content).run();
+}

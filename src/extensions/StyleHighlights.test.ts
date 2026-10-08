@@ -2,7 +2,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Editor } from '@tiptap/core';
 import { getSchemaExtensions, htmlToDoc } from './schema';
-import { StyleHighlights, sentenceDecorations } from './StyleHighlights';
+import { StyleHighlights, sentenceDecorations, replaceRangeWithText } from './StyleHighlights';
 import { auditText, worstSentences } from '../services/proseAudit/metrics';
 import { flattenDoc } from '../utils/textMatch';
 
@@ -127,5 +127,75 @@ describe('StyleHighlights plugin', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('replaceRangeWithText', () => {
+  function plain(html: string) {
+    return new Editor({ extensions: [...getSchemaExtensions()], content: htmlToDoc(html) });
+  }
+  const whole = (e: Editor) => ({ from: 1, to: e.state.doc.content.size - 1 });
+
+  it('inserts text containing < and & verbatim, with no stray nodes', () => {
+    const e = plain('<p>placeholder words</p>');
+    const { from, to } = whole(e);
+    const text = 'We observed p < 0.05 in all runs & replicates.';
+    expect(replaceRangeWithText(e, from, to, text)).toBe(true);
+    expect(e.state.doc.childCount).toBe(1);
+    expect(e.state.doc.child(0).childCount).toBe(1);
+    expect(e.state.doc.textBetween(0, e.state.doc.content.size, '\n')).toBe(text);
+    e.destroy();
+  });
+
+  it('inserts a tag-looking substring literally', () => {
+    const e = plain('<p>placeholder words</p>');
+    const { from, to } = whole(e);
+    expect(replaceRangeWithText(e, from, to, 'the <control> group')).toBe(true);
+    expect(e.state.doc.textBetween(0, e.state.doc.content.size, '\n')).toBe('the <control> group');
+    expect(e.state.doc.child(0).childCount).toBe(1);
+    e.destroy();
+  });
+
+  it('does not interpret real tags or entities (no marks, no entity decoding)', () => {
+    for (const text of ['a <b>bold</b> &amp; c', 'x &lt; y']) {
+      const e = plain('<p>placeholder words</p>');
+      expect(replaceRangeWithText(e, 1, 12, text)).toBe(true);
+      expect(e.state.doc.textBetween(0, e.state.doc.content.size, '\n')).toBe(text + ' words');
+      expect(e.getHTML()).not.toContain('<strong>');
+      e.destroy();
+    }
+  });
+
+  it('turns newlines into hard breaks inside the same paragraph', () => {
+    const e = plain('<p>placeholder words</p>');
+    const { from, to } = whole(e);
+    expect(replaceRangeWithText(e, from, to, 'One.\nTwo.')).toBe(true);
+    expect(e.state.doc.childCount).toBe(1);
+    const kinds: string[] = [];
+    e.state.doc.child(0).forEach(n => kinds.push(n.type.name));
+    expect(kinds).toEqual(['text', 'hardBreak', 'text']);
+    e.destroy();
+  });
+
+  it('rejects invalid ranges and leaves the document untouched', () => {
+    const e = plain('<p>placeholder words</p>');
+    const before = JSON.stringify(e.getJSON());
+    const size = e.state.doc.content.size;
+    expect(replaceRangeWithText(e, -1, 4, 'x')).toBe(false);
+    expect(replaceRangeWithText(e, 1, size + 1, 'x')).toBe(false);
+    expect(replaceRangeWithText(e, 5, 5, 'x')).toBe(false);
+    expect(replaceRangeWithText(e, 6, 5, 'x')).toBe(false);
+    expect(JSON.stringify(e.getJSON())).toBe(before);
+    e.destroy();
+  });
+
+  it('is a single undo step', () => {
+    const e = new Editor({ extensions: [...getSchemaExtensions()], content: htmlToDoc('<p>placeholder words</p>') });
+    const before = JSON.stringify(e.getJSON());
+    expect(replaceRangeWithText(e, 1, 12, 'a < b\nand c & d')).toBe(true);
+    expect(JSON.stringify(e.getJSON())).not.toBe(before);
+    e.commands.undo();
+    expect(JSON.stringify(e.getJSON())).toBe(before);
+    e.destroy();
   });
 });

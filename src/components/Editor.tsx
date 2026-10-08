@@ -17,7 +17,7 @@ import {
 import { getThesaurus, generateCompletion } from '../services/ai';
 import { AISettings } from '../types';
 import { AutoComplete } from '../extensions/AutoComplete';
-import { StyleHighlights } from '../extensions/StyleHighlights';
+import { StyleHighlights, replaceRangeWithText } from '../extensions/StyleHighlights';
 import { NodeSelection } from 'prosemirror-state';
 import { expandCitationNums, fetchCrossrefDoi, looksLikeDoi, normalizeDoi } from '../services/citations';
 import { useSourceStore } from '../stores/useSourceStore';
@@ -74,7 +74,7 @@ export interface EditorRef {
   getFigureOrder: () => string[];
   updateFigures: (registry: Record<string, number>) => void;
   insertFigureLabelNode: (figureId: string, num: number) => void;
-  /** Replace an exact document range (used by "rewrite in my voice"). */
+  /** Replace an exact document range with literal text (not HTML; newlines become hard breaks). Returns false for an invalid range. */
   replaceRange: (from: number, to: number, text: string) => boolean;
 }
 
@@ -693,13 +693,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
   };
 
   useImperativeHandle(ref, () => ({
-    replaceRange: (from: number, to: number, text: string) => {
-      if (!editor) return false;
-      const size = editor.state.doc.content.size;
-      if (from < 0 || to > size || to <= from) return false;
-      editor.chain().focus().insertContentAt({ from, to }, text).run();
-      return true;
-    },
+    replaceRange: (from: number, to: number, text: string) => (editor ? replaceRangeWithText(editor, from, to, text) : false),
     applySuggestion: (originalText, suggestedText) => {
       if (!editor) return false;
       const posMatch = findTextPosition(editor.state.doc, originalText);
