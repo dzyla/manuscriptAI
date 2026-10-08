@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { estimatePages, contentWidthIn } from './pagination';
+import { estimatePages, contentWidthIn, contentHeightIn } from './pagination';
 import type { DocFormat } from '../types';
 
 const letter: DocFormat = {
@@ -18,8 +18,8 @@ describe('contentWidthIn', () => {
 
   it('falls back to the NIH preset when the document has no format', () => {
     // A row saved before A1's migration, or a brand-new blank document.
-    expect(contentWidthIn(null)).toBeGreaterThan(5);
-    expect(contentWidthIn(null)).toBeLessThan(8.5);
+    expect(contentWidthIn(null)).toBe(7.5);
+    expect(contentHeightIn(null)).toBe(10);
   });
 
   it('never goes negative when margins exceed the page', () => {
@@ -84,5 +84,63 @@ describe('estimatePages', () => {
     const e = estimatePages(doc(10000, 3), letter);
     expect(performance.now() - t).toBeLessThan(500);
     expect(e.pages).toBeGreaterThan(10);
+  });
+});
+
+describe('estimatePages: block-level line accounting', () => {
+  it('charges a short block a whole line, so 10,000 one-line paragraphs are ~167 pages, not ~9', () => {
+    // NIH letter at 11pt: 112 chars/line x 60 lines/page; 10,000 lines / 60 = 166.7.
+    const e = estimatePages(doc(10000, 3), letter);
+    expect(e.pages).toBeGreaterThanOrEqual(160);
+    expect(e.pages).toBeLessThanOrEqual(175);
+  });
+
+  it('charges headings and empty paragraphs a line each', () => {
+    const blocks = Array.from({ length: 120 }, (_, i) => (i % 2 ? { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'H' }] } : { type: 'paragraph' }));
+    expect(estimatePages({ type: 'doc', content: blocks }, letter).pages).toBe(2);
+  });
+
+  it('does not charge list or table containers a line of their own', () => {
+    const list = { type: 'bulletList', content: Array.from({ length: 60 }, () => ({ type: 'listItem', content: [para('x')] })) };
+    expect(estimatePages({ type: 'doc', content: [list] }, letter).pages).toBe(1);
+  });
+
+  it('rounds a long paragraph up to whole lines', () => {
+    // cpl is 113 for NIH letter at 11pt, so 114 chars wrap to 2 lines.
+    const n = (k: number) => ({ type: 'doc', content: Array.from({ length: k }, () => para('x'.repeat(114))) });
+    expect(estimatePages(n(30), letter).pages).toBe(1); // 60 lines: exactly one page
+    expect(estimatePages(n(31), letter).pages).toBe(2);
+  });
+});
+
+describe('degenerate inputs', () => {
+  const withSize = (fontSizePt: number): DocFormat => ({ ...letter, defaults: { fontFamily: 'Arial', fontSizePt } });
+  const textOf = (chars: number) => ({ type: 'doc', content: [para('x'.repeat(chars))] });
+
+  it('treats fontSizePt 0 and NaN as the 11pt baseline, not as huge capacity', () => {
+    // 100 paragraphs of 112 chars = 100 lines = 2 pages at the baseline.
+    const d = { type: 'doc', content: Array.from({ length: 100 }, () => para('x'.repeat(100))) };
+    expect(estimatePages(d, withSize(0)).pages).toBe(2);
+    expect(estimatePages(d, withSize(NaN)).pages).toBe(2);
+    expect(estimatePages(d, withSize(-3)).pages).toBe(2);
+    expect(estimatePages(textOf(5000), withSize(0)).pages).toBe(1);
+  });
+
+  it('survives non-finite margins', () => {
+    const f: DocFormat = { ...letter, page: { ...letter.page, marginsIn: { top: NaN, right: Infinity, bottom: 0.5, left: 0.5 } } };
+    expect(Number.isFinite(contentWidthIn(f))).toBe(true);
+    expect(Number.isFinite(estimatePages(doc(50), f).pages)).toBe(true);
+  });
+
+  it('does not throw on a null or empty doc', () => {
+    expect(estimatePages(null, letter).pages).toBe(1);
+    expect(estimatePages(undefined, letter).pages).toBe(1);
+    expect(estimatePages({ type: 'doc' }, letter).pages).toBe(1);
+  });
+
+  it('keeps 10,000 paragraphs under a second', () => {
+    const t = performance.now();
+    estimatePages(doc(10000, 3), letter);
+    expect(performance.now() - t).toBeLessThan(1000);
   });
 });

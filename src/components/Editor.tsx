@@ -18,7 +18,7 @@ import {
 import { getThesaurus, generateCompletion } from '../services/ai';
 import { AISettings, DocFormat } from '../types';
 import { PAGE_SIZES_IN, createFormat } from '../services/formatPresets';
-import { contentWidthIn, contentHeightIn } from '../services/pagination';
+import { estimatePages, contentWidthIn, contentHeightIn } from '../services/pagination';
 import { AutoComplete } from '../extensions/AutoComplete';
 import { StyleHighlights, replaceRangeWithText, resolveFlatSentence, replaceFlatSentence, type FlatSentenceTarget } from '../extensions/StyleHighlights';
 import { NodeSelection } from 'prosemirror-state';
@@ -171,33 +171,11 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
   const [isMounted, setIsMounted] = useState(false);
   const canvasFormat = format ?? DEFAULT_CANVAS_FORMAT;
 
-  // ── Page guides: dashed page-break lines at NIH-format intervals ──────────
-  // Page height scales with rendered content width (7.5in usable width → 10in
-  // usable height per page), so zoom and editor width are handled implicitly.
   const pageGuideContainerRef = useRef<HTMLDivElement>(null);
   const [pageGuideOffsets, setPageGuideOffsets] = useState<number[]>([]);
-  useEffect(() => {
-    const el = pageGuideContainerRef.current;
-    if (!el) return;
-    const compute = () => {
-      const prose = el.querySelector('.ProseMirror') as HTMLElement | null;
-      if (!prose) return;
-      const widthIn = contentWidthIn(format ?? null);
-      if (widthIn <= 0) return;
-      const pageHeight = (prose.clientWidth / widthIn) * contentHeightIn(format ?? null);
-      if (pageHeight < 100) return;
-      const contentTop = prose.offsetTop;
-      const n = Math.floor(prose.scrollHeight / pageHeight);
-      setPageGuideOffsets(Array.from({ length: Math.min(n, 200) }, (_, i) => contentTop + (i + 1) * pageHeight));
-    };
-    compute();
-    // Absent in jsdom and very old webviews; the guides then just measure once per content change.
-    if (typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(compute);
-    const prose = el.querySelector('.ProseMirror');
-    if (prose) ro.observe(prose);
-    return () => ro.disconnect();
-  }, [format, content, editorZoom, editorWidth]);
+  const fitRef = useRef<HTMLDivElement>(null);
+  // Fit-to-width: the zoom actually applied, never above what the user asked for.
+  const [effectiveZoom, setEffectiveZoom] = useState(editorZoom / 100);
   const [showSelectionBar, setShowSelectionBar] = useState(false);
   const [selectionInstruction, setSelectionInstruction] = useState('');
   const [selectionAgent, setSelectionAgent] = useState<AgentType>('editor');
@@ -322,6 +300,56 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
   useEffect(() => { styleSentencesRef.current = styleSentences ?? []; editor?.commands.refreshStyleAudit(); }, [styleSentences, editor]);
   useEffect(() => { styleAuditEnabledRef.current = !!styleAuditEnabled; editor?.commands.refreshStyleAudit(); }, [styleAuditEnabled, editor]);
   useEffect(() => { onStyleAuditRef.current = onStyleAudit; }, [onStyleAudit]);
+
+  // ── Fit to width: effective zoom = min(user zoom, available / page width) ──
+  // Still the single CSS `zoom` on the canvas, so the guides stay in the same
+  // coordinate frame as the text by construction.
+  useEffect(() => {
+    const wrap = fitRef.current;
+    const avail = wrap?.parentElement;
+    const requested = editorZoom / 100;
+    const pageWidthPx = PAGE_SIZES_IN[canvasFormat.page.size].width * 96;
+    const fit = () => {
+      const cs = avail ? getComputedStyle(avail) : null;
+      const pad = cs ? (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0) : 0;
+      const width = avail ? avail.clientWidth - pad : 0;
+      // 0 means unmeasured (no layout): leave the user's zoom alone.
+      setEffectiveZoom(width > 0 ? Math.max(0.1, Math.min(requested, width / pageWidthPx)) : requested);
+    };
+    fit();
+    if (typeof ResizeObserver === 'undefined' || !avail) return;
+    const ro = new ResizeObserver(fit);
+    ro.observe(avail);
+    return () => ro.disconnect();
+  }, [editorZoom, canvasFormat.page.size]);
+
+  // ── Page guides ──────────────────────────────────────────────────────────
+  // HOW MANY guides, and their "p. N" labels, come from estimatePages (the one
+  // page-number source). WHERE each sits is DOM-measured: the page pitch is the
+  // rendered content width scaled by the format's page shape. Zoom-invariant,
+  // since measurement and guides share the zoomed canvas's coordinate frame.
+  useEffect(() => {
+    const el = pageGuideContainerRef.current;
+    if (!el) return;
+    const compute = () => {
+      const prose = el.querySelector('.ProseMirror') as HTMLElement | null;
+      if (!prose) return;
+      const widthIn = contentWidthIn(format ?? null);
+      if (widthIn <= 0) return;
+      const pageHeight = (prose.clientWidth / widthIn) * contentHeightIn(format ?? null);
+      if (pageHeight < 100) { setPageGuideOffsets([]); return; }
+      const n = estimatePages(editor?.getJSON(), format ?? null).pages - 1;
+      const contentTop = prose.offsetTop;
+      setPageGuideOffsets(Array.from({ length: Math.min(n, 200) }, (_, i) => contentTop + (i + 1) * pageHeight));
+    };
+    compute();
+    // Absent in jsdom and very old webviews; the guides then just measure once per content change.
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(compute);
+    const prose = el.querySelector('.ProseMirror');
+    if (prose) ro.observe(prose);
+    return () => ro.disconnect();
+  }, [format, content, editor, effectiveZoom]);
 
   // Handle clicks on highlight marks: find suggestion by ProseMirror position (TipTap Highlight
   // doesn't render custom attributes to DOM, so we can't use data-suggestion-id on the element)
@@ -1126,10 +1154,10 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
           </div>
         </div>
 
+        <div ref={fitRef}>
         <div
           ref={pageGuideContainerRef}
           data-testid="page-canvas"
-          data-zoom={editorZoom}
           className="page-canvas relative mx-auto"
           style={{
             width: `${PAGE_SIZES_IN[canvasFormat.page.size].width}in`,
@@ -1140,7 +1168,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
             paddingLeft: `${canvasFormat.page.marginsIn.left}in`,
             fontFamily: canvasFormat.defaults.fontFamily,
             fontSize: `${canvasFormat.defaults.fontSizePt}pt`,
-            zoom: editorZoom / 100,
+            zoom: effectiveZoom,
           }}
         >
           <div data-testid="page-guides" aria-hidden className="absolute inset-0 pointer-events-none">
@@ -1155,6 +1183,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
           ))}
           </div>
           <EditorContent editor={editor} />
+        </div>
         </div>
 
         {/* Stats Bar */}

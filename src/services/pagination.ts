@@ -3,23 +3,35 @@ import type { DocFormat } from '../types';
 import { PAGE_SIZES_IN, createFormat } from './formatPresets';
 
 /**
- * The ONLY source of a page number in the app. The page guides and the
- * status bar both read this; nothing else may compute one.
+ * The single source of a DOCUMENT page count. The page guides in the editor
+ * read this for how many page boundaries to draw and for their "p. N" labels;
+ * the status bar will read it too (a later U task). Nothing else may compute a
+ * document page count.
+ *
+ * What is measured versus estimated today: the NUMBER of pages and the labels
+ * come from here (an estimate). The vertical PIXEL position of each guide is
+ * still taken from the DOM (page pitch derived from the rendered content
+ * width and the format's page shape), because that is where a boundary must
+ * be drawn to line up with the rendered text.
  *
  * THIS IS THE SEAM FOR SUB-PROJECT A3. A3 replaces the body of `estimatePages`
- * with real layout measurement and flips `approximate` to `false`. The shape of
- * `PageEstimate` and the signatures below are the contract: no UI change is
- * needed when it lands, because callers already branch on `approximate`.
+ * with real layout measurement and flips `approximate` to `false`. The shape
+ * of `PageEstimate` and the signatures below are the contract: no UI change is
+ * needed when it lands, because every caller already goes through here.
  *
  * Until then every figure is a character-density estimate. It does NOT model
- * figures, tables, images, headings' extra spacing, per-style line spacing,
- * list indents, orphan/widow control, keep-with-next or section breaks.
+ * figures, images, tables, heading spacing, per-style line spacing, list
+ * indents, orphan/widow control, keep-with-next or section breaks.
+ *
+ * Deliberately separate: `wordsToPages` / `WORDS_PER_PAGE` (grantTemplates.ts)
+ * is a section-level WORD BUDGET for grant sections, not a document page
+ * count. It is out of scope here; A3 should know it exists and leave it be.
  */
 export interface PageEstimate {
   pages: number;
   /** true while this is a character-density estimate rather than real layout */
   approximate: boolean;
-  /** character offsets (into the flattened text) after which a page boundary is estimated to fall */
+  /** offsets (in line-rounded characters) after which a page boundary is estimated to fall */
   breaks: number[];
 }
 
@@ -29,21 +41,25 @@ function fmt(format: DocFormat | null): DocFormat {
   return format ?? DEFAULT_FORMAT;
 }
 
+const finite = (v: number): number => (Number.isFinite(v) ? v : 0);
+
 export function contentWidthIn(format: DocFormat | null): number {
   const f = fmt(format);
   const { width } = PAGE_SIZES_IN[f.page.size];
-  return Math.max(0, width - f.page.marginsIn.left - f.page.marginsIn.right);
+  return Math.max(0, width - finite(f.page.marginsIn.left) - finite(f.page.marginsIn.right));
 }
 
 /** Printable page height in inches, never negative. */
 export function contentHeightIn(format: DocFormat | null): number {
   const f = fmt(format);
   const { height } = PAGE_SIZES_IN[f.page.size];
-  return Math.max(0, height - f.page.marginsIn.top - f.page.marginsIn.bottom);
+  return Math.max(0, height - finite(f.page.marginsIn.top) - finite(f.page.marginsIn.bottom));
 }
 
+/** 11pt is the NIH baseline; a missing, zero, negative or NaN size falls back to it. */
 function fontScale(f: DocFormat): number {
-  return 11 / Math.max(1, f.defaults.fontSizePt);
+  const pt = f.defaults.fontSizePt;
+  return 11 / (Number.isFinite(pt) && pt > 0 ? Math.max(1, pt) : 11);
 }
 
 /** Characters per line, from the NIH 15-characters-per-inch guidance. */
@@ -56,22 +72,31 @@ function linesPerPage(f: DocFormat): number {
   return Math.max(5, Math.round(contentHeightIn(f) * 6 * fontScale(f)));
 }
 
-interface Acc { length: number; hardBreaks: number[] }
+const TEXT_BLOCKS = new Set(['paragraph', 'heading', 'codeBlock']);
+
+interface Acc { length: number; hardBreaks: number[]; cpl: number; line: number }
+
+/** Close the current line: it occupies whole lines, so round up to a multiple of cpl (an empty block is one line). */
+function endLine(out: Acc): void {
+  out.length += Math.max(1, Math.ceil(out.line / out.cpl)) * out.cpl;
+  out.line = 0;
+}
 
 function walk(node: JSONContent, out: Acc): void {
   if (node.type === 'pageBreak') { out.hardBreaks.push(out.length); return; }
-  if (node.type === 'text') { out.length += (node.text ?? '').length; return; }
+  if (node.type === 'text') { out.line += (node.text ?? '').length; return; }
+  if (node.type === 'hardBreak') { endLine(out); return; }
   for (const child of node.content ?? []) walk(child, out);
-  // A block ends its line.
-  if (node.type && node.type !== 'doc') out.length += 1;
+  if (node.type && TEXT_BLOCKS.has(node.type)) endLine(out);
 }
 
-export function estimatePages(doc: JSONContent, format: DocFormat | null): PageEstimate {
+export function estimatePages(doc: JSONContent | null | undefined, format: DocFormat | null): PageEstimate {
   const f = fmt(format);
-  const acc: Acc = { length: 0, hardBreaks: [] };
-  walk(doc, acc);
+  const cpl = charsPerLine(f);
+  const acc: Acc = { length: 0, hardBreaks: [], cpl, line: 0 };
+  if (doc) walk(doc, acc);
 
-  const perPage = charsPerLine(f) * linesPerPage(f);
+  const perPage = cpl * linesPerPage(f);
 
   const breaks: number[] = [];
   let consumed = 0;
