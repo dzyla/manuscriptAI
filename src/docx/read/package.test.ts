@@ -356,3 +356,35 @@ describe('openPackage: local-header name divergence (JSZip trusts the local head
     await expect(openPackage(load('macro-content-type.docx'))).rejects.toMatchObject({ code: 'macro' });
   });
 });
+
+describe('openPackage: round 3', () => {
+  it('refuses records whose local-header names are swapped (same name set, wrong owner)', async () => {
+    // Before: opened, and entry("word/document.xml") returned the other record's bytes while Word
+    // (reading central names) sees the opposite.
+    await expect(openPackage(load('swapped-local-names.docx'))).rejects.toMatchObject({ code: 'corrupt' });
+  });
+
+  it('caps [Content_Types].xml before inflating it', async () => {
+    // ~3 MB stored, header claims 299 MB (ratio ~99.7, so only the dedicated cap catches it).
+    const noise = new Uint8Array(3_000_000);
+    for (let i = 0; i < noise.length; i++) noise[i] = (i * 2654435761) >>> 24;
+    const zip = await JSZip.loadAsync(load('minimal.docx'));
+    zip.file('[Content_Types].xml', noise, { createFolders: false, compression: 'STORE' });
+    const buf = new Uint8Array(await zip.generateAsync({ type: 'uint8array' }));
+    declareUncompressed(buf, '[Content_Types].xml', 299_000_000);
+    const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+    const calls = await spyInflations(ab, () => expect(openPackage(ab)).rejects.toMatchObject({ code: 'too-large' }));
+    expect(calls).toEqual([]);
+  });
+
+  it('isDeferred distinguishes deferred from absent and eager, case-insensitively', async () => {
+    const buf = await minimalWith(zip => zip.file('word/media/image1.png', new Uint8Array([1, 2, 3]), { createFolders: false }));
+    const pkg = await openPackage(buf);
+    expect(pkg.isDeferred('word/media/image1.png')).toBe(true);
+    expect(pkg.isDeferred('/WORD/Media/IMAGE1.PNG')).toBe(true);
+    expect(pkg.isDeferred('word/media/missing.png')).toBe(false);
+    expect(pkg.isDeferred('word/document.xml')).toBe(false);
+    const tight = await openPackage(load('minimal.docx'), { maxEagerBytes: 700 });
+    for (const n of tight.deferred()) expect(tight.isDeferred(n.toUpperCase())).toBe(true);
+  });
+});

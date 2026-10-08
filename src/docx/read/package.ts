@@ -88,6 +88,8 @@ export interface DocxPackage {
   names(): string[];
   /** Parts that exist but are only readable through the async accessors. */
   deferred(): string[];
+  /** True when the part exists but is deferred (case-insensitive, like every accessor). False if absent or eager. */
+  isDeferred(path: string): boolean;
   /** Async counterparts that also serve deferred parts (inflated on demand; throw 'too-large' above maxPartBytes). */
   bytesAsync(path: string): Promise<Uint8Array | undefined>;
   entryAsync(path: string): Promise<string | undefined>;
@@ -99,6 +101,9 @@ export interface DocxPackage {
 const CONTENT_TYPES = '[Content_Types].xml';
 const SIG_EOCD = 0x06054b50;
 const SIG_CENTRAL = 0x02014b50;
+const SIG_LOCAL = 0x04034b50;
+/** [Content_Types].xml is tiny in any real package; bound it separately from the generic limits. */
+const MAX_CONTENT_TYPES_BYTES = 4e6;
 const MAX_XML_DEPTH = 256;
 const MACRO_NAME = /(^|\/)vbaproject(signature)?\.bin$/i;
 const MACRO_TYPE = /macroEnabled|vbaProject|vbaData/i;
@@ -154,6 +159,8 @@ function scanCentralDirectory(data: ArrayBuffer, limits: PackageLimits): string[
   let pos = [eocd - cdSize, cdOffset].find(at) ?? -1;
   if (pos < 0) throw new DocxOpenError('corrupt', 'zip central directory not found');
 
+  // Offsets in central records are relative to the start of the archive proper; tolerate prepended bytes.
+  const zero = eocd - (cdOffset + cdSize);
   const seen = new Set<string>();
   const decoder = new TextDecoder('utf-8');
   const names: string[] = [];
@@ -172,6 +179,21 @@ function scanCentralDirectory(data: ArrayBuffer, limits: PackageLimits): string[
     if (seen.has(key)) throw new DocxOpenError('corrupt', `duplicate entry name: ${JSON.stringify(name.slice(0, 120))}`);
     seen.add(key);
     names.push(name);
+    // Pin each record to its own name: the local header at this record's offset must carry the same
+    // name. A set-level comparison alone tolerates a permutation (two records with their local names
+    // swapped), which would make this reader disagree with Word about which bytes are which part.
+    const rel = dv.getUint32(pos + 42, true);
+    if (rel === 0xffffffff) throw new DocxOpenError('too-large', 'zip64 packages are not supported');
+    const lh = zero + rel;
+    if (lh < 0 || lh + 30 > u8.length || dv.getUint32(lh, true) !== SIG_LOCAL) {
+      throw new DocxOpenError('corrupt', `no local header for entry ${JSON.stringify(name.slice(0, 120))}`);
+    }
+    const lNameLen = dv.getUint16(lh + 26, true);
+    if (lh + 30 + lNameLen > u8.length) throw new DocxOpenError('corrupt', 'truncated local header');
+    const localName = decoder.decode(u8.subarray(lh + 30, lh + 30 + lNameLen));
+    if (localName.replace(/\\/g, '/').toLowerCase() !== key) {
+      throw new DocxOpenError('corrupt', `local header name differs from central directory name for ${JSON.stringify(name.slice(0, 120))}`);
+    }
     pos += 46 + nameLen + extraLen + commentLen;
   }
   return names;
@@ -360,6 +382,11 @@ class Package implements DocxPackage {
     return [...this.files.keys()].filter(n => !this.parts.has(n));
   }
 
+  isDeferred(path: string): boolean {
+    const name = this.resolve(path);
+    return name !== undefined && !this.parts.has(name);
+  }
+
   bytes(path: string): Uint8Array | undefined {
     const name = this.resolveEager(path);
     return name === undefined ? undefined : this.parts.get(name);
@@ -509,6 +536,11 @@ export async function openPackage(data: ArrayBuffer, options: OpenOptions = {}):
   const ctFile = real.find(f => f.name.toLowerCase() === CONTENT_TYPES.toLowerCase());
   if (!ctFile) throw new DocxOpenError('not-docx', 'missing [Content_Types].xml: not an OOXML package');
   const parts = new Map<string, Uint8Array>();
+  const ctCap = Math.min(maxPartBytes, MAX_CONTENT_TYPES_BYTES);
+  if (sizes.get(ctFile.name)! > ctCap) {
+    // inflateEntry preallocates the declared size, so refuse before allocating.
+    throw new DocxOpenError('too-large', `[Content_Types].xml declares ${sizes.get(ctFile.name)} bytes (limit ${ctCap})`);
+  }
   const ctBytes = await inflateEntry(ctFile, ctFile.name, sizes.get(ctFile.name)!);
   parts.set(ctFile.name, ctBytes);
   const types = readContentTypes(parseDoc(ctFile.name, ctBytes)); // malformed -> corrupt

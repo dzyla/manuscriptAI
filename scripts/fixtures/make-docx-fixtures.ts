@@ -25,6 +25,7 @@
  *   content-types-decoy.docx  the real [Content_Types].xml declares a macro-enabled main part; a decoy
  *                   benign one, listed first, has central name [Content_Types].xmz / local name
  *                   [Content_Types].XML so a first-match, case-insensitive lookup would pick it
+ *   swapped-local-names.docx  two records whose local-header names are swapped (same name SET, wrong owner)
  *   macro-content-type.docx  macro-enabled main content type but no vbaProject part (the content-type check alone)
  *   truncated.docx  valid zip whose word/document.xml is cut mid-element
  */
@@ -90,17 +91,26 @@ function find(buf: Uint8Array, sig: number, from = 0): number {
   return -1;
 }
 
-/** Overwrite the first occurrence of `from` (the local header, which precedes the central directory) with `to`. */
-function patchFirst(buf: Uint8Array, from: string, to: string): void {
-  if (from.length !== to.length) throw new Error('patchFirst needs equal-length names');
-  const f = new TextEncoder().encode(from);
-  for (let i = 0; i + f.length <= buf.length; i++) {
-    if (f.every((b, k) => buf[i + k] === b)) {
-      buf.set(new TextEncoder().encode(to), i);
+/**
+ * Rewrite the name in the LOCAL file header of the entry currently named `from` (central directory
+ * untouched). Walks the local headers, so it never mistakes the same text inside entry data for a name.
+ */
+function patchLocalName(buf: Uint8Array, from: string, to: string): void {
+  if (from.length !== to.length) throw new Error('patchLocalName needs equal-length names');
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const dec = new TextDecoder();
+  let pos = 0;
+  while (pos + 30 <= buf.length && dv.getUint32(pos, true) === 0x04034b50) {
+    const compressed = dv.getUint32(pos + 18, true);
+    const nameLen = dv.getUint16(pos + 26, true);
+    const extraLen = dv.getUint16(pos + 28, true);
+    if (dec.decode(buf.subarray(pos + 30, pos + 30 + nameLen)) === from) {
+      buf.set(new TextEncoder().encode(to), pos + 30);
       return;
     }
+    pos += 30 + nameLen + extraLen + compressed;
   }
-  throw new Error(`patchFirst: ${from} not found`);
+  throw new Error(`patchLocalName: local header for ${from} not found`);
 }
 
 const fixtures: Record<string, () => Promise<Uint8Array>> = {
@@ -184,7 +194,7 @@ const fixtures: Record<string, () => Promise<Uint8Array>> = {
     const zip = basePackage();
     zip.file('zzzz/document.xml', '<pwn>PWNED</pwn>', FILE_OPTS);
     const buf = await build(zip);
-    patchFirst(buf, 'zzzz/document.xml', 'word/DOCUMENT.xml'); // local header only; central keeps zzzz/
+    patchLocalName(buf, 'zzzz/document.xml', 'word/DOCUMENT.xml'); // central keeps zzzz/
     return buf;
   },
 
@@ -197,7 +207,18 @@ const fixtures: Record<string, () => Promise<Uint8Array>> = {
     zip.file('word/document.xml', DOCUMENT, FILE_OPTS);
     zip.file('word/styles.xml', STYLES, FILE_OPTS);
     const buf = await build(zip);
-    patchFirst(buf, '[Content_Types].xmz', '[Content_Types].XML'); // local header only
+    patchLocalName(buf, '[Content_Types].xmz', '[Content_Types].XML');
+    return buf;
+  },
+
+  'swapped-local-names.docx': async () => {
+    const zip = basePackage();
+    zip.file('word/documenx.xml', '<pwn>PWNED</pwn>', FILE_OPTS);
+    const buf = await build(zip);
+    // Same two names, same set, but each record's LOCAL name is the other record's central name.
+    patchLocalName(buf, 'word/document.xml', 'word/XXXXXXXX.xml');
+    patchLocalName(buf, 'word/documenx.xml', 'word/document.xml');
+    patchLocalName(buf, 'word/XXXXXXXX.xml', 'word/documenx.xml');
     return buf;
   },
 
