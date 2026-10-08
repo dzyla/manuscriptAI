@@ -448,3 +448,13 @@ mark {
 .style-tell-low { background: rgba(250, 204, 21, 0.14); border-bottom-color: rgba(250, 204, 21, 0.5); }
 .style-tell-mid { background: rgba(249, 115, 22, 0.16); border-bottom-color: rgba(249, 115, 22, 0.55); }
 .style-tell-high { background: rgba(239, 68, 68, 0.16); border-bottom-color: rgba(239, 68, 68, 0.6); }
+
+/* Hard page break (w:br w:type="page") imported from DOCX */
+.page-break {
+  display: block;
+  margin: 0.5em 0;
+  border-top: 1px dashed #94a3b8;
+  height: 0;
+  user-select: all;
+  cursor: default;
+}

@@ -2,15 +2,15 @@ import { describe, it, expect } from 'vitest';
 import Dexie from 'dexie';
 import { ManuscriptDb } from './manuscriptDb';
 
-describe('ManuscriptDb v3', () => {
-  it('has the v3 tables', async () => {
-    const db = new ManuscriptDb('t-v3-tables');
+describe('ManuscriptDb v6', () => {
+  it('has the v6 tables', async () => {
+    const db = new ManuscriptDb('t-v4-tables');
     await db.open();
-    expect(db.verno).toBe(3);
-    for (const t of ['documents', 'assets', 'docxPackages', 'autosaveBackups', 'versionSnapshots', 'grantTemplates'])
+    expect(db.verno).toBe(6);
+    for (const t of ['documents', 'assets', 'docxPackages', 'autosaveBackups', 'preservationStores', 'versionSnapshots', 'grantTemplates', 'importBackupParts', 'importReports'])
       expect(db.tables.map(x => x.name)).toContain(t);
     db.close();
-    await Dexie.delete('t-v3-tables');
+    await Dexie.delete('t-v4-tables');
   });
 
   it('upgrades a v2 database without losing the document row', async () => {
@@ -26,6 +26,28 @@ describe('ManuscriptDb v3', () => {
     const row = await db.documents.get('current');
     expect(row?.content).toBe('<p>old</p>');
     expect(row?.title).toBe('Legacy');
+    db.close();
+    await Dexie.delete(name);
+  });
+
+  it('upgrades a v4 database without losing a row, a backup or a package', async () => {
+    const name = 't-v4-upgrade';
+    const v4 = new Dexie(name);
+    v4.version(3).stores({
+      documents: 'id', sources: 'id, order', chatHistory: 'id, order', suggestions: 'id', historyItems: 'id, timestamp', versionSnapshots: 'id, timestamp',
+      grantTemplates: 'id, updatedAt', assets: 'id, sha256', docxPackages: 'documentId', autosaveBackups: '++seq, documentId, savedAt',
+    });
+    v4.version(4).stores({ preservationStores: 'documentId' });
+    await v4.open();
+    await v4.table('documents').put({ id: 'current', title: 'kept', saveState: 'Saved', updatedAt: 1 });
+    await v4.table('docxPackages').put({ documentId: 'current', original: new ArrayBuffer(3), fileName: 'a.docx', importedAt: 1 });
+    await v4.table('autosaveBackups').add({ documentId: 'current', savedAt: 1, row: { id: 'current', title: 'old' } });
+    v4.close();
+    const db = new ManuscriptDb(name);
+    expect((await db.documents.get('current'))?.title).toBe('kept');
+    expect((await db.docxPackages.get('current'))?.fileName).toBe('a.docx');
+    expect(await db.autosaveBackups.count()).toBe(1);
+    expect(await db.importBackupParts.count()).toBe(0);
     db.close();
     await Dexie.delete(name);
   });

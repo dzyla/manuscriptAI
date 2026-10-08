@@ -1,6 +1,7 @@
 import { Extension, Node, mergeAttributes } from '@tiptap/core';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import type { Node as PMNode } from '@tiptap/pm/model';
+import { isBlockUntouched } from '../../docx/preserve/hash';
 
 const opaqueAttrs = () => ({
   kind: {
@@ -56,7 +57,7 @@ export function findDuplicateFragmentIds(doc: PMNode): Array<{ pos: number; frag
   const seen = new Set<string>();
   const dupes: Array<{ pos: number; fragmentId: string }> = [];
   doc.descendants((node, pos) => {
-    if (node.type.name !== 'opaqueInline' && node.type.name !== 'opaqueBlock') return;
+    if (node.type.name !== 'opaqueInline' && node.type.name !== 'opaqueBlock' && node.type.name !== 'resizableImage') return;
     const id = node.attrs.fragmentId as string;
     if (!id) return;
     if (seen.has(id)) dupes.push({ pos, fragmentId: id });
@@ -65,17 +66,33 @@ export function findDuplicateFragmentIds(doc: PMNode): Array<{ pos: number; frag
   return dupes;
 }
 
-/** Positions of nodes whose ooxml.blockId already appeared earlier in document order. */
-export function findDuplicateBlockIds(doc: PMNode): number[] {
-  const seen = new Set<string>();
-  const dupes: number[] = [];
+/**
+ * Positions of nodes whose provenance must be cleared because their ooxml.blockId is shared.
+ * Among the nodes sharing one blockId the survivor is the one that is genuinely untouched (its content still
+ * hashes to the stored sourceHash), so provenance stays with the original text rather than with whichever copy
+ * happens to come first (e.g. the empty paragraph left behind by Enter at the start of an imported paragraph).
+ * When none or several qualify, the first in document order survives. Positions are returned in document order.
+ */
+export function findDuplicateBlockIds(
+  doc: PMNode,
+  isUntouched: (node: PMNode) => boolean = node => isBlockUntouched(node.toJSON()),
+): number[] {
+  const groups = new Map<string, Array<{ pos: number; node: PMNode }>>();
   doc.descendants((node, pos) => {
     const id = node.attrs.ooxml?.blockId as string | undefined;
     if (!id) return;
-    if (seen.has(id)) dupes.push(pos);
-    else seen.add(id);
+    const group = groups.get(id);
+    if (group) group.push({ pos, node });
+    else groups.set(id, [{ pos, node }]);
   });
-  return dupes;
+  const dupes: number[] = [];
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    // Hash only groups that actually collide.
+    const survivor = group.find(g => isUntouched(g.node)) ?? group[0];
+    for (const g of group) if (g !== survivor) dupes.push(g.pos);
+  }
+  return dupes.sort((x, y) => x - y);
 }
 
 const newFragmentId = () =>
@@ -118,7 +135,9 @@ export const OpaqueFragmentGuard = Extension.create<OpaqueFragmentGuardOptions>(
             if (!node) continue;
             tr.setNodeMarkup(pos, undefined, { ...node.attrs, ooxml: null });
           }
-          tr.setMeta('addToHistory', false);
+          // Deliberately NOT excluded from history: prosemirror-history folds an appended transaction into the
+          // event that triggered it (and skips it when the trigger itself is excluded). Undoing a split then
+          // reverts the provenance clear together with the split, so the joined paragraph gets its blockId back.
           return tr;
         },
       }),

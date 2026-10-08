@@ -1,16 +1,12 @@
 import type { JSONContent } from '@tiptap/core';
 import type { AssetRow } from '../types';
 import { db as defaultDb } from './manuscriptDb';
+import { sha256Hex, assetIdFor } from './assetHash';
+
+export { sha256Hex, assetIdFor };
 
 /** Registered name of the image node (must match ResizableImage's `name`). */
 export const IMAGE_NODE = 'resizableImage';
-
-export async function sha256Hex(data: ArrayBuffer): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', data);
-  return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
-}
-
-export const assetIdFor = (sha: string) => 'a_' + sha.slice(0, 32);
 
 /** Decode a data: URL. Throws on input that cannot be decoded (callers catch per image). */
 export function dataUrlToBytes(url: string): { mime: string; data: ArrayBuffer } {
