@@ -119,5 +119,47 @@ const loopErrors = errors.filter((e) => /Maximum update depth|Too many re-render
 if (loopErrors.length) fail('render loop errors: ' + loopErrors.join('; '));
 if (errors.length) console.log('console errors (informational):', errors.slice(0, 5));
 
+// Scenario B: a legacy HTML row with plain-text [N] citations and a registry migrates to citation nodes inside
+// initialize() (before the editor sees the document), and the migrated document is what gets stored.
+{
+  const ctx = await browser.newContext();
+  const p2 = await ctx.newPage();
+  await p2.goto(URL);
+  await p2.waitForSelector('.ProseMirror');
+  await p2.evaluate(async () => {
+    await new Promise((resolve, reject) => {
+      const req = indexedDB.open('ManuscriptAIEditor');
+      req.onsuccess = () => {
+        const tx = req.result.transaction('documents', 'readwrite');
+        tx.objectStore('documents').put({ id: 'current', title: 'Legacy', content: '<p>Prior work [1] showed this [2].</p>', saveState: 'Saved', citationRegistry: { 'src-a': 1, 'src-b': 2 }, citationCounter: 2, figureRegistry: {}, figureCounter: 0, updatedAt: 1 });
+        tx.oncomplete = () => { req.result.close(); resolve(); };
+        tx.onerror = () => reject(tx.error);
+      };
+      req.onerror = () => reject(req.error);
+    });
+  });
+  await p2.reload();
+  await p2.waitForFunction(() => document.querySelector('.ProseMirror')?.textContent.includes('Prior work'));
+  await p2.waitForTimeout(1000);
+  const nodes = await p2.evaluate(() => document.querySelectorAll('.ProseMirror [data-citation-node]').length);
+  console.log('legacy [N] markers rendered as citation nodes:', nodes);
+  if (nodes !== 2) fail(`expected 2 citation nodes after migration, got ${nodes}`);
+  await p2.waitForTimeout(31_000); // autosave: the row held unmigrated text, so it must be written
+  const legacyRow = await p2.evaluate(() => new Promise((resolve) => {
+    const req = indexedDB.open('ManuscriptAIEditor');
+    req.onsuccess = () => {
+      const get = req.result.transaction('documents').objectStore('documents').get('current');
+      get.onsuccess = () => { resolve(get.result); req.result.close(); };
+    };
+  }));
+  const rowJson = JSON.stringify(legacyRow.docJson);
+  if (!rowJson.includes('"type":"citation"')) fail('stored row not migrated to citation nodes');
+  await p2.reload();
+  await p2.waitForFunction(() => document.querySelector('.ProseMirror')?.textContent.includes('Prior work'));
+  const nodesAfter = await p2.evaluate(() => document.querySelectorAll('.ProseMirror [data-citation-node]').length);
+  if (nodesAfter !== 2) fail(`expected 2 citation nodes after reload, got ${nodesAfter}`);
+  await ctx.close();
+}
+
 await browser.close();
 if (!process.exitCode) console.log('A2 json-load smoke: PASS');

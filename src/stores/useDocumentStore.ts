@@ -3,6 +3,7 @@ import type { JSONContent } from '@tiptap/core';
 import { db } from '../db/manuscriptDb';
 import { createDexieRepository, type LoadedDocument } from '../db/documentRepository';
 import { htmlToDoc, docToHtml, isValidDoc } from '../extensions/schema';
+import { migrateLegacyCitations } from '../utils/migrateCitations';
 import { createFormat } from '../services/formatPresets';
 import type { CommentThread, DocFormat, DocumentMode } from '../types';
 
@@ -245,15 +246,27 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     try {
       if (result.doc) {
         const d = result.doc;
+        // Legacy "[N]" text citations become citation nodes HERE, before the editor ever sees the document, so no
+        // ordering between the editor and the init promise can revert it. Same trigger and function as the old
+        // App-side migration (registry non-empty, no citation nodes yet).
+        let docJson = d.docJson;
+        let content = docToHtml(docJson);
+        let saveState = d.saveState;
+        const migratedHtml = migrateLegacyCitations(content, d.citationRegistry);
+        if (migratedHtml !== content) {
+          docJson = htmlToDoc(migratedHtml);
+          content = docToHtml(docJson);
+          saveState = 'Draft'; // the stored row still holds the unmigrated text
+        }
         set({
           title: d.title,
-          content: docToHtml(d.docJson),
-          docJson: d.docJson,
+          content,
+          docJson,
           // The editor is fed this JSON directly; `content` above is only the derived HTML channel.
-          pendingDocument: d.docJson,
+          pendingDocument: docJson,
           format: d.format,
           comments: d.comments,
-          saveState: d.saveState,
+          saveState,
           citationRegistry: d.citationRegistry,
           citationCounter: d.citationCounter,
           figureRegistry: d.figureRegistry,
@@ -279,10 +292,11 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       const data: any = await localforage.default.getItem('manuscript-ai-editor-autosave');
       if (data?.content) {
         const registry: Record<string, number> = data.citationRegistry || {};
+        const legacyHtml = migrateLegacyCitations(data.content, registry);
         set({
           title: data.title || 'Untitled Manuscript',
-          content: data.content,
-          docJson: htmlToDoc(data.content),
+          content: legacyHtml,
+          docJson: htmlToDoc(legacyHtml),
           saveState: 'Auto-saved',
           citationRegistry: registry,
           citationCounter: Object.keys(registry).length,

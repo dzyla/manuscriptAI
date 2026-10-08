@@ -33,6 +33,14 @@ interface EditorProps {
    */
   pendingDocument?: JSONContent | null;
   onPendingDocumentApplied?: () => void;
+  /** True once the app has finished loading its stores (so "no pending document" means a fresh install or failed load). */
+  loadSettled?: boolean;
+  /**
+   * Fires exactly once, when the editor exists, loading has settled and no pending document remains: the single,
+   * well-defined moment for work that depends on the loaded content (figure renumbering). Fires whether or not a
+   * document was loaded.
+   */
+  onDocumentReady?: () => void;
   /** Receives the editor's own HTML after setDocument without implying a user edit (falls back to onChange). */
   onContentSynced?: (content: string) => void;
   suggestions: Suggestion[];
@@ -132,7 +140,7 @@ const BUBBLE_ACTIONS: { label: string; instruction: string; agent: AgentType; ic
   },
 ];
 
-const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocChange, pendingDocument, onPendingDocumentApplied, onContentSynced, suggestions, onSuggestionClick, onSelectionQuery, onTransformSelection, onRewriteSection, onAnalyzeSection, onVerifyClaim, onSearchSimilar, sources, citationRegistry, onInsertCitation, isDistractionFree, editorZoom = 100, editorWidth = 'normal', aiSettings, onAnalyzeImage, onInsertFigure, showPageGuides = false }, ref) => {
+const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocChange, pendingDocument, onPendingDocumentApplied, loadSettled = false, onDocumentReady, onContentSynced, suggestions, onSuggestionClick, onSelectionQuery, onTransformSelection, onRewriteSection, onAnalyzeSection, onVerifyClaim, onSearchSimilar, sources, citationRegistry, onInsertCitation, isDistractionFree, editorZoom = 100, editorWidth = 'normal', aiSettings, onAnalyzeImage, onInsertFigure, showPageGuides = false }, ref) => {
   const [isMounted, setIsMounted] = useState(false);
 
   // ── Page guides: dashed page-break lines at NIH-format intervals ──────────
@@ -527,6 +535,15 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
       lastExternalContent.current = content;
     }
   }, [content, editor, pendingDocument]);
+
+  // Declared after the content sync effect on purpose: in a commit that does both, content is applied first.
+  const documentReadyFiredRef = useRef(false);
+  useEffect(() => {
+    if (!editor || !loadSettled || pendingDocument || documentReadyFiredRef.current) return;
+    documentReadyFiredRef.current = true;
+    onDocumentReady?.();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor, loadSettled, pendingDocument]);
 
   // Apply suggestion highlighting
   useEffect(() => {

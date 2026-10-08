@@ -104,4 +104,35 @@ describe('loading the document as JSON', () => {
     useDocumentStore.getState().resetDocument();
     expect(useDocumentStore.getState().pendingDocument).toBeNull();
   });
+
+  it('migrates legacy [N] citations inside initialize(), before the editor sees the document', async () => {
+    await db.documents.put({
+      id: 'current', title: 'Legacy', content: '<p>Prior work [1] showed this [2].</p>',
+      saveState: 'Saved', citationRegistry: { 'src-a': 1, 'src-b': 2 }, citationCounter: 2, figureRegistry: {}, figureCounter: 0, updatedAt: 1,
+    } as never);
+    await useDocumentStore.getState().initialize();
+    const { docJson, pendingDocument, content, saveState } = useDocumentStore.getState();
+    const kinds = (n: any): string[] => [n.type, ...(n.content ?? []).flatMap(kinds)];
+    expect(kinds(docJson)).toContain('citation');
+    expect(pendingDocument).toEqual(docJson);
+    expect(content).toContain('data-citation-node');
+    expect(saveState).toBe('Draft'); // the stored row is still unmigrated, so it must be saved
+  });
+
+  it('a document that already has citation nodes is not re-migrated and keeps its saved state', async () => {
+    const withNode = normalizeDoc({
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [
+        { type: 'text', text: 'See ' },
+        { type: 'citation', attrs: { sourceIds: ['src-a'], nums: [1] } },
+      ] }],
+    });
+    await db.documents.put({
+      id: 'current', title: 'Modern', docJson: withNode, schemaVersion: 3,
+      saveState: 'Saved', citationRegistry: { 'src-a': 1 }, citationCounter: 1, figureRegistry: {}, figureCounter: 0, updatedAt: 1,
+    });
+    await useDocumentStore.getState().initialize();
+    expect(useDocumentStore.getState().pendingDocument).toEqual(withNode);
+    expect(useDocumentStore.getState().saveState).toBe('Saved');
+  });
 });

@@ -21,14 +21,16 @@ function mount() {
   document.body.appendChild(host);
   root = createRoot(host);
   const ref = createRef<EditorRef>();
-  const calls = { changed: [] as string[], synced: [] as string[], applied: 0 };
-  const render = (content: string, pendingDocument: JSONContent | null) => act(() => {
+  const calls = { changed: [] as string[], synced: [] as string[], applied: 0, ready: 0 };
+  const render = (content: string, pendingDocument: JSONContent | null, loadSettled = false) => act(() => {
     root!.render(
       <Editor
         ref={ref}
         content={content}
         pendingDocument={pendingDocument}
         onPendingDocumentApplied={() => { calls.applied++; }}
+        loadSettled={loadSettled}
+        onDocumentReady={() => { calls.ready++; }}
         onContentSynced={(h) => calls.synced.push(h)}
         onChange={(h) => calls.changed.push(h)}
         suggestions={[]}
@@ -65,5 +67,35 @@ describe('Editor pendingDocument coordination', () => {
     render('<p>loaded from json</p>', null); // what the store holds after adoptLoadedHtml
     expect(ref.current!.getHTML()).toBe('<p>loaded from json</p>');
     expect(calls.changed).toEqual([]);
+  });
+
+  it('onDocumentReady fires exactly once on a fresh install (no pending document), not before loading settles', async () => {
+    const { calls, render } = mount();
+    render('<p>default</p>', null, false);
+    expect(calls.ready).toBe(0); // still loading: "no pending document" does not yet mean "nothing to load"
+    render('<p>default</p>', null, true);
+    render('<p>default</p>', null, true);
+    expect(calls.ready).toBe(1);
+  });
+
+  it('onDocumentReady fires exactly once for a load with a pending document, after it is in the editor', async () => {
+    const { ref, calls, render } = mount();
+    render('<p>derived html</p>', P, true);
+    expect(calls.ready).toBe(0); // pending still set (the app has not cleared it yet)
+    render('<p>loaded from json</p>', null, true); // the app cleared the flag
+    expect(calls.ready).toBe(1);
+    expect(ref.current!.getHTML()).toBe('<p>loaded from json</p>');
+    render('<p>loaded from json</p>', null, true);
+    expect(calls.ready).toBe(1);
+  });
+
+  it('a duplicate pending delivery (dev StrictMode) is applied once, and ready still fires once', async () => {
+    const { calls, render } = mount();
+    render('<p>x</p>', P, true);
+    render('<p>x</p>', null, true);
+    render('<p>x</p>', JSON.parse(JSON.stringify(P)), true); // second initialize() delivers an identical document
+    render('<p>x</p>', null, true);
+    expect(calls.synced).toHaveLength(1);
+    expect(calls.ready).toBe(1);
   });
 });

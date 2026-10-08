@@ -251,6 +251,17 @@ export default function App() {
     setTimeout(() => setToast(null), 5000);
   }, []);
 
+  const [loadSettled, setLoadSettled] = useState(false);
+  const handleDocumentReady = useCallback(() => {
+    if (!editorRef.current) return;
+    const orderedFigureIds = editorRef.current.getFigureOrder();
+    if (orderedFigureIds.length > 0) {
+      const newRegistry = storeRenumberFigures(orderedFigureIds);
+      editorRef.current.updateFigures(newRegistry);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Initialize all stores on mount (loads from Dexie, migrating from localforage if needed)
   useEffect(() => {
     Promise.all([initDocument(), initAI(), initSources()]).then(() => {
@@ -261,25 +272,11 @@ export default function App() {
           ? 'Your last save could not be read. Restored the most recent backup; a protected copy of the unreadable save was kept.'
           : 'Your last save could not be read. Restored the most recent backup. The unreadable save could not be protected and may be replaced by later saves.', 'error');
       }
-      // The loaded document reaches the editor as JSON via the Editor's `pendingDocument` prop; the Editor owns
-      // applying it. Do not also apply it here: this .then (a microtask) can run before or after the Editor's
-      // effect, and a second apply would revert the legacy-citation migration below and clobber early typing.
-      // After loading, apply citation migration to content if needed
-      const { content: loadedContent, citationRegistry: reg } = useDocumentStore.getState();
-      if (Object.keys(reg).length > 0 && !loadedContent.includes('data-citation-node')) {
-        const migrated = migrateLegacyCitations(loadedContent, reg);
-        if (migrated !== loadedContent) {
-          useDocumentStore.getState().setContent(migrated);
-          editorRef.current?.setContent(migrated);
-        }
-      }
-      if (editorRef.current) {
-        const orderedFigureIds = editorRef.current.getFigureOrder();
-        if (orderedFigureIds.length > 0) {
-          const newRegistry = storeRenumberFigures(orderedFigureIds);
-          editorRef.current.updateFigures(newRegistry);
-        }
-      }
+      // Nothing here may depend on the editor's content. The loaded document reaches the editor as JSON through the
+      // Editor's `pendingDocument` prop (the Editor owns applying it), legacy citation migration happens inside
+      // initialize() before the editor sees the document, and editor-dependent post-load work (figure renumbering)
+      // runs from the Editor's onDocumentReady, which fires once after the document is in the editor.
+      setLoadSettled(true);
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1404,6 +1401,8 @@ export default function App() {
             onDocChange={setDocJson}
             pendingDocument={pendingDocument}
             onPendingDocumentApplied={clearPendingDocument}
+            loadSettled={loadSettled}
+            onDocumentReady={handleDocumentReady}
             onContentSynced={adoptLoadedHtml}
             suggestions={suggestions}
             onSuggestionClick={handleSuggestionClick}
