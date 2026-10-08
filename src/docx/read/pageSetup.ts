@@ -2,6 +2,13 @@
  * Page size and margins from the body's final w:sectPr. The app models one page setup per
  * document, so earlier sections (a w:sectPr inside a paragraph's w:pPr) are only counted; the
  * paragraphs that carry them are preserved verbatim by the body reader.
+ *
+ * WRITER: this captures ONLY the page size, orientation (as a warning) and the four margins. The body's `w:sectPr` also holds the
+ * gutter, column layout, `titlePg` (different first page), header and footer references, `pgNumType` (page-number format and start),
+ * `w:type`, line numbering and page borders, none of which the model holds and none of which is stored anywhere else. They survive an
+ * export ONLY if the writer keeps the ORIGINAL body `sectPr` from the package (changing at most its `pgSz` / `pgMar` when
+ * `DocFormat.page` was edited) rather than writing a fresh one from `DocFormat.page`. The header and footer relationship ids it
+ * references are the ones `preservation.rels` stores for it. See docs/superpowers/specs/2026-10-07-a2b-writer-contract.md section 11.
  */
 import type { PageSetup } from '../../types';
 import { PAGE_SIZES_IN } from '../../services/formatPresets';

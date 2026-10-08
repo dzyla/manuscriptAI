@@ -13,6 +13,12 @@
  *     walking the row with `colspan` and the `rowspan` of the cells above (a row below a merged cell has one fewer cell). The
  *     `<w:tc>` that were folded into a rowspan are blank in the source and exist only in the table's fragment;
  *   - each paragraph in a cell has its own `ooxml` provenance and fragment, exactly as in the body.
+ * WRITER RULES that live elsewhere and are easy to miss from here (all in docs/superpowers/specs/2026-10-07-a2b-writer-contract.md
+ * section 5): (a) the row-and-cell correspondence above holds only while `isTableShellUnchanged(table)` (preserve/hash.ts); once a
+ * row or column was added or deleted the table is rebuilt from the model, with its own rule for the folded cells; (b) even with the
+ * shell reused, rebuild each cell's block sequence from the model by `blockId`; (c) a cell that ENDS in a nested table has no
+ * trailing paragraph in the model, but Word requires one: append an empty `<w:p/>` (see the comment in `readCell`).
+ *
  * A table property the model does not hold is recorded in the report (`tableBorders` for borders and shading, `tableLayout` for
  * structure and placement). For such a table the writer must treat the fragment as the authority, not rebuild from the model alone.
  *
@@ -211,8 +217,9 @@ function readCell(tc: Element, ctx: ReadContext, depth: number): JSONContent[] {
   // Lists are grouped per cell, so a numbered list that carries on from an earlier cell (or from the text) starts again here.
   noteListCounts(ctx, 'cell', grouped, numbering);
   // A cell holds at least one block. A cell with no paragraph in the source (malformed) gets an empty one, which stands for nothing in the file.
-  // WRITER: the opposite case. A cell that ENDS with a nested table has no trailing paragraph here, but Word requires a final `<w:p/>`
-  // in every `<w:tc>` (it is in the original fragment). When re-emitting such a cell, add an empty `<w:p/>` after the table.
+  // WRITER (contract section 5.5, also in this file's header): the opposite case. A cell that ENDS with a nested table has no trailing
+  // paragraph here, but Word requires a final `<w:p/>` in every `<w:tc>` (it is in the original fragment). When re-emitting such a
+  // cell from the model, add an empty `<w:p/>` after the table.
   return grouped.length ? grouped : [{ type: 'paragraph' }];
 }
 

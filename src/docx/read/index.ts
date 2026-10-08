@@ -22,12 +22,13 @@
 import type { JSONContent } from '@tiptap/core';
 import type { DocFormat } from '../../types';
 import { specNormalizeNode } from '../../extensions/schemaSpecs';
-import { createReport, recordFeature, type ImportReport } from '../fidelity';
+import { createReport, plural, recordFeature, type ImportReport } from '../fidelity';
 import { emptyPreservationStore, type PackageRel, type PreservationStore } from '../preserve/types';
 import { captureFragment } from '../preserve/xml';
 import { warnOnce, type AssetDraft, type ReadContext } from './context';
 import { COMMENT_WARNING, TRACKED_CHANGE_WARNING } from './opaque';
 import { readBody } from './body';
+import type { FigureMatch } from './drawings';
 import { inferHeadings, type HeadingCandidate } from './headings';
 import { W_NS, childElements, isW } from './ooxml';
 import { mainDocumentPart, relatedParts, resolveRelTarget } from './opc';
@@ -54,6 +55,14 @@ export interface ImportResult {
    * each can be accepted or rejected. Their `index` is a position in `doc.content`; apply the accepted ones with `applyHeadings`.
    */
   headingCandidates: HeadingCandidate[];
+  /**
+   * Each picture in `doc.content` with the caption paragraph found for it: `image` and `caption` are positions in `doc.content`
+   * (a picture lifted out of a paragraph of text is a block of its own, so it has one). They are positions as the document was
+   * READ, and go stale at the first edit: re-derive with `matchCaptions(doc.content)` (drawings.ts) after that. Applying headings
+   * converts paragraphs in place and moves nothing, so they still hold for the document the author accepted. Empty when the
+   * document has no pictures. A picture with no caption has `caption: null`.
+   */
+  figures: FigureMatch[];
   fileName?: string;
   /** The input, untouched: parts the app does not model (footnotes, headers, theme, ...) are re-emitted from it on export. */
   original: ArrayBuffer;
@@ -97,7 +106,7 @@ export async function readDocx(data: ArrayBuffer, limits?: OpenOptions, fileName
   if (!body) throw new DocxOpenError('corrupt', 'The main document part has no body.');
 
   stage('body');
-  const { blocks } = await readBody(body, ctx);
+  const { blocks, figures } = await readBody(body, ctx);
   // A document needs a block. An empty body reads as one empty paragraph, which claims no original XML (nothing was there).
   const content = blocks.length ? blocks : [specNormalizeNode({ type: 'paragraph', attrs: { styleId: null } })];
   const doc: JSONContent = { type: 'doc', content };
@@ -118,7 +127,10 @@ export async function readDocx(data: ArrayBuffer, limits?: OpenOptions, fileName
   const pageCount = readPageCount(pkg);
   if (pageCount !== undefined) report.pageCount = pageCount;
 
+  if (figures.length) report.figures = { images: figures.length, captioned: figures.filter(f => f.caption !== null).length };
+
   recordRels(ctx, mainPart, body);
+  recordStyleIds(ctx);
   disclose(ctx, mainPart, body);
   report.described = describedAtoms(doc);
 
@@ -129,9 +141,24 @@ export async function readDocx(data: ArrayBuffer, limits?: OpenOptions, fileName
     preservation,
     report,
     headingCandidates,
+    figures,
     ...(fileName === undefined ? {} : { fileName }),
     original: data,
   };
+}
+
+// ─── style ids ───────────────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * `preservation.styles`: `readStyles` computes the Word-styleId <-> app-style-id mapping and the set of backfilled styles, and both
+ * belong to the persisted result, not to this function's locals, because the writer cannot reconstruct either from `format.styles`
+ * (a localised document's `heading1` is `Titre1` in Word; a backfilled `heading1` is not in the document at all). Stored on the
+ * preservation store rather than on `StyleDef`: see `PreservationStore.styles`.
+ */
+function recordStyleIds(ctx: ReadContext): void {
+  const wordIdByAppId: Record<string, string> = {};
+  for (const [wordId, appId] of ctx.styles.styleIdByWordId) wordIdByAppId[appId] = wordId;
+  ctx.preservation.styles = { wordIdByAppId, backfilled: [...ctx.styles.backfilled].sort() };
 }
 
 // ─── relationships ───────────────────────────────────────────────────────────────────────────────────────────
@@ -194,8 +221,6 @@ const FORMAT_CHANGES = [
 ];
 const COMMENT_ANCHORS = ['commentRangeStart', 'commentRangeEnd', 'commentReference'];
 const MC_NS = 'http://schemas.openxmlformats.org/markup-compatibility/2006';
-
-const plural = (n: number, one: string, many = one + 's') => `${n} ${n === 1 ? one : many}`;
 
 interface Census {
   revisions: number;

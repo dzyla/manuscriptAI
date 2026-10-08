@@ -87,6 +87,33 @@ describe('reportRows', () => {
   });
 });
 
+describe('the caption row', () => {
+  it('readRows says how many pictures were paired with a caption, and out of how many', () => {
+    const r = createReport();
+    recordFeature(r, 'inlineImage', 6);
+    r.figures = { images: 6, captioned: 4 };
+    const row = readRows({ report: r }).find(x => x.key === 'caption');
+    expect(row).toMatchObject({ value: 4, label: 'Pictures paired with a caption (of 6)' });
+  });
+
+  it('shows 0 for a document whose pictures have no captions (a missing pairing is information, not noise)', () => {
+    const r = createReport();
+    r.figures = { images: 3, captioned: 0 };
+    expect(readRows({ report: r }).find(x => x.key === 'caption')).toMatchObject({ value: 0, label: 'Pictures paired with a caption (of 3)' });
+  });
+
+  it('has no caption row for a document without pictures', () => {
+    expect(readRows({ report: createReport() }).some(x => x.key === 'caption')).toBe(false);
+  });
+
+  it('is rendered in the dialog, from a real read', async () => {
+    const result = await readDocx(loadDocx('images.docx'));
+    const el = mount(<ImportReportDialog result={result} onConfirm={() => {}} onCancel={() => {}} />);
+    expect(q(el, '[data-testid="row-caption"]').textContent).toContain('Pictures paired with a caption (of 6)');
+    expect(q(el, '[data-testid="row-caption"]').textContent).toMatch(/1$/);
+  });
+});
+
 describe('ImportReportDialog', () => {
   const noop = () => {};
 

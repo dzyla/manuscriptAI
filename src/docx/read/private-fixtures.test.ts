@@ -13,7 +13,7 @@ import { mainDocumentPart } from './opc';
 import { createReport, summarizeReport } from '../fidelity';
 import type { JSONContent } from '@tiptap/core';
 import { emptyPreservationStore } from '../preserve/types';
-import { isBlockUntouched, structureHash } from '../preserve/hash';
+import { isBlockUntouched, isTableShellUnchanged, structureHash } from '../preserve/hash';
 import { parseXml } from '../preserve/xml';
 import { getSpecSchema } from '../../extensions/schemaSpecs';
 import { W_NS, isW } from './ooxml';
@@ -634,6 +634,7 @@ describe.skipIf(docs.length === 0)('private real-world documents', () => {
             byCategory: { 1: 2459, 2: 188, 3: 94, 4: 0 },
             pageCount: 20,
             described: { trackedChange: 0, commentAnchor: 0, citationField: 94 },
+            figures: { images: 3, captioned: 2 },
             warnings: [
               { feature: 'externalCitation', category: 2, message: CITATION_FIELDS },
               { feature: 'tableBorders', category: 2, message: 'Table borders and shading are shown approximately. The original table formatting is kept for export.' },
@@ -648,6 +649,7 @@ describe.skipIf(docs.length === 0)('private real-world documents', () => {
             },
             byCategory: { 1: 1410, 2: 261, 3: 184, 4: 0 },
             described: { trackedChange: 32, commentAnchor: 152, citationField: 0 },
+            figures: { images: 10, captioned: 10 },
             warnings: [
               { feature: 'part', category: 2, message: 'A duplicate style definition was ignored; the first one is used.' },
               { feature: 'comment', category: 3, message: 'Comments are kept as read-only anchors for now; their text and replies are not shown or editable here. They stay in the file.' },
@@ -714,6 +716,16 @@ describe.skipIf(docs.length === 0)('private real-world documents', () => {
         expect(table.content).toHaveLength(17);
         expect(all([table], n => n.type === 'tableCell' || n.type === 'tableHeader')).toHaveLength(21);
         expect(rawCount('tc') - 21).toBe(11); // the 32 source cells, 11 of them continuations folded into a rowspan
+        // the budget table as imported has an unchanged shell; "Add row below" (the editor's table menu) changes the structure, and a
+        // cell edit does not
+        expect(isTableShellUnchanged(table)).toBe(true);
+        const grown = structuredClone(table);
+        grown.content!.push(structuredClone(grown.content![grown.content!.length - 1]));
+        expect(isTableShellUnchanged(grown)).toBe(false);
+        const edited = structuredClone(table);
+        edited.content![0].content![0].content = [{ type: 'paragraph', content: [{ type: 'text', text: 'x' }] }];
+        expect(isTableShellUnchanged(edited)).toBe(true);
+        expect(isBlockUntouched(edited)).toBe(false);
       }
 
       // ── images: read, not left opaque ────────────────────────────────────────────────────────────────────────
@@ -727,6 +739,13 @@ describe.skipIf(docs.length === 0)('private real-world documents', () => {
       expect([...collectAssetIds(doc)].sort()).toEqual(r.assets.map(a => a.id).sort());
       const figures = matchCaptions(blocks);
       expect(figures.filter(f => f.caption !== null)).toHaveLength(isSnsf ? 2 : 10);
+      // and the SHIPPED import carries those pairings: the caption feature is not just a function the tests call. r01 pairs 10 of its 10
+      // pictures (every "Fig. N." label), snsf 2 of its 3 (its schedule diagram has no caption).
+      expect(r.figures).toEqual(figures);
+      expect(r.figures.filter(f => f.caption !== null)).toHaveLength(isSnsf ? 2 : 10);
+      expect(r.figures).toHaveLength(isSnsf ? 3 : 10);
+      expect(r.report.figures).toEqual(isSnsf ? { images: 3, captioned: 2 } : { images: 10, captioned: 10 });
+      expect(r.report.counts.caption).toBeUndefined(); // that count is for Word's Caption style, which neither document uses
       expect(imgs.filter(i => i.attrs!.anchorBlockId)).toHaveLength(isSnsf ? 0 : 10); // r01: all ten lifted
       expect(Object.values(r.preservation.blocks).flatMap(b => b.lifted ?? [])).toHaveLength(isSnsf ? 0 : 10);
       expect(planLiftedDrawings(doc, r.preservation)).toEqual({ strip: [], emit: [] });

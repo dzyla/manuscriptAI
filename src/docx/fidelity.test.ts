@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { FIDELITY, createReport, recordFeature, addWarning, summarizeReport } from './fidelity';
+import { FIDELITY, createReport, recordFeature, addWarning, summarizeReport, preservedReadOnly } from './fidelity';
 
 describe('fidelity table (spec §1)', () => {
   it('assigns the spec categories', () => {
@@ -60,6 +60,17 @@ describe('import report', () => {
     // a report that was not annotated keeps the plain total
     delete r.described;
     expect(summarizeReport(r)).toContain('186 preserved read-only');
+  });
+
+  it('the "other preserved" figure is a plain subtraction: pieces beyond the described ones show, and an over-count is not clamped away', () => {
+    const r = createReport();
+    recordFeature(r, 'unknownField', 11); // a citation field's 8 pieces and a PAGEREF field's 3
+    r.described = { trackedChange: 0, commentAnchor: 0, citationField: 8 };
+    expect(preservedReadOnly(r)).toEqual({ count: 3, hasDescribed: true });
+    expect(summarizeReport(r)).toBe('Imported 3 other preserved read-only');
+    // a described total that exceeds the atoms (a double count somewhere) is visible as a negative figure, not hidden as 0
+    r.described = { trackedChange: 0, commentAnchor: 0, citationField: 12 };
+    expect(preservedReadOnly(r).count).toBe(-1);
   });
 
   it('summary says when none of the comments is anchored in the text, and only then', () => {

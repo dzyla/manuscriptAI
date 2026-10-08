@@ -13,7 +13,12 @@ export interface ReportRow {
   note?: string;
 }
 
-const plural = (n: number, one: string, many = one + 's') => (n === 1 ? one : many);
+/**
+ * The noun alone: `nounFor(1, 'heading')` is `"heading"`, `nounFor(2, 'heading')` is `"headings"`. NOT `plural` from docx/fidelity.ts,
+ * which returns the count as well (`"2 headings"`); the two were once both called `plural`, so moving a message between files
+ * silently changed its output.
+ */
+const nounFor = (n: number, one: string, many = one + 's') => (n === 1 ? one : many);
 
 /**
  * The report as separate figures. Tracked changes, formatting changes, comments, read-only pieces and warnings are DIFFERENT things
@@ -56,6 +61,8 @@ export function readRows(result: Pick<ImportResult, 'report'>): ReportRow[] {
   add('image', 'Images', (c.inlineImage ?? 0) + (c.floatingImageSquare ?? 0) + (c.floatingImageOther ?? 0));
   add('citation', 'Citations', (c.nativeCitation ?? 0) + (c.externalCitation ?? 0));
   add('bibliography', 'Bibliographies', c.externalBibliography);
+  // Shown even at 0 when there are pictures: "0 of 3 paired" tells the author the pairing was tried and found nothing.
+  if (r.figures) rows.push({ key: 'caption', label: `Pictures paired with a caption (of ${r.figures.images})`, value: r.figures.captioned });
   return rows;
 }
 
@@ -251,7 +258,7 @@ export default function ImportReportDialog({ result, onConfirm, onCancel, busy =
           </button>
           {!viewing && (
             <button type="button" disabled={busy} onClick={confirm} className="px-3 py-1.5 text-xs rounded-lg font-semibold bg-stone-900 text-white disabled:opacity-60">
-              {busy ? 'Importing…' : `Import${acceptedList.length ? ` with ${acceptedList.length} ${plural(acceptedList.length, 'heading')}` : ''}`}
+              {busy ? 'Importing…' : `Import${acceptedList.length ? ` with ${acceptedList.length} ${nounFor(acceptedList.length, 'heading')}` : ''}`}
             </button>
           )}
         </div>

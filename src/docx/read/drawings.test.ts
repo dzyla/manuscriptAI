@@ -846,6 +846,7 @@ describe('lifted pictures: the read-time record lets a writer see a delete, a mo
       ['alt', (x: Record<string, unknown>) => (x.alt = 'New alt')],
       ['title', (x: Record<string, unknown>) => (x.title = 'New title')],
       ['crop', (x: Record<string, unknown>) => (x.crop = { l: 1, t: 0, r: 0, b: 0 })],
+      ['assetId (the picture itself was replaced: new bytes, not just new properties)', (x: Record<string, unknown>) => (x.assetId = 'a_replacement')],
       ['wrap', (x: Record<string, unknown>) => (x.wrap = 'right')],
       ['align', (x: Record<string, unknown>) => (x.align = 'center')],
     ] as const) {

@@ -51,6 +51,12 @@ export interface ImportReport {
   described?: { trackedChange: number; commentAnchor: number; citationField: number };
   /** Comments that are in the file but have no anchor in the main text (a footnote or header anchor, or none); set only when there are any. */
   commentsNotInText?: number;
+  /**
+   * Set by the importer when the document has pictures: how many there are and how many were paired with a caption paragraph
+   * (`ImportResult.figures` has the pairs). Not `counts.caption`, which counts paragraphs in Word's Caption style: most grants
+   * never use that style and label their captions "Fig. N." by hand, so the two numbers differ and neither implies the other.
+   */
+  figures?: { images: number; captioned: number };
 }
 
 export function createReport(): ImportReport {
@@ -71,15 +77,25 @@ export function addWarning(r: ImportReport, feature: FeatureKey | 'part', messag
   r.warnings.push({ feature, message, category });
 }
 
-const plural = (n: number, one: string, many = one + 's') => `${n} ${n === 1 ? one : many}`;
+/**
+ * `"1 word"` / `"3 words"`: the count AND the noun. The one definition for report and evidence text (ImportReportDialog has a
+ * differently-shaped helper of its own, `nounFor`, which returns the noun alone).
+ */
+export const plural = (n: number, one: string, many = one + 's') => `${n} ${n === 1 ? one : many}`;
 
 /**
  * How many category-3 atoms are kept but neither edited nor already counted under a heading of their own (tracked changes, comment
  * anchors, citation fields): equations, footnote markers, fields, content controls and so on. The "preserved read-only" figure.
+ *
+ * A BARE SUBTRACTION, deliberately: `described` is the part of `byCategory[3]` that has a count of its own, so it can never exceed it.
+ * If it ever does, the figure goes negative and shows, which is better than a `Math.max(0, ...)` that hides the surplus. The clamp was
+ * once here and concealed exactly such a case: a citation nested in a citation was counted twice (8 pieces reported as 12 against an
+ * atom total of 11), the clamp turned the PAGEREF field's 3 pieces into "0 other preserved read-only", and the author was never told
+ * they existed. Pinned by fidelity.test.ts and the PAGEREF case in readDocx.test.ts.
  */
 export function preservedReadOnly(r: ImportReport): { count: number; hasDescribed: boolean } {
   const described = r.described ? r.described.trackedChange + r.described.commentAnchor + r.described.citationField : 0;
-  return { count: Math.max(0, r.byCategory[3] - described), hasDescribed: described > 0 };
+  return { count: r.byCategory[3] - described, hasDescribed: described > 0 };
 }
 
 export function summarizeReport(r: ImportReport): string {

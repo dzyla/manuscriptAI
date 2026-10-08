@@ -125,6 +125,9 @@ function describeImport(name: string, dir: 'fixtures' | 'private', want: Expect)
       expect(sameBytes(pkg!.original, r.data)).toBe(true);
       const pres = (await db.preservationStores.get('current'))!.store;
       expect(pres).toEqual(r.result.preservation);
+      // the Word style ids a writer needs are stored with the map, not lost with the read
+      expect(pres.styles).toBeDefined();
+      expect(Object.keys(pres.styles!.wordIdByAppId).length + pres.styles!.backfilled.length).toBe(Object.keys(r.result.format.styles).length);
 
       // the writer's contract is intact: an untouched imported document asks for no strip and no re-emit
       expect(planLiftedDrawings(loaded.docJson, pres)).toEqual({ strip: [], emit: [] });

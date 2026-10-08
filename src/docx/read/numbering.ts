@@ -306,6 +306,12 @@ function numPrOf(node: JSONContent, numbering: NumberingMap, ctx: ReadContext): 
 /**
  * What Word counts a numbered list's numbers by: every w:num that shares one abstractNum (and has no lvlOverride) continues the
  * same count; a w:num with a lvlOverride counts on its own. Two lists with the same key are one count in Word.
+ *
+ * NOT MEASURED AGAINST WORD. Two parts of this keying are reasoned, not observed, and the writer phase must measure them with
+ * `npm run verify:word` and fix the key to match (contract section 14): (1) any `w:lvlOverride`, even a format-only one with no
+ * `w:startOverride`, makes the whole `w:num` count on its own here; Word may key on a `startOverride` instead; (2) the key uses the
+ * `w:num`'s own abstractNum, not the one reached through `w:numStyleLink`, so two numIds sharing a definition through a style link
+ * get separate counters here, which Word may not do. Both change only the numbering LABEL the editor shows, never the preserved text.
  */
 export function listCounterKey(numId: number, def: NumberingDef): string {
   return def.hasOverride || def.abstractNumId === null ? `n${numId}` : `a${def.abstractNumId}`;

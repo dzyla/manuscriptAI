@@ -36,6 +36,22 @@ export interface PreservationStore {
   fragments: Record<string, Fragment>;
   /** original document.xml.rels entries, by id */
   rels: Record<string, PackageRel>;
+  /**
+   * How the app's style ids relate to the Word styleIds of the imported package (`StyleDef.id` is the app's, never Word's: a French
+   * document's "Heading 1" is `Titre1` in Word and `heading1` here). Kept here, not on `StyleDef`, because the mapping is only
+   * meaningful against the original `word/styles.xml` and so has exactly the lifetime of this store and the package it describes
+   * (both are detached together when a different document replaces the import). Absent on a store that was not made by `readDocx`.
+   * See docs/superpowers/specs/2026-10-07-a2b-writer-contract.md section 10.
+   */
+  styles?: {
+    /** App style id -> the `w:styleId` it came from. Every style the document itself defined is here; a backfilled style is not. */
+    wordIdByAppId: Record<string, string>;
+    /**
+     * App style ids that exist in `DocFormat.styles` but are NOT in the document's `styles.xml` (the preset's built-ins it lacked, and a
+     * synthesised `normal`). A writer must not emit these as the document's own styles, and must not assume any Word id for them.
+     */
+    backfilled: string[];
+  };
 }
 
 export function emptyPreservationStore(): PreservationStore {

@@ -38,6 +38,20 @@ function cyrb53(str: string, seed = 0): string {
   return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(14, '0');
 }
 
+/**
+ * The hash of a block as the editor holds it, ignoring only the provenance attribute itself (and an image's session `src`).
+ *
+ * *** FROZEN, AND THE MOST DANGEROUS THING IN THIS FILE. *** It covers EVERY attribute of the node and of every descendant. The
+ * hash stored in `ooxml.sourceHash` (and in `lifted[].sourceHash`) was computed by this function over the node as it was READ. So
+ * any attribute added to the schema later, to ANY node type, with ANY default, changes the hash of every stored block that has
+ * that node type inside it, and `isBlockUntouched` then answers false for every imported paragraph at once. Nothing throws and
+ * nothing is logged: every untouched paragraph silently becomes "edited", the writer regenerates the whole document from the model,
+ * and the unmodelled paragraph properties, bookmarks and comment anchors that only the verbatim XML held are lost. The same applies
+ * to changing this function, `stableStringify`, `cyrb53` or `stripProvenance`, and to changing the JSON a schema attribute's
+ * default produces. Before changing any of them: version the hash (store the version beside `sourceHash`), or hash against an
+ * allow-list of attributes, and re-stamp stored documents on migration. See docs/superpowers/specs/2026-10-07-a2b-writer-contract.md
+ * section 2.
+ */
 export function blockHash(node: JSONContent): string {
   return cyrb53(stableStringify(stripProvenance(node)));
 }
@@ -79,9 +93,34 @@ function skeleton(node: JSONContent): JSONContent {
  * a `<w:tr>` whose cells were all folded (or that carried only `trPr`) is a model row with no cells; re-emit it from the original
  * XML. Nothing is lost in text, but the structure is, if the writer builds rows from model cells alone.
  *
- * The hash format is not stable across builds (round 1 omitted `content` for a cell without nested tables; round 2 always sets it).
- * That is harmless only because nothing is persisted yet: a table stamped by an older build would read as "shape changed" and be
- * rebuilt without its original shell. Change the format again only before A2a ships, or version it.
+ * WHEN THE HASH DIFFERS ("structure changed": a row or column was added or deleted, cells were merged or split, a header row
+ * toggled; the editor's table menu offers add row above / below, add column before / after, delete row, delete column).
+ * `isTableShellUnchanged` is false and the original `<w:tbl>` can no longer be re-emitted around the model: its row and cell
+ * sequence, its `tblGrid`, and every positional `trPr` / `tcPr` describe a table that no longer exists, so "row i is the i-th
+ * `<w:tr>`" is false and the folded vMerge cells below are in the wrong rows. The rule (also contract section 5.3):
+ *   1. Build the `<w:tbl>` from the MODEL: rows from `tableRow`, cells from `tableCell` / `tableHeader` (`colspan` -> `gridSpan`,
+ *      `rowspan` -> `vMerge` restart plus continuation cells, `colwidth` px x 15 -> `tcW` and `tblGrid`, header row -> `tblHeader`),
+ *      each cell's blocks by `blockId` exactly as in the shell-reused case. The original XML is not walked row by row.
+ *   2. Keep from the original, because the app cannot edit them and they do not depend on rows or columns: `tblPr` (style, borders,
+ *      width, layout, look, cell margins) and, for a surviving cell, the formatting-only part of its `tcPr` (shading, borders,
+ *      margins, vertical alignment, no-wrap) and of its row's `trPr` (height, cantSplit), found by CONTENT identity: a model cell
+ *      holding a block whose `blockId` is inside an original `<w:tc>` inherits that cell's formatting properties. Never by position.
+ *   3. A cell or row with no such match (every one the author added) copies the formatting of the nearest preceding row of the
+ *      same grid column that has a match, else the nearest following (Word's own "insert row below"). This is an approximation and
+ *      is not exact for shading banded by position; the export should say the table's cell formatting was approximated.
+ *   4. The folded vMerge continuation cells are REGENERATED from the model's `rowspan`s (a blank `<w:tc>` with `tcW`, `vMerge` and the
+ *      restart cell's formatting properties), NOT re-inserted from the original: after a row is added inside a merged region the
+ *      model's `rowspan` is larger than the original's, and a continuation cell exists with no original to copy. Rows with no model
+ *      cells that the original carried (`trPr` only) survive only if their neighbours do; otherwise they are dropped with the
+ *      structure, and nothing in the model is lost by that.
+ *   5. Every `<w:tc>` ends in a `<w:p/>` (a cell that ends in a nested table gets one appended).
+ * What may NOT happen under any rule: a model block (a paragraph, list, image, nested table) disappears, a cell's content lands in
+ * another cell, or the `<w:tbl>` is invalid (every row's `gridSpan` sum equals the grid width; a `vMerge` continuation sits under a
+ * restart cell). Nothing of this is exercised until the writer exists; the rule is the contract for it.
+ *
+ * FROZEN once A2a ships. The format changed during development (round 1 omitted `content` for a cell without nested tables; round
+ * 2 always sets it), and a stored `structureHash` is compared byte for byte, so any further change makes every stored table read as
+ * "structure changed" and rebuilt without its original shell, again with no error. Version it before changing.
  */
 export function structureHash(table: JSONContent): string {
   return cyrb53(stableStringify(skeleton(table)));
@@ -96,4 +135,19 @@ export function stampProvenance(node: JSONContent, blockId: string): JSONContent
 export function isBlockUntouched(node: JSONContent): boolean {
   const p = node.attrs?.ooxml as { sourceHash?: string } | null | undefined;
   return !!p?.sourceHash && blockHash(node) === p.sourceHash;
+}
+
+/**
+ * The table-level counterpart of `isBlockUntouched`: is the table's SHELL (its rows, cells, spans, widths and header cells) still the
+ * one that was read? True means the original `<w:tbl>`'s `tblPr`, `tblGrid`, `trPr` and `tcPr` may be reused. It does NOT mean the
+ * table is untouched (use `isBlockUntouched` for "re-emit the whole `<w:tbl>` verbatim"), and it does NOT mean the cells' content
+ * is where it was: a writer that reuses the shell must still rebuild every cell's block sequence from the model (see
+ * `structureHash`). False means "structure changed" (rebuild from the model, `structureHash` doc), and also for a table with no
+ * stored `structureHash` (not stamped by `readDocx`; the conservative answer) and for anything that is not a table.
+ * An untouched table always has an unchanged shell. Every writer calls this rather than comparing hashes itself.
+ */
+export function isTableShellUnchanged(node: JSONContent): boolean {
+  if (node.type !== 'table') return false;
+  const p = node.attrs?.ooxml as { structureHash?: string } | null | undefined;
+  return !!p?.structureHash && structureHash(node) === p.structureHash;
 }

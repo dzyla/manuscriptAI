@@ -28,8 +28,28 @@
  * resizes; `widthIn` / `heightIn` are the size AS READ and go stale; keep the aspect ratio of `widthIn`:`heightIn`) into `wp:extent`
  * and the picture's `a:ext`; `alt` and `title` into `wp:docPr@descr` / `@title`; `crop` into `a:srcRect` (percent x 1000);
  * `wrap` and `align` into the `wp:wrap*` and `wp:positionH` of the anchor (a change of side is `wp:positionH`; a change to
- * `inline` or `block` cannot be expressed in the anchor, so rebuild the drawing as inline or topAndBottom). A record without a
- * `sourceHash` (an older import) cannot detect this.
+ * `inline` or `block` cannot be expressed in the anchor, so rebuild the drawing as inline or topAndBottom); and `assetId`.
+ *
+ * `assetId` IS THE ONE ATTRIBUTE THAT CHANGES THE BYTES. Every other attribute above is a property of the same picture; a different
+ * `assetId` means the author REPLACED the picture (the content-addressed id is a hash of the bytes), and `blockHash` counts it, so
+ * the node reads as `edited`. Patching a size into the old `w:drawing` would keep showing the old picture. The writer must: take the
+ * new bytes and mime from the asset store by `assetId`; add them as a NEW media part (never overwrite the old one: the old part may
+ * still be used by a copy, and an orphaned part is harmless) with its content-type `Default`/`Override` if the extension is new;
+ * add a NEW relationship to `word/_rels/document.xml.rels` with an id that collides with neither the original rels file nor
+ * `preservation.rels`; and point the drawing's `a:blip@r:embed` at it (and drop `r:link` if the old blip had one). Size, crop and alt
+ * are then patched as above; the new picture's pixel dimensions are not those of the old, so honour `width` and the aspect ratio of
+ * the NEW bytes, not of `widthIn`:`heightIn`. A record without a `sourceHash` (an older import) cannot detect any of this.
+ *
+ * AN IMAGE THE AUTHOR INSERTED IS NOT IN THE PLAN, AND THAT IS A GAP THE WRITER MUST FILL. It has no `fragmentId` (it was never read
+ * from a file) and no record, so the loop below skips it (`continue`): `planLiftedDrawings` reports neither an `emit` nor a `strip`
+ * for it, and nothing else in the preservation layer mentions it. A writer that emits only what the plan lists drops it silently.
+ * Find these by walking the model: a `resizableImage` with an empty `fragmentId` and no `ooxml` (and, for a picture whose
+ * `fragmentId` is set but unrecorded, the plan already says `copy`). For each, the writer creates from nothing: a new media part
+ * from the asset (`assetId`) with its content type, a new relationship, and a new `w:drawing` at the node's place in the model
+ * (`wp:inline` for `wrap` null or `inline`; a `wp:anchor` with `wrapSquare` for `left` / `right`; a line of its own for `block`;
+ * extent from `width` times the text-area width, aspect ratio from the bytes; `alt` / `title` into `wp:docPr@descr` / `@title`
+ * with a `docPr@id` unused anywhere in the document), inside a `w:r` inside its own `w:p` (an image is a block in the model).
+ * It has no host paragraph, no bookmark and no caption pairing beyond what `matchCaptions` finds.
  *
  * WHAT THE CONTRACT STILL OMITS. Where in a REBUILT host a surviving run goes is not recorded: the picture's original position in
  * the paragraph's runs is gone with the verbatim XML. The rule is to put the run at the START of the host's content, in image

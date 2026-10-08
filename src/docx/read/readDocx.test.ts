@@ -5,8 +5,9 @@ import type { JSONContent } from '@tiptap/core';
 import { readDocx, type ImportResult } from './index';
 import { DocxOpenError, openPackage } from './package';
 import { applyHeadings } from './headings';
+import { matchCaptions } from './drawings';
 import { FIDELITY, summarizeReport, type FeatureKey } from '../fidelity';
-import { collectFragmentIds } from '../preserve/refs';
+import { collectFragmentIds, pruneFragments } from '../preserve/refs';
 import { isBlockUntouched } from '../preserve/hash';
 import { parseXml } from '../preserve/xml';
 import { getSpecSchema } from '../../extensions/schemaSpecs';
@@ -293,6 +294,33 @@ describe('images.docx through readDocx (the acceptance check that drawings are r
     expect(r.report.counts.inlineImage).toBe(3);
     expect(r.report.counts.floatingImageSquare).toBe(2);
     expect(r.report.counts.floatingImageOther).toBe(1);
+  });
+
+  it('carries the caption pairings out of the read: one per image node, positions in doc.content, and says so in the report', () => {
+    const blocks = r.doc.content!;
+    const imageAt = blocks.map((b, i) => (b.type === 'resizableImage' ? i : -1)).filter(i => i >= 0);
+    expect(r.figures.map(f => f.image)).toEqual(imageAt);
+    const captioned = r.figures.filter(f => f.caption !== null);
+    expect(captioned).toHaveLength(1); // the inline picture and its Caption-styled paragraph
+    const caption = blocks[captioned[0].caption!];
+    expect(captioned[0].how).toBe('style');
+    expect(textOf(caption)).toBe('Figure 1. Inline figure caption.');
+    expect(blocks[captioned[0].image].attrs!.alt).toBe('Inline figure alt text');
+    expect(r.report.figures).toEqual({ images: 6, captioned: 1 });
+    // the pairings are the same ones the matcher gives for the document as returned
+    expect(r.figures).toEqual(matchCaptions(blocks));
+  });
+
+  it('applying headings does not move a figure pairing (it converts paragraphs in place)', () => {
+    const accepted = applyHeadings(r.doc, r.headingCandidates);
+    expect(accepted.content!.length).toBe(r.doc.content!.length);
+    expect(matchCaptions(accepted.content!)).toEqual(r.figures);
+  });
+
+  it('a document with no pictures has no figure pairings and no figures entry in the report', async () => {
+    const none = await readDocx(await pack(`<w:p>${wRun('Fig. 1. A caption with no picture.')}</w:p>${SECT}`));
+    expect(none.figures).toEqual([]);
+    expect(none.report.figures).toBeUndefined();
   });
 
   it('left no picture as an opaque atom except the one whose relationship the document lacks', () => {
@@ -956,5 +984,58 @@ describe('relationships and package parts in unusual shapes', () => {
       await pack(`<w:p>${wRun('x')}</w:p>${SECT}`, { 'word/header1.xml': '<w:hdr' }, `<Relationship Id="rId7" Type="${R_TYPE}/header" Target="header1.xml"/>`),
     );
     expect(r.report.warnings.filter(w => /^1 header or footer part has content/.test(w.message))).toHaveLength(1);
+  });
+});
+
+// ─── the style ids a writer needs ───────────────────────────────────────────────────────────────────────────
+
+describe('style ids reach the result (a writer cannot recover them from the app styles)', () => {
+  const stylesXml = (...styles: string[]) =>
+    `<?xml version="1.0"?><w:styles xmlns:w="${W_NS}">${styles.join('')}</w:styles>`;
+  // a French document: the styleIds are localised, the w:names are Word's English built-in names
+  const FRENCH = stylesXml(
+    '<w:style w:type="paragraph" w:default="1" w:styleId="Standard"><w:name w:val="Normal"/></w:style>',
+    '<w:style w:type="paragraph" w:styleId="Titre1"><w:name w:val="heading 1"/><w:basedOn w:val="Standard"/><w:pPr><w:outlineLvl w:val="0"/></w:pPr></w:style>',
+    '<w:style w:type="paragraph" w:customStyle="1" w:styleId="MonStyle"><w:name w:val="Mon Style"/></w:style>',
+  );
+
+  it('maps each app style id to the Word styleId it came from; a localised document is not "heading1"', async () => {
+    const r = await readDocx(await pack(`<w:p><w:pPr><w:pStyle w:val="Titre1"/></w:pPr>${wRun('Titre')}</w:p>${SECT}`, { 'word/styles.xml': FRENCH }));
+    expect(r.doc.content![0].attrs!.styleId).toBe('heading1'); // the app's id ...
+    expect(r.preservation.styles!.wordIdByAppId.heading1).toBe('Titre1'); // ... and the id Word knows it by
+    expect(r.preservation.styles!.wordIdByAppId.normal).toBe('Standard');
+    expect(r.preservation.styles!.wordIdByAppId.monStyle).toBe('MonStyle');
+    // "heading1" is the app's id, not Word's: the writer must NOT emit w:pStyle w:val="heading1" for this document
+    expect(Object.values(r.preservation.styles!.wordIdByAppId)).not.toContain('heading1');
+  });
+
+  it('lists the styles the document does not define, and none of them has a Word id', async () => {
+    const r = await readDocx(await pack(`<w:p>${wRun('x')}</w:p>${SECT}`, { 'word/styles.xml': FRENCH }));
+    const { wordIdByAppId, backfilled } = r.preservation.styles!;
+    expect([...backfilled].sort()).toEqual(['bibliography', 'caption', 'heading2', 'heading3']);
+    for (const id of backfilled) expect(wordIdByAppId, id).not.toHaveProperty(id);
+    // every app style is exactly one of the two: the document's own (it has a Word id) or backfilled
+    const own = Object.keys(wordIdByAppId);
+    expect([...own, ...backfilled].sort()).toEqual(Object.keys(r.format.styles).sort());
+    expect(own.filter(id => backfilled.includes(id))).toEqual([]);
+  });
+
+  it('a document with no styles part has only backfilled styles', async () => {
+    const r = await readDocx(await pack(`<w:p>${wRun('x')}</w:p>${SECT}`));
+    expect(r.preservation.styles!.wordIdByAppId).toEqual({});
+    expect([...r.preservation.styles!.backfilled].sort()).toEqual(Object.keys(r.format.styles).sort());
+  });
+
+  it('survives the fragment pruning that every save performs', async () => {
+    const r = await readDocx(await pack(`<w:p>${wRun('x')}</w:p>${SECT}`, { 'word/styles.xml': FRENCH }));
+    const pruned = pruneFragments(r.preservation, collectFragmentIds(r.doc));
+    expect(r.preservation.styles).toBeDefined();
+    expect(pruned.styles).toEqual(r.preservation.styles);
+  });
+
+  it('is plain data: it survives a structured clone (worker hand-off and IndexedDB)', async () => {
+    const r = await readDocx(await pack(`<w:p>${wRun('x')}</w:p>${SECT}`, { 'word/styles.xml': FRENCH }));
+    expect(r.preservation.styles).toBeDefined();
+    expect(structuredClone(r.preservation.styles)).toEqual(r.preservation.styles);
   });
 });

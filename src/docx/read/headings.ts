@@ -12,7 +12,7 @@
  * A document that already uses heading styles is left completely alone.
  */
 import type { JSONContent } from '@tiptap/core';
-import { recordFeature, type ImportReport, type ImportWarning } from '../fidelity';
+import { plural, recordFeature, type ImportReport, type ImportWarning } from '../fidelity';
 import type { ReadContext } from './context';
 import { paragraphDrafts, type ParagraphDraft } from './paragraphs';
 
@@ -215,8 +215,6 @@ function formatRejection(text: string, rest: string): string | null {
   if (LABEL_LIKE.test(rest)) return 'is a figure, panel or note label';
   return null;
 }
-
-const plural = (n: number, one: string, many = one + 's') => `${n} ${n === 1 ? one : many}`;
 
 /**
  * The document already styles at least one section heading (a Heading style or a direct outline level) among its top-level
