@@ -64,4 +64,18 @@ describe('a paragraph that cannot be normalized', () => {
     expect(report.byCategory[3]).toBe(1);
     expect(report.warnings.find(w => /could not be represented/.test(w.message))!.message).toMatch(/Tracked changes, comments/);
   });
+
+  it('does not leave a comment uncounted because its first anchor was in a discarded paragraph', async () => {
+    const b = readFileSync(new URL('../../test/fixtures/docx/minimal.docx', import.meta.url));
+    const pkg = await openPackage(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer);
+    const report = createReport();
+    let n = 0;
+    const ctx = { pkg, styles: readStyles(pkg, report), report, preservation: emptyPreservationStore(), assets: [], nextId: () => `id${++n}` };
+    const first = parseXml(`<w:p xmlns:w="${W_NS}"><w:commentRangeStart w:id="7"/><w:r><w:t>a</w:t></w:r></w:p>`).documentElement;
+    const second = parseXml(`<w:p xmlns:w="${W_NS}"><w:r><w:t>b</w:t></w:r><w:commentRangeEnd w:id="7"/></w:p>`).documentElement;
+    failNext = 1;
+    readParagraph(first, ctx);
+    readParagraph(second, ctx);
+    expect(report.counts.comment).toBe(1);
+  });
 });

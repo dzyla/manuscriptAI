@@ -19,7 +19,10 @@ import { M_NS, W_NS, firstW, wAttr } from './ooxml';
 export function classifyField(instruction: string): 'externalCitation' | 'externalBibliography' | null {
   const instr = instruction.trim();
   if (/^ADDIN\b/i.test(instr)) {
-    return /BIBL|REFLIST|ZOTERO_BIBL/i.test(instr) ? 'externalBibliography' : 'externalCitation';
+    // Only the manager token (up to the payload): the payload is the cited items' own metadata, whose titles
+    // may say "bibliography" or "bibliometric" without the field being one.
+    const token = instr.split(/[{<]/, 1)[0];
+    return /BIBL|REFLIST/i.test(token) ? 'externalBibliography' : 'externalCitation';
   }
   if (/^BIBLIOGRAPHY\b/i.test(instr)) return 'externalBibliography';
   if (/^CITATION\b/i.test(instr)) return 'externalCitation';
@@ -35,6 +38,12 @@ export function recordField(key: 'externalCitation' | 'externalBibliography', ct
   warnOnce(ctx.report, key, FIELD_WARNING, 2);
   const label = key === 'externalCitation' ? 'citation field code' : 'bibliography field code';
   for (const a of codeAtoms) if (a.attrs) a.attrs.label = label;
+}
+
+/** Capture the comment ids counted so far; the returned function restores that state (used when a paragraph's atoms are withdrawn). */
+export function snapshotCommentIds(report: ImportReport): () => void {
+  const before = new Set(seenComments.get(report) ?? []);
+  return () => void seenComments.set(report, before);
 }
 
 /** Comment ids already counted, so one comment (start, end and reference) is one `comment`. */

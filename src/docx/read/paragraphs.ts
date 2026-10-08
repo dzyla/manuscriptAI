@@ -13,6 +13,7 @@ import { captureFragment } from '../preserve/xml';
 import { specNormalizeNode } from '../../extensions/schemaSpecs';
 import { warnOnce, type ReadContext } from './context';
 import { childElements, firstW, int, isW, round4, wAttr } from './ooxml';
+import { snapshotCommentIds } from './opaque';
 import { readRuns, recordFormatChange } from './runs';
 import { isGoogleSdt, unwrapGoogleSdt } from './sdt';
 import { twipsToIn } from './units';
@@ -106,6 +107,7 @@ export function readParagraph(p: Element, ctx: ReadContext): JSONContent | JSONC
   const { attrs, headingLevel } = readProps(p, ctx);
   const fragmentsBefore = new Set(Object.keys(ctx.preservation.fragments));
   const featuresBefore = { counts: { ...ctx.report.counts }, byCategory: { ...ctx.report.byCategory } };
+  const restoreCommentIds = snapshotCommentIds(ctx.report);
   const content = readRuns(p, ctx);
   if (headingLevel) recordFeature(ctx.report, 'heading');
   if (attrs.styleId === 'caption') recordFeature(ctx.report, 'caption');
@@ -126,6 +128,7 @@ export function readParagraph(p: Element, ctx: ReadContext): JSONContent | JSONC
     for (const id of Object.keys(ctx.preservation.fragments)) if (!fragmentsBefore.has(id)) delete ctx.preservation.fragments[id];
     ctx.report.counts = featuresBefore.counts;
     ctx.report.byCategory = featuresBefore.byCategory;
+    restoreCommentIds();
     warnOnce(
       ctx.report,
       'part',

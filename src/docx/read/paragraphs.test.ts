@@ -510,7 +510,7 @@ describe('review material and fields are reported by what they are', async () =>
   });
 
   const pieces = (...instr: string[]) =>
-    `<w:r><w:fldChar w:fldCharType="begin"/></w:r>${instr.map(i => `<w:r><w:instrText xml:space="preserve">${i}</w:instrText></w:r>`).join('')}` +
+    `<w:r><w:fldChar w:fldCharType="begin"/></w:r>${instr.map(i => `<w:r><w:instrText xml:space="preserve">${i.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</w:instrText></w:r>`).join('')}` +
     `<w:r><w:fldChar w:fldCharType="separate"/></w:r>${t('shown')}<w:r><w:fldChar w:fldCharType="end"/></w:r>`;
 
   it('recognises a citation field whose instruction is split BEFORE the manager token', async () => {
@@ -528,6 +528,17 @@ describe('review material and fields are reported by what they are', async () =>
       pieces('ADDIN EN.CITE <EndNote>') + pieces('ADDIN RW.CITE{x}') + pieces('ADDIN REFMGR.CITE x') + pieces('ADDIN CITAVI.PLACEHOLDER x') + pieces('ADDIN paperpile_citation x'),
     );
     expect(report.counts.externalCitation).toBe(5);
+  });
+
+  it('does not mistake a citation whose cited title says "bibliography" for a bibliography', async () => {
+    const { report } = await read(
+      pieces('ADDIN ZOTERO_ITEM CSL_CITATION {"citationItems":[{"itemData":{"title":"A bibliometric analysis of CRISPR"}}]}') +
+        pieces('ADDIN EN.CITE <EndNote><Cite><title>Bibliographic coupling</title></Cite></EndNote>') +
+        pieces('ADDIN CSL_CITATION {"x":"Mendeley Bibliography"}') +
+        pieces(' ADDIN ', 'Mendeley Bibliography CSL_BIBLIOGRAPHY'),
+    );
+    expect(report.counts.externalCitation).toBe(3);
+    expect(report.counts.externalBibliography).toBe(1);
   });
 
   it('records bibliography fields as bibliographies, not citations', async () => {
