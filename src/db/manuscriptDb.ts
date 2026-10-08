@@ -11,6 +11,7 @@ import type {
   PreservationRow,
   BackupRow,
   BackupPartsRow,
+  ImportReportRow,
 } from '../types';
 
 export class ManuscriptDb extends Dexie {
@@ -26,6 +27,7 @@ export class ManuscriptDb extends Dexie {
   autosaveBackups!: Table<BackupRow>;
   preservationStores!: Table<PreservationRow>;
   importBackupParts!: Table<BackupPartsRow>;
+  importReports!: Table<ImportReportRow>;
 
   constructor(name = 'ManuscriptAIEditor') {
     super(name);
@@ -69,6 +71,8 @@ export class ManuscriptDb extends Dexie {
     // v5: the package and preservation map of a backed-up document live in their own table (keyed by the backup's seq), so scanning the
     // backup ring on every save does not deserialise packages.
     this.version(5).stores({ importBackupParts: 'seq' });
+    // v6: the import report (what the import said it kept but does not show) is stored with the document it describes.
+    this.version(6).stores({ importReports: 'documentId' });
   }
 }
 

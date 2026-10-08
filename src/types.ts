@@ -291,6 +291,24 @@ export interface PreservationRow {
 }
 
 /**
+ * What the import report said when the document was imported, kept so it can be shown again and read by a writer: the open document
+ * may hold review state it does not show (tracked changes, comments, footnote text) and nothing else records that once the dialog
+ * is closed. Small, and apart from the preservation map (megabytes) so reading it is cheap.
+ */
+export interface ImportReportRow {
+  documentId: 'current';
+  /** See `DocumentRow.importId`: this report describes the import with that id. */
+  importId?: string;
+  fileName?: string;
+  report: import('./docx/fidelity').ImportReport;
+  /** The headings that were inferred (not the ones accepted: see `acceptedHeadingIndexes`). */
+  headingCandidates: import('./docx/read').HeadingCandidate[];
+  /** `index` of each inferred heading the author accepted. */
+  acceptedHeadingIndexes: number[];
+  importedAt: number;
+}
+
+/**
  * The package and preservation map that belonged to a backed-up document, kept apart from the backup row (keyed by its `seq`) so the
  * save-time scan of the backup ring never reads a megabytes-large package.
  */
@@ -298,6 +316,7 @@ export interface BackupPartsRow {
   seq: number;
   package?: DocxPackageRow;
   preservation?: PreservationRow;
+  importReport?: ImportReportRow;
 }
 
 export interface BackupRow {

@@ -23,8 +23,8 @@ import { saveAs } from 'file-saver';
 import * as mammoth from 'mammoth';
 import TurndownService from 'turndown';
 import { useDocumentStore, documentRepository } from './stores/useDocumentStore';
-import { snapshotBeforeImport, revertLabel } from './services/importSafety';
-import { isBlankText } from './db/placeholder';
+import type { ImportReportRow } from './types';
+import { snapshotBeforeImport, revertLabel, isBlankHtml } from './services/importSafety';
 import { useAIStore } from './stores/useAIStore';
 import { useSourceStore } from './stores/useSourceStore';
 import { db } from './db/manuscriptDb';
@@ -58,7 +58,7 @@ export default function App() {
     resetDocument, persist: persistDocument, initialize: initDocument,
     mode, grantInstructions, grantTemplateId,
     setMode, setGrantInstructions, setGrantTemplateId,
-    loadStatus, blockedByUnreadable, lastLoad, allowOverwrite, replaceWithHtml, importDocx, revertImport,
+    loadStatus, blockedByUnreadable, lastLoad, allowOverwrite, replaceWithHtml, importDocx, revertImport, queueFragmentClone, importId,
   } = useDocumentStore();
 
   const {
@@ -1085,6 +1085,9 @@ export default function App() {
   // The document "Restore previous document" would bring back (the newest an import replaced), or null. Named on the button.
   const [revertTarget, setRevertTarget] = useState<{ title: string; savedAt: number } | null>(null);
   const revertTargetRef = useRef<{ title: string; savedAt: number } | null>(null);
+  // What the open document's import said it kept but does not show; shown again from the File menu (null when it is not an import).
+  const [storedReport, setStoredReport] = useState<ImportReportRow | null>(null);
+  const [showStoredReport, setShowStoredReport] = useState(false);
   const refreshRevertAvailable = useCallback(async () => {
     let target: { title: string; savedAt: number } | null = null;
     try {
@@ -1094,8 +1097,14 @@ export default function App() {
     }
     revertTargetRef.current = target; // read straight away by the message that follows an import, before the next render
     setRevertTarget(target);
+    try {
+      setStoredReport(await documentRepository.getImportReport() ?? null);
+    } catch {
+      setStoredReport(null);
+    }
   }, []);
-  useEffect(() => { if (loadSettled) void refreshRevertAvailable(); }, [loadSettled, refreshRevertAvailable]);
+  // also when the document's tie to an import changes (an import, a restore, New Manuscript, a workspace file ...)
+  useEffect(() => { if (loadSettled) void refreshRevertAvailable(); }, [loadSettled, importId, refreshRevertAvailable]);
 
   const handleRevertImport = async () => {
     try {
@@ -1133,7 +1142,7 @@ export default function App() {
 
   const handleImportText = async (file: File) => {
     // Text typed into or after the placeholder is work; only no text, or exactly the placeholder, is an empty document.
-    if (!isBlankText(content.replace(/<[^>]*>/g, ' ')) && !window.confirm(`Replace the open document with ${file.name}? Any unsaved changes will be lost.`)) return;
+    if (!isBlankHtml(content) && !window.confirm(`Replace the open document with ${file.name}? Any unsaved changes will be lost.`)) return;
     try {
       const html = textToHtml(await file.text(), file.name.toLowerCase().endsWith('.md'));
       setTitle(titleFromFileName(file.name));
@@ -1254,6 +1263,11 @@ export default function App() {
                 <button onClick={() => fileInputRef.current?.click()} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg font-bold" style={{ color: 'var(--text-primary)', borderBottom: '1px solid var(--border-subtle)', marginBottom: '4px', paddingBottom: '8px' }}>
                   Load Document (.json, .docx, .md, .txt)
                 </button>
+                {storedReport && (
+                  <button onClick={() => setShowStoredReport(true)} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>
+                    Import report (what was kept but is not shown)
+                  </button>
+                )}
                 {revertTarget && (
                   <button onClick={() => { void handleRevertImport(); }} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }} title={`Saved ${new Date(revertTarget.savedAt).toLocaleString()}`}>
                     {revertLabel(revertTarget)}
@@ -1490,6 +1504,7 @@ export default function App() {
             onChange={(html) => setContent(html)}
             onDocChange={setDocJson}
             pendingDocument={pendingDocument}
+            onDuplicateFragment={queueFragmentClone}
             onPendingDocumentApplied={clearPendingDocument}
             loadSettled={loadSettled}
             onDocumentReady={handleDocumentReady}
@@ -1589,7 +1604,7 @@ export default function App() {
       />
       {showTemplatePicker && (
         <GrantTemplatePicker
-          documentHasContent={!isBlankText(content.replace(/<[^>]*>/g, ' '))}
+          documentHasContent={!isBlankHtml(content)}
           aiSettings={aiSettings}
           onApply={handleApplyGrantTemplate}
           onClose={() => setShowTemplatePicker(false)}
@@ -1614,6 +1629,15 @@ export default function App() {
         aiSettings={aiSettings}
       />
 
+      {showStoredReport && storedReport && (
+        <ImportReportDialog
+          mode="view"
+          result={{ report: storedReport.report, headingCandidates: storedReport.headingCandidates, ...(storedReport.fileName ? { fileName: storedReport.fileName } : {}) }}
+          acceptedIndexes={storedReport.acceptedHeadingIndexes}
+          onConfirm={() => {}}
+          onCancel={() => setShowStoredReport(false)}
+        />
+      )}
       {docxImport.state?.phase === 'reading' && (
         <ImportProgressDialog fileName={docxImport.state.fileName} size={docxImport.state.size} stage={docxImport.state.stage} onCancel={docxImport.cancelRead} />
       )}

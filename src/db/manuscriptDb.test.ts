@@ -2,12 +2,12 @@ import { describe, it, expect } from 'vitest';
 import Dexie from 'dexie';
 import { ManuscriptDb } from './manuscriptDb';
 
-describe('ManuscriptDb v5', () => {
-  it('has the v5 tables', async () => {
+describe('ManuscriptDb v6', () => {
+  it('has the v6 tables', async () => {
     const db = new ManuscriptDb('t-v4-tables');
     await db.open();
-    expect(db.verno).toBe(5);
-    for (const t of ['documents', 'assets', 'docxPackages', 'autosaveBackups', 'preservationStores', 'versionSnapshots', 'grantTemplates', 'importBackupParts'])
+    expect(db.verno).toBe(6);
+    for (const t of ['documents', 'assets', 'docxPackages', 'autosaveBackups', 'preservationStores', 'versionSnapshots', 'grantTemplates', 'importBackupParts', 'importReports'])
       expect(db.tables.map(x => x.name)).toContain(t);
     db.close();
     await Dexie.delete('t-v4-tables');

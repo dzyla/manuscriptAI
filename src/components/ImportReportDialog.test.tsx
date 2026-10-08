@@ -111,6 +111,26 @@ describe('ImportReportDialog', () => {
     expect(text).toContain('Cancel');
   });
 
+  it('view mode shows the stored report read-only: the accepted headings are ticked and locked, and there is only Close', () => {
+    const cands = [1, 2, 3].map(i => ({ index: i, level: 1 as const, text: `Section ${i}`, evidence: [`why ${i}`], confidence: 'name' as const }));
+    const onCancel = vi.fn();
+    const onConfirm = vi.fn();
+    const report = busyReport();
+    const el = mount(<ImportReportDialog mode="view" result={{ report, headingCandidates: cands, fileName: 'old.docx' }} acceptedIndexes={[2]} onConfirm={onConfirm} onCancel={onCancel} />);
+    expect(q(el, '[data-testid="view-notice"]')).toBeTruthy();
+    expect(el.querySelector('[data-testid="replace-notice"]')).toBeNull();
+    expect(q(el, '[data-testid="import-summary"]').textContent).toBe(summarizeReport(report));
+    expect(qa(el, '[data-testid="warnings"] li').map(li => li.textContent)).toEqual(['First warning text', 'Second warning text']);
+    const boxes = qa(el, 'input[type="checkbox"]') as HTMLInputElement[];
+    expect(boxes.map(b => b.checked)).toEqual([false, true, false]);
+    expect(boxes.every(b => b.disabled)).toBe(true);
+    expect(el.textContent).toContain('1 of 3 accepted');
+    expect(qa(el, 'button').map(b => b.textContent)).toEqual(['Close']);
+    click(button(el, /^Close$/));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
   it('opens with focus on Cancel, the safe choice', () => {
     const el = mount(<ImportReportDialog result={{ report: createReport(), headingCandidates: [] }} onConfirm={noop} onCancel={noop} />);
     expect(document.activeElement).toBe(button(el, /^Cancel$/));

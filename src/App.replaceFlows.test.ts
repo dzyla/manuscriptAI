@@ -52,9 +52,9 @@ describe('flows that replace the open document end its tie to a .docx import', (
     expect(handlersContaining(REPLACE_CALL).sort()).toEqual(['handleApplyGrantTemplate', 'handleImportText', 'handleLoadWorkspace', 'handleNewManuscript', 'handleRestoreSnapshot']);
   });
 
-  it('the "has content" checks use the exact blank test, not a prefix match that treats work typed into the placeholder as nothing', () => {
+  it('the "has content" checks use the exact blank test, not a prefix match that treats work typed into the placeholder as nothing, and not a text-only test that calls a figures-only document empty', () => {
     expect(src).not.toMatch(/replace\(\/Start writing your manuscript here/);
-    expect(handler('handleImportText')).toMatch(/isBlankText\(/);
-    expect(src).toMatch(/documentHasContent=\{!isBlankText\(/);
+    expect(handler('handleImportText')).toMatch(/isBlankHtml\(/);
+    expect(src).toMatch(/documentHasContent=\{!isBlankHtml\(/);
   });
 });

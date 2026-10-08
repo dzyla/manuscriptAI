@@ -8,6 +8,7 @@ import { AgentType, Suggestion, ManuscriptSource } from '../types';
 import { GrammarChecker } from '../extensions/GrammarChecker';
 import { getSchemaExtensions } from '../extensions/schema';
 import { OpaqueFragmentGuard } from '../extensions/preserve/OpaqueNodes';
+import { SuggestionHighlights, setSuggestionHighlights, type SuggestionRange } from '../extensions/SuggestionHighlights';
 import {
   Bold, Italic, Underline as UnderlineIcon, List, ListOrdered,
   AlignLeft, AlignCenter, AlignRight, AlignJustify, Quote, Heading2,
@@ -33,6 +34,11 @@ interface EditorProps {
    */
   pendingDocument?: JSONContent | null;
   onPendingDocumentApplied?: () => void;
+  /**
+   * A pasted or duplicated preserved piece (equation, footnote marker, field chip, comment anchor, tracked change, lifted figure) got a
+   * fresh fragment id: the preserved XML stored under `fromId` must also be stored under `toId`, or the copy has nothing to export.
+   */
+  onDuplicateFragment?: (fromId: string, toId: string) => void;
   /** True once the app has finished loading its stores (so "no pending document" means a fresh install or failed load). */
   loadSettled?: boolean;
   /**
@@ -143,7 +149,7 @@ const BUBBLE_ACTIONS: { label: string; instruction: string; agent: AgentType; ic
 /** prosemirror-history's plugin key (it does not export it); the same string addresses the plugin and its transaction metadata. */
 const HISTORY_PLUGIN_KEY = 'history$';
 
-const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocChange, pendingDocument, onPendingDocumentApplied, loadSettled = false, onDocumentReady, onContentSynced, suggestions, onSuggestionClick, onSelectionQuery, onTransformSelection, onRewriteSection, onAnalyzeSection, onVerifyClaim, onSearchSimilar, sources, citationRegistry, onInsertCitation, isDistractionFree, editorZoom = 100, editorWidth = 'normal', aiSettings, onAnalyzeImage, onInsertFigure, showPageGuides = false }, ref) => {
+const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocChange, pendingDocument, onPendingDocumentApplied, onDuplicateFragment, loadSettled = false, onDocumentReady, onContentSynced, suggestions, onSuggestionClick, onSelectionQuery, onTransformSelection, onRewriteSection, onAnalyzeSection, onVerifyClaim, onSearchSimilar, sources, citationRegistry, onInsertCitation, isDistractionFree, editorZoom = 100, editorWidth = 'normal', aiSettings, onAnalyzeImage, onInsertFigure, showPageGuides = false }, ref) => {
   const [isMounted, setIsMounted] = useState(false);
 
   // ── Page guides: dashed page-break lines at NIH-format intervals ──────────
@@ -221,6 +227,8 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
   const [autocompleteLoading, setAutocompleteLoading] = useState(false);
   const autocompleteEnabledRef = useRef(false);
   const aiSettingsRef = useRef<AISettings | undefined>(aiSettings);
+  const onDuplicateFragmentRef = useRef(onDuplicateFragment);
+  onDuplicateFragmentRef.current = onDuplicateFragment;
 
   useEffect(() => { setIsMounted(true); }, []);
 
@@ -230,7 +238,8 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
   const editor = useEditor({
     extensions: [
       ...getSchemaExtensions(),
-      OpaqueFragmentGuard,
+      OpaqueFragmentGuard.configure({ onDuplicateFragment: (fromId, toId) => onDuplicateFragmentRef.current?.(fromId, toId) }),
+      SuggestionHighlights,
       Placeholder.configure({ placeholder: 'Start writing your manuscript here...' }),
       GrammarChecker,
       AutoComplete.configure({
@@ -560,26 +569,20 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor, loadSettled, pendingDocument]);
 
-  // Apply suggestion highlighting
+  // Draw the suggestions' highlighting. These are decorations (SuggestionHighlights), not marks: the document's own highlight mark is
+  // Word's highlighting once a .docx is imported, and this effect runs on every new suggestions array (e.g. when an import clears them).
   useEffect(() => {
     if (!editor) return;
-    const { tr } = editor.state;
-    tr.removeMark(0, editor.state.doc.content.size, editor.schema.marks.highlight);
-    editor.view.dispatch(tr);
-
+    const ranges: SuggestionRange[] = [];
     suggestions.forEach(s => {
-      const color = s.agent === 'manager' ? '#1c1917' : 
-                    s.agent === 'editor' ? '#3b6fd4' : 
+      const color = s.agent === 'manager' ? '#1c1917' :
+                    s.agent === 'editor' ? '#3b6fd4' :
                     s.agent === 'reviewer-2' ? '#c43d5c' :
                     s.agent === 'researcher' ? '#b8860b' : '#8a847a';
       const posMatch = findTextPosition(editor.state.doc, s.originalText);
-      if (posMatch) {
-        editor.chain()
-          .setTextSelection({ from: posMatch.from, to: posMatch.to })
-          .setHighlight({ color: `${color}25`, suggestionId: s.id } as any)
-          .run();
-      }
+      if (posMatch) ranges.push({ from: posMatch.from, to: posMatch.to, color: `${color}25` });
     });
+    setSuggestionHighlights(editor.view, ranges);
   }, [suggestions, editor]);
 
   const getSelectedText = () => {

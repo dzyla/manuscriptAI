@@ -346,7 +346,7 @@ describe('useDocumentStore after an import: the whole store follows the committe
   it('if the committed document cannot be read back, the store still follows the disk (the next autosave must not write the old document over the import)', async () => {
     await useDocumentStore.getState().initialize();
     useDocumentStore.getState().setDocJson(htmlToDoc('<p>old work</p>'));
-    useDocumentStore.setState({ title: 'Old title' });
+    useDocumentStore.setState({ title: 'Old title', grantTemplateId: 'r01', mode: 'grant', grantInstructions: 'keep me' });
     const r = await readDocx(loadDocx('images.docx'), undefined, 'images.docx');
     vi.spyOn(documentRepository, 'load').mockRejectedValueOnce(new Error('read failed'));
     vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -355,6 +355,10 @@ describe('useDocumentStore after an import: the whole store follows the committe
     expect(s.title).toBe('Imported');
     expect(s.format).toEqual(r.format);
     expect(s.importId).toBe((await db.documents.get('current'))?.importId);
+    // the replaced document's template must not be re-attached by the next autosave; how the author works carries over, as on disk
+    expect(s.grantTemplateId).toBeNull();
+    expect(s.mode).toBe('grant');
+    expect(s.grantInstructions).toBe('keep me');
     expect(JSON.stringify(s.docJson)).not.toContain('old work');
     expect(s.loadStatus).toBe('ready');
     // images are usable in the editor straight away
@@ -368,6 +372,57 @@ describe('useDocumentStore after an import: the whole store follows the committe
     expect(row.title).toBe('Imported');
     expect(row.importId).toBe((await db.docxPackages.get('current'))?.importId);
     expect(row.format).toEqual(r.format);
+    expect(row.grantTemplateId).toBeUndefined();
+    expect(row.mode).toBe('grant');
+  });
+
+  it('a pasted preserved piece is stored with the save of the document that holds it, then forgotten; replacing the document drops what was pending', async () => {
+    const r = await readDocx(loadDocx('opaque.docx'), undefined, 'opaque.docx');
+    await useDocumentStore.getState().initialize();
+    await useDocumentStore.getState().importDocx(r, { title: 'Imported', acceptedHeadings: [] });
+    const docJson = useDocumentStore.getState().docJson!;
+    const ids: string[] = [];
+    const walk = (n: any) => { if (n.attrs?.fragmentId) ids.push(n.attrs.fragmentId); (n.content ?? []).forEach(walk); };
+    walk(docJson);
+    const fromId = ids[0];
+    // the editor pastes a copy: a document with a second atom under a new id, and tells the store
+    const paste = (n: any): any => {
+      const kids = n.content ? { content: n.content.flatMap((c: any) => (c.attrs?.fragmentId === fromId ? [paste(c), { ...c, attrs: { ...c.attrs, fragmentId: 'f_pasted' } }] : [paste(c)])) } : {};
+      return { ...n, ...kids };
+    };
+    useDocumentStore.getState().setDocJson(paste(docJson));
+    useDocumentStore.getState().queueFragmentClone(fromId, 'f_pasted');
+    expect((await db.preservationStores.get('current'))!.store.fragments.f_pasted).toBeUndefined(); // not before a save
+    expect(await useDocumentStore.getState().persist()).toBe(true);
+    const frag = (await db.preservationStores.get('current'))!.store.fragments;
+    expect(frag.f_pasted).toEqual(frag[fromId]);
+    // forgotten once written: a later save does not need it again
+    useDocumentStore.getState().setTitle('later');
+    await useDocumentStore.getState().persist();
+    expect((await db.preservationStores.get('current'))!.store.fragments.f_pasted).toEqual(frag[fromId]);
+
+    // clones queued for a document that is then replaced are not applied to the next one
+    useDocumentStore.getState().queueFragmentClone(fromId, 'f_stale');
+    useDocumentStore.getState().resetDocument();
+    await db.docxPackages.clear();
+    await useDocumentStore.getState().persist();
+    expect(await db.preservationStores.get('current')).toBeUndefined();
+  });
+
+  it('a copy queued while an import is committing belongs to the document being replaced and is not sent with the first save of the import', async () => {
+    const r = await readDocx(loadDocx('body-basics.docx'), undefined, 'body-basics.docx');
+    await useDocumentStore.getState().initialize();
+    const real = documentRepository.importDocx.bind(documentRepository);
+    vi.spyOn(documentRepository, 'importDocx').mockImplementation(async (...a) => {
+      useDocumentStore.getState().queueFragmentClone('f_old', 'f_stale'); // pasted into the old document, mid-commit
+      return real(...a);
+    });
+    await useDocumentStore.getState().importDocx(r, { title: 'Imported', acceptedHeadings: [] });
+    const save = vi.spyOn(documentRepository, 'save');
+    useDocumentStore.getState().setTitle('edited');
+    await useDocumentStore.getState().persist();
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(save.mock.calls[0][0].fragmentClones).toBeUndefined();
   });
 
   it('every flow that replaces the document with something that is not the import detaches the package: New Manuscript, a workspace file, a template, a text import', async () => {

@@ -6,12 +6,19 @@
 import type { ManuscriptDb } from '../db/manuscriptDb';
 import { inlineAssetImages } from '../db/assetStore';
 import type { VersionSnapshot } from '../types';
-import { isBlankText } from '../db/placeholder';
+import { isBlankDoc } from '../db/placeholder';
+import { htmlToDoc } from '../extensions/schema';
 
-/** True for a document with nothing in it worth keeping: empty, or the untouched placeholder text. */
+/**
+ * True for HTML with nothing in it worth keeping, by the same test as everywhere else (`isBlankDoc`): no text or only the placeholder,
+ * and no image, line break, rule, citation or other non-text content. Anything it cannot read is NOT blank (the safe answer is to ask).
+ */
 export function isBlankHtml(html: string): boolean {
-  if (/<img\b/i.test(html)) return false;
-  return isBlankText(html.replace(/<[^>]*>/g, ' '));
+  try {
+    return isBlankDoc(htmlToDoc(html));
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -26,7 +33,8 @@ export async function snapshotBeforeImport(
   try {
     const text = doc.content.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
     const snapshot: VersionSnapshot = {
-      id: `snap-${Date.now()}`,
+      // the random part: two imports in the same millisecond must not share an id (the second would overwrite the first)
+      id: `snap-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       name: `Before importing ${doc.importing}`,
       timestamp: Date.now(),
       title: doc.title,

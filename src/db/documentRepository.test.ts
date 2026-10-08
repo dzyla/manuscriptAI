@@ -13,6 +13,8 @@ import type { JSONContent } from '@tiptap/core';
 import { readDocx, type ImportResult } from '../docx/read';
 import { applyHeadings } from '../docx/read/headings';
 import { collectAssetIds } from './assetStore';
+import { collectFragmentIds } from '../docx/preserve/refs';
+import { planLiftedDrawings } from '../docx/preserve/lifted';
 
 const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
 let db: ManuscriptDb;
@@ -977,6 +979,128 @@ describe('DocumentRepository.importDocx', () => {
       await repo.save({ ...baseDoc(''), title: 'blank' }); // New Manuscript
       await repo.importDocx(imported, { title: 'two' }); // over a blank document: no new backup
       expect((await repo.peekRevert())?.title).toBe('First');
+    });
+  });
+
+  describe('copies of preserved pieces (fragmentClones)', () => {
+    const withCopy = (doc: JSONContent, fromId: string, toId: string): JSONContent => {
+      let done = false;
+      const walkCopy = (n: JSONContent): JSONContent[] => {
+        const kids = n.content ? { content: n.content.flatMap(walkCopy) } : {};
+        const self = { ...n, ...kids };
+        if (!done && n.type && n.attrs?.fragmentId === fromId) {
+          done = true;
+          return [self, { ...self, attrs: { ...n.attrs, fragmentId: toId } }];
+        }
+        return [self];
+      };
+      return walkCopy(doc)[0];
+    };
+
+    it('stores the XML of a pasted equation under its new id in the same save, so the copy can be exported', async () => {
+      const r = await readDocx(fixture('opaque.docx'), undefined, 'opaque.docx');
+      await repo.importDocx(r, { title: 'x' });
+      const loaded = (await repo.load()).doc!;
+      const fromId = [...collectFragmentIds(loaded.docJson)][0];
+      expect(fromId).toBeDefined();
+      const pasted = withCopy(loaded.docJson, fromId, 'f_pasted');
+      expect(collectFragmentIds(pasted).has('f_pasted')).toBe(true);
+
+      await repo.save({ ...loaded, docJson: pasted, fragmentClones: [{ fromId, toId: 'f_pasted' }] });
+      const pres = (await db.preservationStores.get('current'))!.store;
+      expect(pres.fragments.f_pasted).toEqual(pres.fragments[fromId]);
+      expect(pres.fragments.f_pasted).not.toBe(pres.fragments[fromId]);
+      for (const id of collectFragmentIds(pasted)) expect(pres.fragments[id], id).toBeDefined();
+    });
+
+    it('without the clone the copy is left pointing at nothing (what the unwired editor did)', async () => {
+      const r = await readDocx(fixture('opaque.docx'), undefined, 'opaque.docx');
+      await repo.importDocx(r, { title: 'x' });
+      const loaded = (await repo.load()).doc!;
+      const fromId = [...collectFragmentIds(loaded.docJson)][0];
+      await repo.save({ ...loaded, docJson: withCopy(loaded.docJson, fromId, 'f_pasted') });
+      expect((await db.preservationStores.get('current'))!.store.fragments.f_pasted).toBeUndefined();
+    });
+
+    it('a pasted picture lifted from a Word paragraph is a `copy` the writer can emit, because its XML is stored', async () => {
+      await repo.importDocx(imported, { title: 'x' });
+      const loaded = (await repo.load()).doc!;
+      const pic = images(loaded.docJson).find(i => i.attrs?.fragmentId && i.attrs?.anchorBlockId)!;
+      expect(pic).toBeDefined();
+      const fromId = String(pic.attrs!.fragmentId);
+      await repo.save({ ...loaded, docJson: withCopy(loaded.docJson, fromId, 'f_pic_copy'), fragmentClones: [{ fromId, toId: 'f_pic_copy' }] });
+      const pres = (await db.preservationStores.get('current'))!.store;
+      const saved = (await repo.load()).doc!.docJson;
+      const emits = planLiftedDrawings(saved, pres).emit.filter(e => e.why === 'copy');
+      expect(emits).toHaveLength(1);
+      expect(pres.fragments[emits[0].fragmentId], 'the copy\'s fragment exists').toBeDefined();
+    });
+
+    it('ignores a clone whose original was never stored (a document that is not an import), and one already made', async () => {
+      await repo.save(baseDoc('plain'));
+      await repo.save({ ...baseDoc('plain 2'), fragmentClones: [{ fromId: 'nope', toId: 'f_x' }] });
+      expect(await db.preservationStores.count()).toBe(0);
+      const r = await readDocx(fixture('opaque.docx'), undefined, 'opaque.docx');
+      await repo.importDocx(r, { title: 'x' });
+      const loaded = (await repo.load()).doc!;
+      const fromId = [...collectFragmentIds(loaded.docJson)][0];
+      const doc = withCopy(loaded.docJson, fromId, 'f_c');
+      await repo.save({ ...loaded, docJson: doc, fragmentClones: [{ fromId, toId: 'f_c' }] });
+      const once = (await db.preservationStores.get('current'))!;
+      await repo.save({ ...loaded, docJson: doc, title: 'again', fragmentClones: [{ fromId, toId: 'f_c' }] });
+      expect((await db.preservationStores.get('current'))!.store.fragments.f_c).toEqual(once.store.fragments.f_c);
+    });
+  });
+
+  describe('the stored import report', () => {
+    it('is stored with the import and returned for the open document, with the accepted headings', async () => {
+      const un = await readDocx(fixture('unstyled-sections.docx'), undefined, 'u.docx');
+      const { importId } = await repo.importDocx({ ...un, doc: applyHeadings(un.doc, un.headingCandidates.slice(0, 2)) }, { title: 'x', acceptedHeadingIndexes: un.headingCandidates.slice(0, 2).map(h => h.index) });
+      const stored = await repo.getImportReport();
+      expect(stored?.importId).toBe(importId);
+      expect(stored?.fileName).toBe('u.docx');
+      expect(stored?.report).toEqual(un.report);
+      expect(stored?.headingCandidates).toEqual(un.headingCandidates);
+      expect(stored?.acceptedHeadingIndexes).toEqual(un.headingCandidates.slice(0, 2).map(h => h.index));
+      // survives ordinary saves
+      await repo.save({ ...(await repo.load()).doc!, title: 'edited' });
+      expect((await repo.getImportReport())?.importId).toBe(importId);
+    });
+
+    it('is not offered for a document that is not an import, goes with the package to the backup, and comes back with a restore', async () => {
+      await repo.save({ ...baseDoc('my own work'), title: 'W' });
+      expect(await repo.getImportReport()).toBeUndefined();
+      const { importId } = await repo.importDocx(imported, { title: 'B' });
+      expect((await repo.getImportReport())?.importId).toBe(importId);
+      await repo.save(baseDoc('a new manuscript')); // detaches
+      expect(await repo.getImportReport()).toBeUndefined();
+      expect(await db.importReports.count()).toBe(0);
+      const old = (await repo.listBackups()).find(b => b.row.importId === importId)!;
+      expect((await db.importBackupParts.get(old.seq!))?.importReport?.report).toEqual(imported.report);
+    });
+
+    it('a restore puts the right report back, and the one it replaces goes to the backup', async () => {
+      const a = await repo.importDocx(plain, { title: 'A' });
+      const b = await repo.importDocx(imported, { title: 'B' });
+      expect((await repo.getImportReport())?.importId).toBe(b.importId);
+      await repo.revertImport();
+      const back = await repo.getImportReport();
+      expect(back?.importId).toBe(a.importId);
+      expect(back?.report).toEqual(plain.report);
+      await repo.revertImport();
+      expect((await repo.getImportReport())?.report).toEqual(imported.report);
+    });
+
+    it('a failed import writes no report', async () => {
+      const boom = () => { throw new Error('disk full'); };
+      db.importReports.hook('creating', boom);
+      try {
+        await expect(repo.importDocx(plain, { title: 'x' })).rejects.toThrow('disk full');
+      } finally {
+        db.importReports.hook('creating').unsubscribe(boom);
+      }
+      expect(await db.importReports.count()).toBe(0);
+      expect(await db.documents.count()).toBe(0);
     });
   });
 });

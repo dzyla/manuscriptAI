@@ -1,13 +1,13 @@
 import type { JSONContent } from '@tiptap/core';
 import type { ManuscriptDb } from './manuscriptDb';
-import type { AssetRow, BackupRow, CommentThread, DocFormat, DocumentMode, DocumentRow, DocxPackageRow, PreservationRow } from '../types';
+import type { AssetRow, BackupRow, CommentThread, DocFormat, DocumentMode, DocumentRow, DocxPackageRow, ImportReportRow, PreservationRow } from '../types';
 import type { ImportResult } from '../docx/read';
 import { prepareAssets, hydrateAssets, collectAssetIds, liveAssetIds, type AssetUrlResolver } from './assetStore';
 import { stableStringify } from '../docx/preserve/hash';
 import { collectFragmentIds, pruneFragments } from '../docx/preserve/refs';
 import type { PreservationStore } from '../docx/preserve/types';
 import { createFormat } from '../services/formatPresets';
-import { isBlankText } from './placeholder';
+import { isBlankDoc } from './placeholder';
 
 export interface LoadedDocument {
   title: string;
@@ -28,6 +28,12 @@ export interface LoadedDocument {
    * package: the package and preservation map are removed from `current` and kept with the backup of the document they belonged to.
    */
   importId?: string;
+  /**
+   * Preserved pieces that were copied since the last save (the editor gave each copy a fresh fragment id): the fragment stored under
+   * `fromId` is also stored under `toId`, in the same transaction as the document that refers to it. Without this a pasted equation,
+   * footnote marker, field, comment anchor or lifted figure would refer to XML that does not exist and be dropped on export.
+   */
+  fragmentClones?: Array<{ fromId: string; toId: string }>;
 }
 
 export interface LoadResult {
@@ -67,7 +73,12 @@ export interface DocumentRepository {
    *
    * `result.doc` is stored as given: apply the accepted headings (`applyHeadings`) BEFORE calling.
    */
-  importDocx(result: ImportResult, decisions: { title: string }): Promise<{ importId: string }>;
+  importDocx(result: ImportResult, decisions: { title: string; acceptedHeadingIndexes?: number[] }): Promise<{ importId: string }>;
+  /**
+   * The report the open document was imported with (what it kept but does not show: tracked changes, comments, footnote text, headers),
+   * or undefined when the open document is not an import. Only returned when it belongs to the open document's import.
+   */
+  getImportReport(): Promise<ImportReportRow | undefined>;
   /**
    * Undo the newest import: make the document it replaced (with its package and preservation map) the current one again, in one
    * transaction. The import being undone is itself kept as a backup of the same kind, so calling this again restores it (a swap, not
@@ -160,14 +171,7 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
     if (row.importId || row.comments?.length) return false;
     const converted = rowToDoc(row);
     if (!converted) return false; // unreadable is never "nothing"
-    const parts: string[] = [];
-    const walk = (n: JSONContent): void => {
-      if (n.type === 'text') parts.push(n.text ?? '');
-      else if (n.type && n.type !== 'doc' && n.type !== 'paragraph' && n.type !== 'heading' && !n.content) parts.push('\u0000'); // any other leaf (an image, a line break, a rule) is content
-      n.content?.forEach(walk);
-    };
-    walk(converted.doc.docJson);
-    return isBlankText(parts.join(''));
+    return isBlankDoc(converted.doc.docJson);
   }
 
   async function hydrate(doc: LoadedDocument): Promise<LoadedDocument> {
@@ -208,7 +212,7 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
     const fingerprint = rowFingerprint(row);
     const live = new Set(deps.liveAssetIds ? deps.liveAssetIds() : liveAssetIds());
     let written = true;
-    await db.transaction('rw', [db.documents, db.assets, db.autosaveBackups, db.preservationStores, db.docxPackages, db.importBackupParts], async () => {
+    await db.transaction('rw', [db.documents, db.assets, db.autosaveBackups, db.preservationStores, db.docxPackages, db.importBackupParts, db.importReports], async () => {
       const prev = await db.documents.get('current');
       if (assets.length) await db.assets.bulkPut(assets); // idempotent (content-addressed)
       // Pin only a genuine legacy (pre-v3 HTML) row. A concurrent second migration (e.g. StrictMode
@@ -230,18 +234,37 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
         if (detaching) {
           const pkg = await db.docxPackages.get('current');
           const preservation = await db.preservationStores.get('current');
-          if (pkg || preservation) await db.importBackupParts.put({ seq, ...(pkg ? { package: pkg } : {}), ...(preservation ? { preservation } : {}) });
+          const importReport = await db.importReports.get('current');
+          if (pkg || preservation || importReport) {
+            await db.importBackupParts.put({ seq, ...(pkg ? { package: pkg } : {}), ...(preservation ? { preservation } : {}), ...(importReport ? { importReport } : {}) });
+          }
         }
       }
       if (detaching) {
         await db.docxPackages.delete('current');
         await db.preservationStores.delete('current');
+        await db.importReports.delete('current');
       }
       // Quarantined (unreadable) and pinned (pre-migration) rows are exempt from the ring.
       const all = (await db.autosaveBackups.orderBy('seq').toArray()).filter(b => !b.quarantined && !b.pinned);
       const excess = all.length - maxBackups;
       if (excess > 0) await deleteBackups(all.slice(0, excess).map(b => b.seq!));
       await db.documents.put(row);
+
+      if (doc.fragmentClones?.length) {
+        const p = await db.preservationStores.get('current');
+        if (p) {
+          const fragments = { ...p.store.fragments };
+          let changed = false;
+          for (const { fromId, toId } of doc.fragmentClones) {
+            const f = fragments[fromId];
+            if (!f || fragments[toId]) continue; // nothing stored for the original (not an imported piece), or already cloned
+            fragments[toId] = { ...f, relIds: [...f.relIds], nsDecls: { ...f.nsDecls }, ...(f.lifted ? { lifted: f.lifted.map(l => ({ ...l })) } : {}) };
+            changed = true;
+          }
+          if (changed) await db.preservationStores.put({ ...p, store: { ...p.store, fragments }, updatedAt: Date.now() });
+        }
+      }
 
       const backups = await db.autosaveBackups.toArray();
       const keepAssets = collectAssetIds(row.docJson);
@@ -310,6 +333,7 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
     row: DocumentRow;
     pkg?: DocxPackageRow;
     preservation?: PreservationRow;
+    importReport?: ImportReportRow;
     assets: AssetRow[];
     /** Asset ids the new document uses that are not in `assets`: they must already be stored. */
     needExisting: string[];
@@ -333,6 +357,7 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
       const unreadable = rowToDoc(prev) === null;
       const pkg = await db.docxPackages.get('current');
       const preservation = await db.preservationStores.get('current');
+      const importReport = await db.importReports.get('current');
       const seq = (await db.autosaveBackups.add({
         documentId: 'current',
         savedAt: Date.now(),
@@ -342,7 +367,9 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
         ...(unreadable ? { quarantined: true as const } : { pinned: true as const }),
         replacedByImport: true as const,
       })) as number;
-      if (pkg || preservation) await db.importBackupParts.put({ seq, ...(pkg ? { package: pkg } : {}), ...(preservation ? { preservation } : {}) });
+      if (pkg || preservation || importReport) {
+        await db.importBackupParts.put({ seq, ...(pkg ? { package: pkg } : {}), ...(preservation ? { preservation } : {}), ...(importReport ? { importReport } : {}) });
+      }
       const all = await db.autosaveBackups.orderBy('seq').toArray();
       const ring = all.filter(b => !b.quarantined && !b.pinned);
       if (ring.length > maxBackups) await deleteBackups(ring.slice(0, ring.length - maxBackups).map(b => b.seq!));
@@ -355,10 +382,12 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
     else await db.docxPackages.delete('current');
     if (r.preservation) await db.preservationStores.put(r.preservation);
     else await db.preservationStores.delete('current');
+    if (r.importReport) await db.importReports.put(r.importReport);
+    else await db.importReports.delete('current');
   }
-  const REPLACE_TABLES = [db.documents, db.assets, db.autosaveBackups, db.docxPackages, db.preservationStores, db.importBackupParts];
+  const REPLACE_TABLES = [db.documents, db.assets, db.autosaveBackups, db.docxPackages, db.preservationStores, db.importBackupParts, db.importReports];
 
-  async function doImport(result: ImportResult, decisions: { title: string }): Promise<{ importId: string }> {
+  async function doImport(result: ImportResult, decisions: { title: string; acceptedHeadingIndexes?: number[] }): Promise<{ importId: string }> {
     if (!deps.isValidDoc(result.doc)) {
       // Stored, it would load back as an "unreadable" document. Refuse before anything is written.
       throw new Error('The imported document is not valid for this editor, so it was not imported.');
@@ -399,6 +428,11 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
         },
         pkg: { documentId: 'current', original: result.original, fileName: result.fileName ?? title, importedAt: now, importId },
         preservation: { documentId: 'current', store: result.preservation, updatedAt: now, importId },
+        importReport: {
+          documentId: 'current', importId, ...(result.fileName ? { fileName: result.fileName } : {}),
+          report: result.report, headingCandidates: result.headingCandidates,
+          acceptedHeadingIndexes: decisions.acceptedHeadingIndexes ?? [], importedAt: now,
+        },
         assets,
         needExisting: [...referenced].filter(id => !drafts.has(id)),
       });
@@ -424,6 +458,7 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
         row: { ...target.row, saveState: 'Saved', updatedAt: Date.now() },
         ...(parts?.package ? { pkg: parts.package } : {}),
         ...(parts?.preservation ? { preservation: parts.preservation } : {}),
+        ...(parts?.importReport ? { importReport: parts.importReport } : {}),
         assets: [],
         needExisting: [...collectAssetIds(target.row.docJson)],
       });
@@ -477,6 +512,11 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
       const run = queue.then(() => doRevert());
       queue = run.catch(() => undefined);
       return run;
+    },
+
+    async getImportReport() {
+      const [row, report] = await Promise.all([db.documents.get('current'), db.importReports.get('current')]);
+      return row?.importId && report?.importId === row.importId ? report : undefined;
     },
 
     async peekRevert() {

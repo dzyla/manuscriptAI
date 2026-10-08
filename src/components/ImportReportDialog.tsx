@@ -90,12 +90,20 @@ export interface ImportReportDialogProps {
   onCancel: () => void;
   /** True while the import is being written: the buttons are disabled so it cannot be started twice. */
   busy?: boolean;
+  /**
+   * `view`: the report of an import that already happened, shown again (from the File menu). Read-only: the headings show which were
+   * accepted, there is nothing to confirm, and the one button closes it (through `onCancel`).
+   */
+  mode?: 'review' | 'view';
+  /** In `view` mode: the `index` of each heading that was accepted. */
+  acceptedIndexes?: number[];
 }
 
-export default function ImportReportDialog({ result, onConfirm, onCancel, busy = false }: ImportReportDialogProps) {
+export default function ImportReportDialog({ result, onConfirm, onCancel, busy = false, mode = 'review', acceptedIndexes = [] }: ImportReportDialogProps) {
+  const viewing = mode === 'view';
   const { report, headingCandidates } = result;
   // Nothing is accepted until the author says so: the report promises that no inferred heading is applied on its own.
-  const [accepted, setAccepted] = useState<ReadonlySet<number>>(new Set());
+  const [accepted, setAccepted] = useState<ReadonlySet<number>>(() => new Set(viewing ? acceptedIndexes : []));
   const rows = useMemo(() => reportRows(result), [result]);
   const read = useMemo(() => readRows(result), [result]);
   const cancelRef = useRef<HTMLButtonElement>(null);
@@ -136,17 +144,24 @@ export default function ImportReportDialog({ result, onConfirm, onCancel, busy =
         style={{ border: '1px solid var(--border)', maxHeight: '88vh', background: 'var(--surface-1)', color: 'var(--text-primary)' }}
       >
         <div className="p-5" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-          <h2 id="import-report-title" className="text-base font-bold">Import Word document</h2>
+          <h2 id="import-report-title" className="text-base font-bold">{viewing ? 'Import report' : 'Import Word document'}</h2>
           {result.fileName && <p className="text-xs mt-0.5 break-all" style={{ color: 'var(--text-muted)' }}>{result.fileName}</p>}
           <p className="text-xs mt-2 font-medium" data-testid="import-summary">{summarizeReport(report)}</p>
         </div>
 
         <div className="p-5 overflow-y-auto space-y-5 text-xs">
+          {viewing ? (
+            <p style={{ color: 'var(--text-secondary)' }} data-testid="view-notice">
+              This is what the import found when this document was opened from Word. Everything listed as kept is still in the file and
+              comes back on export, but is not shown or editable here.
+            </p>
+          ) : (
           <p style={{ color: 'var(--text-secondary)' }} data-testid="replace-notice">
             Importing replaces the document that is open now, and Undo will not bring it back. The open document is saved first and, if it
             has any content, kept: use &quot;Restore previous document&quot; (in the File menu, or the button on the message after the
             import) to bring it back, or find a snapshot of its text in Version History. Choose Cancel to keep it exactly as it is.
           </p>
+          )}
 
           {(rows.length > 0 || read.length > 0) && (
             <section aria-label="Report">
@@ -191,14 +206,14 @@ export default function ImportReportDialog({ result, onConfirm, onCancel, busy =
                 <h3 className="font-semibold">
                   Inferred headings ({acceptedList.length} of {headingCandidates.length} accepted)
                 </h3>
-                <div className="flex gap-2 shrink-0">
+                {!viewing && <div className="flex gap-2 shrink-0">
                   <button type="button" disabled={busy} onClick={() => setAccepted(new Set(headingCandidates.map(h => h.index)))} className="px-2 py-1 rounded-md border" style={{ borderColor: 'var(--border)' }}>
                     Accept all
                   </button>
                   <button type="button" disabled={busy} onClick={() => setAccepted(new Set())} className="px-2 py-1 rounded-md border" style={{ borderColor: 'var(--border)' }}>
                     Reject all
                   </button>
-                </div>
+                </div>}
               </div>
               <ul className="space-y-2" data-testid="heading-candidates">
                 {headingCandidates.map(h => (
@@ -208,7 +223,7 @@ export default function ImportReportDialog({ result, onConfirm, onCancel, busy =
                         type="checkbox"
                         className="mt-0.5"
                         checked={accepted.has(h.index)}
-                        disabled={busy}
+                        disabled={busy || viewing}
                         onChange={() => toggle(h.index)}
                         aria-label={`Accept heading: ${h.text}`}
                       />
@@ -232,11 +247,13 @@ export default function ImportReportDialog({ result, onConfirm, onCancel, busy =
 
         <div className="p-4 flex justify-end gap-2" style={{ borderTop: '1px solid var(--border-subtle)' }}>
           <button ref={cancelRef} type="button" disabled={busy} onClick={onCancel} className="px-3 py-1.5 text-xs rounded-lg border" style={{ borderColor: 'var(--border)' }}>
-            Cancel
+            {viewing ? 'Close' : 'Cancel'}
           </button>
-          <button type="button" disabled={busy} onClick={confirm} className="px-3 py-1.5 text-xs rounded-lg font-semibold bg-stone-900 text-white disabled:opacity-60">
-            {busy ? 'Importing…' : `Import${acceptedList.length ? ` with ${acceptedList.length} ${plural(acceptedList.length, 'heading')}` : ''}`}
-          </button>
+          {!viewing && (
+            <button type="button" disabled={busy} onClick={confirm} className="px-3 py-1.5 text-xs rounded-lg font-semibold bg-stone-900 text-white disabled:opacity-60">
+              {busy ? 'Importing…' : `Import${acceptedList.length ? ` with ${acceptedList.length} ${plural(acceptedList.length, 'heading')}` : ''}`}
+            </button>
+          )}
         </div>
       </div>
     </div>

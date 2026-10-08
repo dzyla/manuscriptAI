@@ -18,6 +18,12 @@ describe('isBlankHtml', () => {
     expect(isBlankHtml('<p>Start writing your manuscript here, or click "New Manuscript" to begin with an IMRAD template.the aims are</p>')).toBe(false);
     expect(isBlankHtml('<p>Start writing your manuscript here, or click &quot;New Manuscript&quot; to begin with an IMRAD template.</p>')).toBe(true);
     expect(isBlankHtml('<p>Aims</p>')).toBe(false);
+    // not text, but not nothing: a document of figures only, a rule, a line break, a table, a list
+    expect(isBlankHtml('<p></p><hr>')).toBe(false);
+    expect(isBlankHtml('<p><br></p>')).toBe(false);
+    expect(isBlankHtml('<table><tbody><tr><td><p></p></td></tr></tbody></table>')).toBe(false);
+    expect(isBlankHtml('<ul><li><p></p></li></ul>')).toBe(false);
+    expect(isBlankHtml('<p></p><img data-asset-id="a_1" src="blob:http://x/1"><p></p>')).toBe(false);
     expect(isBlankHtml('<p></p><img src="data:image/png;base64,AAAA">')).toBe(false);
   });
 });
@@ -44,6 +50,21 @@ describe('snapshotBeforeImport', () => {
     expect(await db.versionSnapshots.count()).toBe(0);
     const broken = { versionSnapshots: { put: async () => { throw new Error('quota'); } }, assets: db.assets } as never;
     expect(await snapshotBeforeImport(broken, { title: 't', content: '<p>real</p>', importing: 'a.docx' })).toBeNull();
+  });
+});
+
+describe('snapshot ids', () => {
+  it('two snapshots written in the same millisecond do not share an id (the second would overwrite the first)', async () => {
+    const realNow = Date.now;
+    Date.now = () => 1_700_000_000_000;
+    try {
+      const a = await snapshotBeforeImport(db, { title: 't', content: '<p>one</p>', importing: 'a.docx' });
+      const b = await snapshotBeforeImport(db, { title: 't', content: '<p>two</p>', importing: 'b.docx' });
+      expect(a!.id).not.toBe(b!.id);
+      expect(await db.versionSnapshots.count()).toBe(2);
+    } finally {
+      Date.now = realNow;
+    }
   });
 });
 

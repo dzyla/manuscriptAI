@@ -106,6 +106,12 @@ interface DocumentState {
    */
   removeFigure: (figureId: string, orderedFigureIds: string[]) => Record<string, number>;
 
+  /**
+   * A pasted or duplicated preserved piece got a fresh fragment id (the editor's OpaqueFragmentGuard): remember to store its XML under
+   * the new id with the next save of the document that holds it.
+   */
+  queueFragmentClone: (fromId: string, toId: string) => void;
+
   /** Reset to blank document state. An explicit user action: lifts blockedByUnreadable. */
   resetDocument: () => void;
 
@@ -157,6 +163,9 @@ const reportedWarnings = new Set<string>();
 
 /** True from the start of an import's first save to the end of its commit and reload; `persist` writes nothing meanwhile. */
 let importInFlight = false;
+
+/** Copies of preserved pieces not yet written with a save (see `queueFragmentClone`). Belong to the open document: dropped when it is replaced. */
+let pendingClones: Array<{ fromId: string; toId: string }> = [];
 
 const DEFAULT_CONTENT = `<p>${PLACEHOLDER_TEXT}</p>`;
 
@@ -246,7 +255,9 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     return newRegistry;
   },
 
-  resetDocument: () => set({
+  queueFragmentClone: (fromId, toId) => { pendingClones.push({ fromId, toId }); },
+
+  resetDocument: () => { pendingClones = []; set({
     title: 'Untitled Manuscript',
     content: DEFAULT_CONTENT,
     docJson: null,
@@ -263,7 +274,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     grantTemplateId: null,
     importId: null,
     blockedByUnreadable: false,
-  }),
+  }); },
 
   /**
    * The user is explicitly supplying the whole document (workspace load, template apply): lifts the
@@ -271,7 +282,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
    * left to protect from the defaults. A still-'loading' status is left alone (initialize() owns it).
    * It also ends the document's tie to a .docx import (`importId`): what the user supplies here is not that import.
    */
-  allowOverwrite: () => set(s => ({ blockedByUnreadable: false, importId: null, loadStatus: s.loadStatus === 'failed' ? 'ready' : s.loadStatus })),
+  allowOverwrite: () => { pendingClones = []; set(s => ({ blockedByUnreadable: false, importId: null, loadStatus: s.loadStatus === 'failed' ? 'ready' : s.loadStatus })); },
 
   replaceWithHtml: (title, content) => {
     get().allowOverwrite();
@@ -359,7 +370,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   importDocx: async (result, decisions) => {
     const doc = applyHeadings(result.doc, decisions.acceptedHeadings);
     return replaceOpenDocument(set, get, async () => {
-      const { importId } = await documentRepository.importDocx({ ...result, doc }, { title: decisions.title });
+      const { importId } = await documentRepository.importDocx({ ...result, doc }, { title: decisions.title, acceptedHeadingIndexes: decisions.acceptedHeadings.map(h => h.index) });
       return { importId, fallback: { docJson: doc, title: decisions.title.trim() || 'Untitled Manuscript', format: result.format } };
     });
   },
@@ -401,6 +412,7 @@ async function replaceOpenDocument(
     if (s.loadStatus === 'ready' && !s.blockedByUnreadable) await persistState(get);
     const { importId, fallback } = await commit();
     // ---- committed: from here on the store must follow the disk, whatever happens ----
+    pendingClones = []; // they belonged to the document that was just replaced
     let loaded: Awaited<ReturnType<typeof documentRepository.load>> | null = null;
     try {
       loaded = await documentRepository.load();
@@ -454,6 +466,8 @@ async function replaceOpenDocument(
       citationCounter: 0,
       figureRegistry: {},
       figureCounter: 0,
+      // mode and funder instructions carry over (the store already has them); the template belonged to the replaced document
+      grantTemplateId: null,
       importId,
       saveState: 'Saved',
       blockedByUnreadable: false,
@@ -482,8 +496,12 @@ async function persistState(get: () => DocumentState): Promise<boolean> {
     grantInstructions: s.grantInstructions,
     grantTemplateId: s.grantTemplateId,
     ...(s.importId ? { importId: s.importId } : {}),
+    ...(pendingClones.length ? { fragmentClones: [...pendingClones] } : {}),
   };
-  const { warnings } = await documentRepository.save(doc);
+  const sent = pendingClones.length;
+  const { warnings, written } = await documentRepository.save(doc);
+  // Written with the document, in its transaction: forget them (those queued meanwhile stay). A save that wrote nothing keeps them.
+  if (written && sent) pendingClones = pendingClones.slice(sent);
   for (const w of warnings) {
     if (reportedWarnings.has(w)) continue;
     reportedWarnings.add(w);
