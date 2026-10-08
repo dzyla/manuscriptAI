@@ -44,6 +44,26 @@ describe('opaque nodes', () => {
   });
 });
 
+describe('an imported picture keeps its preserved run unique when it is copied', () => {
+  it('a pasted copy of an image gets a fresh fragment id, an image the author inserted (no fragment) is ignored, and a figure paragraph\'s provenance is cleared on the copy', () => {
+    const onDuplicateFragment = vi.fn();
+    const image: JSONContent = { type: 'resizableImage', attrs: { assetId: 'a_1', fragmentId: 'f9', wrap: 'inline' } };
+    const stamped = stampProvenance(normalizeDoc({ type: 'doc', content: [image] }).content![0], 'b5');
+    const editor = new Editor({
+      extensions: [...getSchemaExtensions(), OpaqueFragmentGuard.configure({ onDuplicateFragment })],
+      content: { type: 'doc', content: [stamped, { type: 'resizableImage', attrs: { assetId: 'a_2' } }] },
+    });
+    editor.commands.insertContentAt(editor.state.doc.content.size, stamped);
+    const images: Array<{ fragmentId: string; blockId: string | null }> = [];
+    editor.state.doc.forEach(n => n.type.name === 'resizableImage' && images.push({ fragmentId: n.attrs.fragmentId, blockId: n.attrs.ooxml?.blockId ?? null }));
+    expect(images).toHaveLength(3);
+    expect(new Set(images.map(i => i.fragmentId).filter(Boolean)).size).toBe(2); // f9 and the copy's new id; '' for the inserted one
+    expect(onDuplicateFragment).toHaveBeenCalledWith('f9', images[2].fragmentId);
+    expect(images.map(i => i.blockId)).toEqual(['b5', null, null]); // the copy cannot claim the paragraph's original XML a second time
+    editor.destroy();
+  });
+});
+
 describe('block provenance uniqueness', () => {
   it('findDuplicateBlockIds returns positions of 2nd+ occurrences only', () => {
     const doc = getDocSchema().nodeFromJSON({

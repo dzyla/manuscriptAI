@@ -4,7 +4,8 @@ import type { PreservationStore } from './types';
 export function collectFragmentIds(doc: JSONContent): Set<string> {
   const ids = new Set<string>();
   const walk = (n: JSONContent) => {
-    if ((n.type === 'opaqueInline' || n.type === 'opaqueBlock') && typeof n.attrs?.fragmentId === 'string') {
+    // an image keeps the run it was read from (empty for an image the author inserted)
+    if ((n.type === 'opaqueInline' || n.type === 'opaqueBlock' || n.type === 'resizableImage') && typeof n.attrs?.fragmentId === 'string' && n.attrs.fragmentId) {
       ids.add(n.attrs.fragmentId);
     }
     n.content?.forEach(walk);

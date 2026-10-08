@@ -3,7 +3,7 @@
  * a fresh checkout this suite is skipped. Failures report only part names and error codes, never
  * document content.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { openPackage } from './package';
 import { parseXmlStrict } from '../preserve/xml';
@@ -22,14 +22,18 @@ import { applyHeadings, bodyFontSize, detectHeadings, hasHeadings, inferHeadings
 import { isGoogleSdt } from './sdt';
 import { getNumbering, groupListParagraphs, readNumbering } from './numbering';
 import { readTable } from './tables';
+import { readBody } from './body';
+import { collectFragmentIds } from '../preserve/refs';
+import { collectAssetIds } from '../../db/assetStore';
+import { createHash } from 'node:crypto';
 import type { ReadContext } from './context';
 
 const dir = new URL('../../../fixtures/private/', import.meta.url);
 const docs = existsSync(dir) ? readdirSync(dir).filter(f => f.toLowerCase().endsWith('.docx')) : [];
 
 /**
- * The block stream a body reader builds: paragraphs, tables and lists grouped per container, in document order. Counts only are
- * ever derived from it in these tests; no document text is printed.
+ * The block stream the body reader builds (`readBody`): images prepared, paragraphs, tables and pictures read, lists grouped per
+ * container, in document order. Counts only are ever derived from it in these tests; no document text is printed.
  */
 async function readBlocks(name: string) {
   const b = readFileSync(new URL(name, dir));
@@ -46,9 +50,8 @@ async function readBlocks(name: string) {
   };
   const body = pkg.xml(mainDocumentPart(pkg))!.getElementsByTagNameNS(W_NS, 'body')[0];
   const sources = blockChildren(body, ctx).filter(el => isW(el, 'p') || isW(el, 'tbl'));
-  const flat = sources.flatMap((el): JSONContent[] => (isW(el, 'p') ? [readParagraph(el, ctx)].flat() : [readTable(el, ctx)]));
-  const blocks = groupListParagraphs(flat.map(node => ({ node })), getNumbering(ctx), ctx);
-  return { pkg, ctx, report, body, sources, flat, blocks, doc: { type: 'doc', content: blocks } as JSONContent };
+  const { blocks, figures } = await readBody(body, ctx);
+  return { pkg, ctx, report, body, sources, blocks, figures, doc: { type: 'doc', content: blocks } as JSONContent };
 }
 
 const textOf = (n: JSONContent): string => (n.type === 'text' ? n.text ?? '' : (n.content ?? []).map(textOf).join(''));
@@ -232,18 +235,21 @@ describe.skipIf(docs.length === 0)('private real-world documents', () => {
     expect(report.counts.inferredHeading).toBe(found.length);
     expect(report.warnings.length).toBe(warningsBefore + 1);
 
-    // The candidate indices are positions in the GROUPED document, tables included. Checked three independent ways:
-    // (a) each index names, in the source XML, the very paragraph whose text the candidate carries (one block per source
-    //     block holds for both documents: no list here has more than one paragraph, so grouping does not merge blocks);
-    expect(blocks.length).toBe(sources.length);
+    // The candidate indices are positions in the GROUPED document: pictures (replacing a paragraph, or lifted in front of the
+    // paragraph that holds them), lists and tables included. So source block i is NOT block i any more. Checked four independent ways:
+    // (a) each index names a paragraph whose ORIGINAL XML (looked up through its provenance, not by position) carries the very text the
+    //     candidate carries;
     const collapse = (t: string) => t.replace(/\s+/g, ' ').trim();
+    const sourceText = (blk: JSONContent): string => {
+      const frag = ctx.preservation.blocks[(blk.attrs!.ooxml as { blockId: string }).blockId];
+      return collapse(Array.from(parseXml(frag.xml).documentElement.getElementsByTagNameNS(W_NS, 't')).map(t => t.textContent ?? '').join(''));
+    };
     for (const c of found) {
-      const src = sources[c.index];
-      expect(isW(src, 'p'), `candidate ${c.index} is not a paragraph in the source`).toBe(true);
-      expect(collapse(Array.from(src.getElementsByTagNameNS(W_NS, 't')).map(t => t.textContent ?? '').join(''))).toBe(collapse(c.text));
+      expect(blocks[c.index].type, `candidate ${c.index}`).toBe('paragraph');
+      expect(sourceText(blocks[c.index])).toBe(collapse(c.text));
     }
-    // (b) applying them converts exactly those blocks to headings, each with the text it was proposed for, and every table is
-    //     the very same untouched object
+    // (b) applying them converts exactly those blocks to headings, each with the text it was proposed for, and every table and
+    //     picture is the very same untouched object
     const applied = applyHeadings(doc, found);
     expect(applied.content!.filter(x => x.type === 'heading')).toHaveLength(9);
     for (const c of found) {
@@ -251,15 +257,31 @@ describe.skipIf(docs.length === 0)('private real-world documents', () => {
       expect(collapse(textOf(applied.content![c.index]))).toBe(collapse(c.text));
     }
     blocks.forEach((blk, i) => {
-      if (blk.type === 'table') expect(applied.content![i]).toBe(blk);
+      if (blk.type === 'table' || blk.type === 'resizableImage') expect(applied.content![i]).toBe(blk);
     });
-    // (c) the table really is in the stream the detector saw, and (snsf) some titles sit after it, so a missing table would shift them
+    // (c) the pictures and the table really are in the stream the detector saw, and (snsf) titles sit on both sides of the table, so a
+    //     missing table or picture would shift them. r01 lifts its 10 floating pictures out in front of their paragraphs, so its
+    //     block count is its paragraph count plus 10; snsf's 3 pictures replace their paragraphs, one for one.
     const tableIndexes = blocks.map((x, i) => (x.type === 'table' ? i : -1)).filter(i => i >= 0);
+    expect(blocks.filter(x => x.type === 'resizableImage')).toHaveLength(name === 'snsf.docx' ? 3 : 10);
+    expect(blocks.length).toBe(sources.length + (name === 'snsf.docx' ? 0 : 10));
     expect(tableIndexes).toEqual(name === 'snsf.docx' ? [88] : []);
     if (name === 'snsf.docx') {
       expect(found.some(c => c.index < 88)).toBe(true);
       expect(found.some(c => c.index > 88)).toBe(true);
     }
+    // (d) the pictures change no verdict: these are the nine headings (level and confidence) the reader found when every drawing was
+    //     still an opaque atom in its paragraph. They were compared title by title, before and after, when the images were added
+    //     (identical lists for both documents); what is pinned here is the tally, which fails if any one of them changes kind.
+    const tallyOf = (lvl: number, conf: string) => found.filter(c => c.level === lvl && c.confidence === conf).length;
+    expect({
+      l1name: tallyOf(1, 'name'), l1format: tallyOf(1, 'format'), l2format: tallyOf(2, 'format'),
+      l2sibling: tallyOf(2, 'sibling'), l2name: tallyOf(2, 'name'), l2aim: tallyOf(2, 'aim'),
+    }).toEqual(
+      name === 'snsf.docx'
+        ? { l1name: 1, l1format: 1, l2format: 6, l2sibling: 1, l2name: 0, l2aim: 0 }
+        : { l1name: 6, l1format: 0, l2format: 0, l2sibling: 0, l2name: 1, l2aim: 2 },
+    );
 
     // No candidate is a paragraph holding an opaque atom other than a comment anchor, and none is a paragraph
     // the reader gave a Word heading to.
@@ -298,6 +320,136 @@ describe.skipIf(docs.length === 0)('private real-world documents', () => {
         found.map(c => `  [${String(c.index).padStart(3)}] L${c.level} ${c.confidence.padEnd(7)} ${JSON.stringify(c.text)}\n        evidence: ${c.evidence.join(' | ')}`).join('\n') +
         (refused.length ? '\n  refused (atom): ' + refused.map(c => `[${c.index}] ${JSON.stringify(c.text)} (${c.confidence})`).join('; ') : ''),
     );
+  });
+
+  it.each(docs)('%s: images, figures and captions are read; nothing is fetched, dropped or left without provenance (counts only)', async name => {
+    const fetchSpy = vi.fn(() => {
+      throw new Error('fetch must never be called while reading a .docx');
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    try {
+      const { pkg, ctx, report, body, blocks, figures, doc } = await readBlocks(name);
+      const WP = 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing';
+      const A = 'http://schemas.openxmlformats.org/drawingml/2006/main';
+      const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+      const sha = (b: Uint8Array) => createHash('sha256').update(b).digest('hex');
+      const isSnsf = name === 'snsf.docx';
+
+      // ── what the source says, counted from the XML and the package alone ────────────────────────────────────────
+      const domDrawings = body.getElementsByTagNameNS(W_NS, 'drawing').length;
+      const domAnchored = body.getElementsByTagNameNS(WP, 'anchor').length;
+      const domInline = body.getElementsByTagNameNS(WP, 'inline').length;
+      const blips = Array.from(body.getElementsByTagNameNS(A, 'blip'));
+      const domLinked = blips.filter(b => b.hasAttributeNS(R, 'link')).length;
+      const domCropped = Array.from(body.getElementsByTagNameNS(A, 'srcRect')).filter(e => ['l', 't', 'r', 'b'].some(k => Number(e.getAttribute(k)) !== 0)).length;
+      const mediaParts = pkg.names().filter(n => n.startsWith('word/media/'));
+      // (the package defers every non-XML part, so these are read on demand)
+      const mediaData = await Promise.all(mediaParts.map(async n => (await pkg.bytesAsync(n))!));
+      expect(mediaParts.every(n => pkg.isDeferred(n))).toBe(true);
+      const mediaSha = new Set(mediaData.map(sha));
+      const mediaBytes = mediaData.reduce((a, b) => a + b.byteLength, 0);
+      expect(domDrawings).toBe(domAnchored + domInline);
+      expect(blips).toHaveLength(domDrawings);
+
+      // ── what the reader made ───────────────────────────────────────────────────────────────────────────────────
+      const imgs = all(blocks, n => n.type === 'resizableImage');
+      const anchoredNodes = imgs.filter(i => i.attrs!.wrap === 'left' || i.attrs!.wrap === 'right' || i.attrs!.wrap === 'block');
+      const inlineNodes = imgs.filter(i => i.attrs!.wrap === 'inline');
+
+      // 1. every drawing is an image, none is a placeholder, and the counts are the ones measured by hand against each document
+      expect(imgs).toHaveLength(domDrawings);
+      expect({ images: imgs.length, anchored: anchoredNodes.length, inline: inlineNodes.length }).toEqual(isSnsf ? { images: 3, anchored: 0, inline: 3 } : { images: 10, anchored: 10, inline: 0 });
+      expect(anchoredNodes).toHaveLength(domAnchored);
+      expect(inlineNodes).toHaveLength(domInline);
+      expect(imgs.filter(i => i.attrs!.assetId === null || i.attrs!.src !== null)).toHaveLength(0); // no placeholder: nothing is linked
+      expect(report.counts.inlineImage ?? 0).toBe(domInline);
+      expect(report.counts.floatingImageSquare ?? 0).toBe(domAnchored); // every anchored picture of these documents is wrapSquare, positioned left or right
+      expect(report.counts.floatingImageOther).toBeUndefined();
+      if (!isSnsf) expect(anchoredNodes.map(i => i.attrs!.wrap).sort()).toEqual([...Array(9).fill('left'), 'right']);
+      expect(imgs.filter(i => i.attrs!.crop).length).toBe(domCropped);
+      expect(domCropped).toBe(isSnsf ? 0 : 3);
+
+      // 2. their bytes: every media part referenced, each once, byte for byte, with the right type and the id A1's store derives
+      expect(ctx.assets).toHaveLength(mediaParts.length);
+      expect(ctx.assets).toHaveLength(isSnsf ? 3 : 10);
+      expect(new Set(ctx.assets.map(a => a.sha256))).toEqual(mediaSha);
+      expect(ctx.assets.map(a => a.mime)).toEqual(Array(ctx.assets.length).fill('image/png'));
+      expect(ctx.assets.reduce((a, x) => a + x.data.byteLength, 0)).toBe(mediaBytes);
+      expect(mediaBytes).toBe(isSnsf ? 1301114 : 2145789);
+      for (const a of ctx.assets) {
+        expect(sha(new Uint8Array(a.data))).toBe(a.sha256);
+        expect(a.id).toBe('a_' + a.sha256.slice(0, 32));
+      }
+      // reachable: every imported asset is referenced by a node (GC would otherwise remove it), and every reference resolves
+      expect([...collectAssetIds(doc)].sort()).toEqual(ctx.assets.map(a => a.id).sort());
+
+      // 3. external references: none exists in these documents, none was read, nothing was fetched
+      expect(domLinked).toBe(0);
+      expect([...ctx.media!.byRel.values()].filter(m => !m.ok)).toHaveLength(0);
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(report.warnings.filter(w => /linked from another location|relationship the document does not contain|file the document does not contain/.test(w.message))).toHaveLength(0);
+
+      // 4. each picture keeps the XML a writer needs: its run, parseable, holding the drawing and the relationship it names
+      const referencedFragments = collectFragmentIds(doc);
+      for (const i of imgs) {
+        const id = i.attrs!.fragmentId as string;
+        expect(referencedFragments.has(id)).toBe(true);
+        const frag = ctx.preservation.fragments[id];
+        const root = parseXml(frag.xml).documentElement;
+        expect(root.localName).toBe('r');
+        expect(root.getElementsByTagNameNS(W_NS, 'drawing')).toHaveLength(1);
+        expect(frag.relIds).toHaveLength(1);
+      }
+
+      // 5. provenance: every paragraph keeps its own; a figure paragraph is an image that took its paragraph's; a lifted picture names the paragraph it came from
+      const paragraphs = all(blocks, n => n.type === 'paragraph' || n.type === 'heading');
+      const standIns = imgs.filter(i => !!i.attrs!.ooxml);
+      expect(paragraphs.filter(x => !x.attrs?.ooxml || !isBlockUntouched(x))).toHaveLength(0);
+      expect(standIns.filter(x => !isBlockUntouched(x))).toHaveLength(0);
+      expect(paragraphs.length + standIns.length).toBe(report.counts.paragraph);
+      expect(standIns).toHaveLength(isSnsf ? 3 : 0);
+      const paragraphIds = new Set(paragraphs.map(x => (x.attrs!.ooxml as { blockId: string }).blockId));
+      const lifted = imgs.filter(i => i.attrs!.anchorBlockId);
+      expect(lifted).toHaveLength(isSnsf ? 0 : 10);
+      for (const i of lifted) {
+        expect(paragraphIds.has(i.attrs!.anchorBlockId as string)).toBe(true);
+        // the paragraph it came from still holds the drawing in its original XML, and comes right after the picture (or after its siblings)
+        expect(ctx.preservation.blocks[i.attrs!.anchorBlockId as string].xml).toContain('<w:drawing');
+      }
+      const ids = [...paragraphIds, ...standIns.map(x => (x.attrs!.ooxml as { blockId: string }).blockId)];
+      expect(new Set(ids).size).toBe(ids.length);
+      expect(() => getSpecSchema().nodeFromJSON(doc).check()).not.toThrow();
+
+      // 6. captions: found by their label, because neither document uses Word's Caption style (so the styled count is 0, and the label is what matters)
+      expect(report.counts.caption).toBeUndefined();
+      const matched = figures.filter(f => f.caption !== null);
+      expect(figures).toHaveLength(imgs.length);
+      expect(matched).toHaveLength(isSnsf ? 2 : 10);
+      expect(matched.every(f => f.how === 'label')).toBe(true);
+      expect(figures.filter(f => f.caption === null)).toHaveLength(isSnsf ? 1 : 0); // snsf: the schedule diagram before the table has no caption
+      expect(matched.every(f => f.caption! > f.image)).toBe(true);
+      expect(matched.map(f => f.caption!)).toEqual([...matched.map(f => f.caption!)].sort((x, y) => x - y)); // in document order
+      expect(new Set(matched.map(f => f.caption)).size).toBe(matched.length); // each caption used once
+      const labelNumbers = matched.map(f => {
+        const frag = ctx.preservation.blocks[(blocks[f.caption!].attrs!.ooxml as { blockId: string }).blockId];
+        const text = Array.from(parseXml(frag.xml).documentElement.getElementsByTagNameNS(W_NS, 't')).map(t => t.textContent ?? '').join('');
+        return Number(/^\s*Fig\.?\s*(\d+)/.exec(text)?.[1]);
+      });
+      expect([...labelNumbers].sort((x, y) => x - y)).toEqual(isSnsf ? [1, 1] : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]); // r01: every figure label is claimed, once. snsf: its two sections each number their figures from 1
+      // and the independent count: paragraphs that open with "Fig" in the source
+      const domCaptionLike = Array.from(body.getElementsByTagNameNS(W_NS, 'p')).filter(p =>
+        /^\s*Fig\.?\s*\d+\s*\./.test(Array.from(p.getElementsByTagNameNS(W_NS, 't')).map(t => t.textContent ?? '').join('')),
+      ).length;
+      expect(domCaptionLike).toBe(matched.length);
+
+      console.log(
+        `images ${name}: ${imgs.length} images (${anchoredNodes.length} anchored: ${anchoredNodes.filter(i => i.attrs!.wrap === 'left').length} left, ${anchoredNodes.filter(i => i.attrs!.wrap === 'right').length} right; ${inlineNodes.length} inline), ` +
+          `${imgs.filter(i => i.attrs!.crop).length} cropped, ${ctx.assets.length} assets ${JSON.stringify([...new Set(ctx.assets.map(a => a.mime))])} ${mediaBytes} bytes, ${domLinked} external links, ` +
+          `${standIns.length} figure paragraphs, ${lifted.length} lifted, ${matched.length} of ${imgs.length} matched to a caption (${matched.filter(f => f.how === 'style').length} by style), fetch calls ${fetchSpy.mock.calls.length}`,
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it.each(docs)('%s: numbering is read into lists, nothing dropped, provenance holds (counts only)', async name => {
@@ -432,7 +584,11 @@ describe.skipIf(docs.length === 0)('private real-world documents', () => {
     expect(report.counts.mergedCell ?? 0).toBe(cellNodes.filter(c => (c.attrs!.colspan as number) > 1 || (c.attrs!.rowspan as number) > 1).length);
     expect(report.counts.table ?? 0).toBe(tableNodes.length);
     // 3. no paragraph lost, duplicated or without provenance; the only source paragraphs not in the model are the hidden ones of folded cells
-    expect(paragraphNodes).toHaveLength(domParagraphs - continuationParagraphs);
+    //    A figure on a line of its own is an image node that stands for its paragraph (it owns the paragraph's provenance), so those are
+    //    counted with the paragraphs: every source paragraph is a paragraph node or such an image, and nothing else.
+    const standInImages = all(blocks, n => n.type === 'resizableImage' && !!n.attrs?.ooxml);
+    expect(paragraphNodes.length + standInImages.length).toBe(domParagraphs - continuationParagraphs);
+    expect(standInImages).toHaveLength(name === 'snsf.docx' ? 3 : 0);
     const ids = paragraphNodes.map(x => (x.attrs!.ooxml as { blockId: string }).blockId);
     expect(new Set(ids).size).toBe(ids.length);
     expect(paragraphNodes.filter(x => !x.attrs?.ooxml || !isBlockUntouched(x))).toHaveLength(0);

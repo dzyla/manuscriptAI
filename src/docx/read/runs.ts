@@ -17,6 +17,7 @@ import { mainDocumentPart } from './opc';
 import { W_NS, XML_NS, childElements, firstW, int, onOff, wAttr } from './ooxml';
 import { halfPointsToPt } from './units';
 import { isGoogleSdt, unwrapGoogleSdt } from './sdt';
+import { readDrawing } from './drawings';
 
 type MarkJson = NonNullable<JSONContent['marks']>[number];
 
@@ -34,19 +35,30 @@ const IGNORED_RUN_CHILDREN = new Set(['rPr', 'lastRenderedPageBreak']);
 
 const ALLOWED_LINK_SCHEMES = new Set(['http:', 'https:', 'mailto:']);
 
-export function readRuns(container: Element, ctx: ReadContext): JSONContent[] {
+/**
+ * `images`: when given (and the document's images have been prepared, see drawings.ts), a picture in a run is NOT put inline; the
+ * image node goes to this list for the paragraph reader to place. A picture that cannot be read as an image stays inline as the
+ * opaque atom it always was.
+ */
+export function readRuns(container: Element, ctx: ReadContext, images?: JSONContent[]): JSONContent[] {
   const out: JSONContent[] = [];
   const outer = fields;
+  const outerImages = imageSink;
   fields = [];
+  imageSink = images ?? null;
   try {
     walk(childElements(container), ctx, [], out);
     // A field that never reached its separator or end in this paragraph is classified from what was seen.
     for (const f of fields.splice(0)) finishField(f, ctx);
   } finally {
     fields = outer;
+    imageSink = outerImages;
   }
   return mergeAdjacentText(out);
 }
+
+/** Where the paragraph being read collects its pictures (readRuns is synchronous and not re-entered). */
+let imageSink: JSONContent[] | null = null;
 
 // ─── complex fields ──────────────────────────────────────────────────────────
 
@@ -182,6 +194,13 @@ function readRun(run: Element, ctx: ReadContext, inherited: MarkJson[], out: JSO
       }
     } else {
       flush();
+      if (name === 'drawing' && imageSink) {
+        const image = readDrawing(el, ctx);
+        if (image) {
+          imageSink.push(image);
+          continue;
+        }
+      }
       const atom = readOpaque(el, ctx, ...kindOf(el), { within: run });
       out.push(atom);
       fieldEvent(el, atom, ctx);

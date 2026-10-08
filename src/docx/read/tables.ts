@@ -29,7 +29,8 @@ import { trackIds, warnOnce, type ReadContext } from './context';
 import { childElements, firstW, int, isW, onOff, wAttr } from './ooxml';
 import { classifyOpaque, readOpaque, snapshotCommentIds } from './opaque';
 import { blockChildren, readParagraph } from './paragraphs';
-import { getNumbering, groupListParagraphs, listCounterKey } from './numbering';
+import { getNumbering, groupListParagraphs, noteListCounts } from './numbering';
+import { dropAssetsAfter } from './drawings';
 
 /** 1 twip = 1/1440 in = 96/1440 CSS px. */
 const twipsToPx = (t: number): number => Math.max(1, Math.round(t / 15));
@@ -55,13 +56,8 @@ const ISSUE = {
 type Issue = keyof typeof ISSUE;
 
 const BORDERS = 'Table borders and shading are shown approximately. The original table formatting is kept for export.';
-const CONTINUED_LIST =
-  'A numbered list that continues from an earlier table cell (or table) is shown starting again at its first number; Word continues the count. The original numbering is kept for export.';
 const KEPT_WHOLE_DEPTH = 'A table nested very deeply inside other tables is kept as a read-only block.';
 const KEPT_WHOLE_ROWS = 'A table without rows is kept as a read-only block.';
-
-/** Ordered-list counts already used by a table cell, per read: a later cell using the same count continues it in Word. */
-const countsUsedInCells = new WeakMap<ReadContext, Set<string>>();
 
 /**
  * The children of a table or row with Google Docs wrappers unwrapped. A content control that Word wrote around rows or cells
@@ -175,6 +171,7 @@ function rollbackPoint(ctx: ReadContext, created: string[]): () => void {
   const counts = { ...ctx.report.counts };
   const byCategory = { ...ctx.report.byCategory };
   const warnings = ctx.report.warnings.length;
+  const assets = ctx.assets.length;
   const restoreComments = snapshotCommentIds(ctx.report);
   return () => {
     for (const id of created) {
@@ -185,6 +182,7 @@ function rollbackPoint(ctx: ReadContext, created: string[]): () => void {
     ctx.report.counts = counts;
     ctx.report.byCategory = byCategory;
     ctx.report.warnings.length = warnings;
+    dropAssetsAfter(ctx, assets); // the images of an abandoned table are in its fragment only, so their bytes are not imported either
     restoreComments();
   };
 }
@@ -210,29 +208,8 @@ function readCell(tc: Element, ctx: ReadContext, depth: number): JSONContent[] {
   const numbering = getNumbering(ctx);
   const grouped = groupListParagraphs(nodes.map(node => ({ node })), numbering, ctx);
 
-  // Lists are grouped per cell, so a numbered list that carries on from an earlier cell starts again here.
-  const used = countsUsedInCells.get(ctx) ?? new Set<string>();
-  countsUsedInCells.set(ctx, used);
-  const mine = new Set<string>();
-  let continued = false;
-  const visit = (n: JSONContent): void => {
-    if (n.type === 'table') return; // a nested table's own cells have been counted by its own read
-    if (n.type === 'orderedList' && typeof n.attrs?.wordNumId === 'number') {
-      const def = numbering.get(n.attrs.wordNumId);
-      if (def) {
-        const key = listCounterKey(n.attrs.wordNumId, def);
-        if (used.has(key)) continued = true;
-        mine.add(key);
-      }
-    }
-    (n.content ?? []).forEach(visit);
-  };
-  grouped.forEach(visit);
-  if (continued) {
-    recordFeature(ctx.report, 'complexNumbering');
-    warnOnce(ctx.report, 'complexNumbering', CONTINUED_LIST, 2);
-  }
-  mine.forEach(k => used.add(k));
+  // Lists are grouped per cell, so a numbered list that carries on from an earlier cell (or from the text) starts again here.
+  noteListCounts(ctx, 'cell', grouped, numbering);
   // A cell holds at least one block. A cell with no paragraph in the source (malformed) gets an empty one, which stands for nothing in the file.
   // WRITER: the opposite case. A cell that ENDS with a nested table has no trailing paragraph here, but Word requires a final `<w:p/>`
   // in every `<w:tc>` (it is in the original fragment). When re-emitting such a cell, add an empty `<w:p/>` after the table.

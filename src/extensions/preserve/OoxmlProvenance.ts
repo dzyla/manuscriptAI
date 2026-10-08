@@ -3,6 +3,8 @@ import { Extension } from '@tiptap/core';
 /** Block types that can carry original-OOXML provenance (spec §2.4). */
 export const PROVENANCE_NODE_TYPES = [
   'paragraph', 'heading', 'table', 'bulletList', 'orderedList', 'blockquote', 'opaqueBlock',
+  // an image that stands for a whole Word paragraph (a figure on its own line) owns that paragraph's original XML
+  'resizableImage',
 ];
 
 export interface OoxmlProvenanceAttr {

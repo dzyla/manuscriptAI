@@ -100,10 +100,24 @@ function readProps(p: Element, ctx: ReadContext): ParagraphProps {
   return { attrs, headingLevel: byStyle ?? headingLevel };
 }
 
+/** The image feature a node was recorded under (see readDrawing). */
+function imageFeature(image: JSONContent): 'inlineImage' | 'floatingImageSquare' | 'floatingImageOther' {
+  const wrap = image.attrs?.wrap;
+  return wrap === 'inline' ? 'inlineImage' : wrap === 'left' || wrap === 'right' ? 'floatingImageSquare' : 'floatingImageOther';
+}
+
+/** Whitespace-only text is not content: a figure paragraph often holds a stray space next to its picture. */
+const holdsNothing = (content: JSONContent[]): boolean => content.every(c => c.type === 'text' && !(c.text ?? '').trim());
+
 /**
- * Read one w:p. Always returns a single node (the union return type is the documented contract):
- * a page break is an inline atom, so a paragraph holding a break and text is NOT split and keeps
- * its provenance. See specs/pageBreak.ts.
+ * Read one w:p. A page break is an inline atom, so a paragraph holding a break and text is NOT split and keeps its provenance
+ * (see specs/pageBreak.ts). Pictures are the one exception, because an image is a block in the model:
+ *   - a paragraph whose only content is ONE inline picture (a figure on its own line) becomes that image node, which takes the
+ *     paragraph's provenance (its original XML, `<w:pPr>` and all, is `preservation.blocks[ooxml.blockId]`);
+ *   - a picture in a paragraph that has other content (a floating picture anchored in text, two pictures side by side, a picture
+ *     with a comment on it) is lifted out and returned BEFORE the paragraph, with `anchorBlockId` naming the paragraph. The
+ *     paragraph keeps its own provenance and every other piece of its content; see drawings.ts for what a writer must do.
+ * Both only happen once the document's images have been prepared (`ctx.media`); until then a picture is an opaque atom.
  */
 export function readParagraph(p: Element, ctx: ReadContext): JSONContent | JSONContent[] {
   recordFeature(ctx.report, 'paragraph');
@@ -113,8 +127,9 @@ export function readParagraph(p: Element, ctx: ReadContext): JSONContent | JSONC
   // The fragments this paragraph's atoms take are logged by id so a withdrawn paragraph can remove exactly those (no scan of the map).
   const ids = trackIds(ctx);
   let content: JSONContent[];
+  const images: JSONContent[] = [];
   try {
-    content = readRuns(p, ctx);
+    content = readRuns(p, ctx, ctx.media ? images : undefined);
   } finally {
     ids.stop();
   }
@@ -134,9 +149,12 @@ export function readParagraph(p: Element, ctx: ReadContext): JSONContent | JSONC
     // basis after the first edit. Without provenance the exporter regenerates it.
     // The atoms are dropped from this paragraph, so their fragments and report counts are withdrawn too:
     // nothing may reference (or be counted for) content that is no longer in the document.
-    for (const id of ids.created) delete ctx.preservation.fragments[id];
+    // The pictures are not atoms of this paragraph: they stay, with their bytes and their fragments, and are counted again.
+    const keep = new Set(images.map(i => i.attrs?.fragmentId as string));
+    for (const id of ids.created) if (!keep.has(id)) delete ctx.preservation.fragments[id];
     ctx.report.counts = featuresBefore.counts;
     ctx.report.byCategory = featuresBefore.byCategory;
+    for (const image of images) recordFeature(ctx.report, imageFeature(image));
     restoreCommentIds();
     warnOnce(
       ctx.report,
@@ -145,11 +163,30 @@ export function readParagraph(p: Element, ctx: ReadContext): JSONContent | JSONC
       2,
     );
     const text = content.map(c => c.text ?? '').join('');
-    return specNormalizeNode({ type: 'paragraph', attrs: { styleId: null }, ...(text ? { content: [{ type: 'text', text }] } : {}) });
+    const plain = specNormalizeNode({ type: 'paragraph', attrs: { styleId: null }, ...(text ? { content: [{ type: 'text', text }] } : {}) });
+    return images.length ? [...images.map(i => specNormalizeNode(i)), plain] : plain;
   }
   const blockId = ctx.nextId();
   ctx.preservation.blocks[blockId] = captureFragment(p);
-  return stampProvenance(normalized, blockId);
+  if (!images.length) return stampProvenance(normalized, blockId);
+
+  const side = attrs.textAlign === 'center' || attrs.textAlign === 'right' ? attrs.textAlign : 'left';
+  const placed = images.map(image => {
+    const inline = image.attrs?.wrap === 'inline';
+    return { ...image, attrs: { ...image.attrs, ...(inline ? { align: side } : {}) } } as JSONContent;
+  });
+  if (placed.length === 1 && placed[0].attrs?.wrap === 'inline' && !headingLevel && holdsNothing(content)) {
+    try {
+      return stampProvenance(specNormalizeNode(placed[0]), blockId);
+    } catch {
+      // not reachable for an image built here; the picture is then lifted out like any other
+    }
+  }
+  if (placed.some(image => image.attrs?.wrap === 'inline')) {
+    warnOnce(ctx.report, 'inlineImage', 'A picture that sits inside a line of text, or beside another picture, is shown on a line of its own just above that text. Its original position is kept for export.', 2);
+  }
+  const lifted = placed.map(image => specNormalizeNode({ ...image, attrs: { ...image.attrs, anchorBlockId: blockId } }));
+  return [...lifted, stampProvenance(normalized, blockId)];
 }
 
 /**
@@ -182,6 +219,13 @@ export interface ParagraphDraft {
   leadsIntoList?: ParagraphDraft;
   /** True on a draft that stands for the start of a list (a `leadsIntoList` value), not for a paragraph of its own. */
   isListLead?: true;
+  /** True on a draft that stands for a picture on a line of its own (a `leadsIntoList` value; also `isListLead`): a title followed by a figure is a title. */
+  isFigureLead?: true;
+  /**
+   * How many pictures lifted out of a paragraph sit between this paragraph and the next block (they belong to the paragraph that
+   * follows them, so they are transparent to "what follows this paragraph").
+   */
+  liftedAfter?: number;
 }
 
 const COMMENT_ANCHOR = 'comment anchor';
@@ -312,9 +356,15 @@ export function paragraphDrafts(blocks: JSONContent[], source: DraftSource = {})
   blocks.forEach((b, i) => {
     if (b.type !== 'paragraph') return;
     const draft = draftOf(b, i, source);
-    const next = blocks[i + 1];
+    let j = i + 1;
+    while (blocks[j]?.type === 'resizableImage' && blocks[j].attrs?.anchorBlockId) j++;
+    if (j > i + 1) draft.liftedAfter = j - i - 1;
+    const next = blocks[j];
     const first = next && (next.type === 'bulletList' || next.type === 'orderedList') ? next.content?.[0]?.content?.[0] : undefined;
-    if (first?.type === 'paragraph') draft.leadsIntoList = { ...draftOf(first, i + 1, source), isListLead: true };
+    if (first?.type === 'paragraph') draft.leadsIntoList = { ...draftOf(first, j, source), isListLead: true };
+    else if (next?.type === 'resizableImage') {
+      draft.leadsIntoList = { index: j, node: next, text: '', words: 1, allBold: false, minFontSizePt: null, atoms: [], multiline: false, isListLead: true, isFigureLead: true };
+    }
     out.push(draft);
   });
   return out;

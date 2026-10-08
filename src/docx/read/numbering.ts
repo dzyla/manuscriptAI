@@ -372,16 +372,23 @@ function levelFor(def: NumberingDef, ilvl: number): { level: NumberingLevel; def
  * item. The input array and its nodes are not modified. Call this BEFORE heading inference: list items are not top-level
  * paragraphs, so a bold short list item is never mistaken for a section title.
  */
-export function groupListParagraphs(blocks: ReadonlyArray<Pick<ParagraphDraft, 'node'>>, numbering: NumberingMap, ctx: ReadContext): JSONContent[] {
-  const out: Array<JSONContent | Group> = [];
-  let stack: OpenList[] = [];
-  let group: Group | null = null;
+export function groupListParagraphs(
+  blocks: ReadonlyArray<Pick<ParagraphDraft, 'node'>>,
+  numbering: NumberingMap,
+  ctx: ReadContext,
   /**
    * counter key -> level -> the number Word has reached. Persists across interruptions: that is what makes a resumed list
    * resume. Word counts per abstractNum: every w:num that shares one (and has no lvlOverride) continues the same count,
-   * while a w:num with a lvlOverride counts on its own.
+   * while a w:num with a lvlOverride counts on its own. A caller that groups one container in several calls (the body, which a
+   * table splits in two) passes the same map to each, so a list that resumes after a table still resumes.
    */
-  const counters = new Map<string, Map<number, number>>();
+  counters: ListCounters = new Map(),
+): JSONContent[] {
+  const out: Array<JSONContent | Group> = [];
+  let stack: OpenList[] = [];
+  let group: Group | null = null;
+  /** Pictures lifted out of a paragraph (`anchorBlockId`): they take no part in the list and go back before it. */
+  const lifted: Array<{ node: JSONContent; host: string | null; at: number }> = [];
 
   const endList = () => {
     stack = [];
@@ -437,6 +444,10 @@ export function groupListParagraphs(blocks: ReadonlyArray<Pick<ParagraphDraft, '
   };
 
   for (const { node } of blocks) {
+    if (node.type === 'resizableImage' && typeof node.attrs?.anchorBlockId === 'string') {
+      lifted.push({ node, host: node.attrs.anchorBlockId, at: out.length });
+      continue;
+    }
     const np = node.type === 'paragraph' || node.type === 'heading' ? numPrOf(node, numbering, ctx) : null;
     if (np && node.type === 'heading') {
       recordFeature(ctx.report, 'complexNumbering');
@@ -460,8 +471,24 @@ export function groupListParagraphs(blocks: ReadonlyArray<Pick<ParagraphDraft, '
     }
   }
 
+  // Which entry holds the paragraph a lifted picture was taken from: the picture goes right before it (before the whole list, when
+  // the paragraph is an item of one).
+  const entryOf = new Map<string, number>();
+  out.forEach((entry, i) => {
+    for (const n of 'members' in entry ? (entry as Group).members : [entry as JSONContent]) {
+      const id = (n.attrs?.ooxml as { blockId?: string } | null | undefined)?.blockId;
+      if (id) entryOf.set(id, i);
+    }
+  });
+  const before = new Map<number, JSONContent[]>();
+  for (const l of lifted) {
+    const i = Math.min((l.host !== null ? entryOf.get(l.host) : undefined) ?? l.at, out.length);
+    before.set(i, [...(before.get(i) ?? []), l.node]);
+  }
+
   const result: JSONContent[] = [];
-  for (const entry of out) {
+  for (const [index, entry] of out.entries()) {
+    result.push(...(before.get(index) ?? []));
     if (!('members' in entry)) {
       result.push(entry as JSONContent);
       continue;
@@ -483,5 +510,49 @@ export function groupListParagraphs(blocks: ReadonlyArray<Pick<ParagraphDraft, '
     }
     result.push(list);
   }
+  result.push(...(before.get(out.length) ?? []));
   return result;
+}
+
+/** The numbers Word has reached per counter key and level; see `groupListParagraphs`. */
+export type ListCounters = Map<string, Map<number, number>>;
+
+// ─── numbering shared between the text and table cells ─────────────────────────────────────────────────────────
+
+export const CONTINUED_LIST =
+  'A numbered list that continues an earlier list in the text or in another table cell is shown starting again at its first number; Word continues the count. The original numbering is kept for export.';
+
+/** The counter keys of ordered lists already read, by where they were: the body groups its lists with one shared count, each table cell with its own. */
+const usedKeys = new WeakMap<ReadContext, { body: Set<string>; cell: Set<string> }>();
+
+/**
+ * Note the ordered lists of one container the reader has just grouped (`blocks`, in document order, nested tables left out: their
+ * cells note themselves), and report a list that Word counts on from an EARLIER list somewhere else: a table-cell list continuing
+ * the body's count or another cell's, or a body list continuing a cell's. Within the body the shared count already carries on, so
+ * that is not reported. Call it for the body segment before the next table is read and for a cell once it is grouped, so the
+ * order of the calls is document order. A continuation is `complexNumbering` (category 2), once per container that has one.
+ */
+export function noteListCounts(ctx: ReadContext, scope: 'body' | 'cell', blocks: JSONContent[], numbering: NumberingMap): void {
+  const used = usedKeys.get(ctx) ?? { body: new Set<string>(), cell: new Set<string>() };
+  usedKeys.set(ctx, used);
+  const mine = new Set<string>();
+  let continued = false;
+  const visit = (n: JSONContent): void => {
+    if (n.type === 'table') return; // a nested table's own cells have been noted by its own read
+    if (n.type === 'orderedList' && typeof n.attrs?.wordNumId === 'number') {
+      const def = numbering.get(n.attrs.wordNumId);
+      if (def) {
+        const key = listCounterKey(n.attrs.wordNumId, def);
+        if (used.cell.has(key) || (scope === 'cell' && used.body.has(key))) continued = true;
+        mine.add(key);
+      }
+    }
+    (n.content ?? []).forEach(visit);
+  };
+  blocks.forEach(visit);
+  if (continued) {
+    recordFeature(ctx.report, 'complexNumbering');
+    warnOnce(ctx.report, 'complexNumbering', CONTINUED_LIST, 2);
+  }
+  mine.forEach(k => used[scope].add(k));
 }

@@ -54,11 +54,17 @@
  *   tables.docx     one 4-column table (grid 1800/2700/3600/1440 twips, distinct) with w:tblBorders and a Table Grid style: a tblHeader row, a
  *                   gridSpan=2 cell, a vMerge restart (row 1, column 1) with its continuation in row 2, a two-paragraph cell, a cell holding a
  *                   nested 2x2 table, an empty cell; one paragraph before and one after the table
+ *   images.docx     word/media with two PNGs (A, B; solid colours, valid), a WebP and the pieces Task 9 reads: an inline PNG A (centred) followed by a
+ *                   Caption-styled paragraph; a wrapSquare PNG B anchored in a paragraph of text with the offset and relativeFrom the real R01
+ *                   uses (right of centre); a wrapSquare PNG A (the same bytes, a second reference) anchored near the left edge; a
+ *                   wrapTopAndBottom PNG B centred; an inline image whose r:embed is not in the rels; an image linked from
+ *                   https://example.org (TargetMode="External", r:link only); an inline WebP
  *   google-export.docx  Google Docs shape: goog_rdk_* w:sdt wrappers (one nested two deep) around runs, plus word/fonts/ font
  */
 process.env.TZ = 'UTC'; // must precede any Date use so zip timestamps are reproducible
 
 import JSZip from 'jszip';
+import { deflateSync } from 'node:zlib';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -330,6 +336,93 @@ ${plain('Before the table.')}
 ${plain('After the table.')}
 <w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:body></w:document>`;
 
+// ─── images.docx ─────────────────────────────────────────────────────────────
+
+const WP = 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing';
+const DML = 'http://schemas.openxmlformats.org/drawingml/2006/main';
+const PICNS = 'http://schemas.openxmlformats.org/drawingml/2006/picture';
+
+function crc32(buf: Uint8Array): number {
+  let c: number;
+  let crc = 0xffffffff;
+  for (let n = 0; n < buf.length; n++) {
+    c = (crc ^ buf[n]) & 0xff;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    crc = (crc >>> 8) ^ c;
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+/** A valid solid-colour RGB PNG (header, IHDR, IDAT, IEND, real CRCs), so a browser and the sniffer both accept it. */
+function png(r: number, g: number, b: number, w = 4, h = 4): Uint8Array {
+  const chunk = (type: string, data: Uint8Array): Uint8Array => {
+    const out = new Uint8Array(12 + data.length);
+    const dv = new DataView(out.buffer);
+    dv.setUint32(0, data.length);
+    for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
+    out.set(data, 8);
+    dv.setUint32(8 + data.length, crc32(out.subarray(4, 8 + data.length)));
+    return out;
+  };
+  const ihdr = new Uint8Array(13);
+  const dv = new DataView(ihdr.buffer);
+  dv.setUint32(0, w);
+  dv.setUint32(4, h);
+  ihdr.set([8, 2, 0, 0, 0], 8); // 8-bit RGB
+  const row = new Uint8Array(1 + w * 3);
+  for (let x = 0; x < w; x++) row.set([r, g, b], 1 + x * 3);
+  const raw = new Uint8Array(row.length * h);
+  for (let y = 0; y < h; y++) raw.set(row, y * row.length);
+  const idat = new Uint8Array(deflateSync(raw, { level: 9 }));
+  const parts = [new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', idat), chunk('IEND', new Uint8Array(0))];
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.length;
+  }
+  return out;
+}
+
+/** A 1x1 lossless WebP: Word cannot place one, and A1's exporter used to drop it. */
+const WEBP = Uint8Array.from(Buffer.from('UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA==', 'base64'));
+
+const IN = 914400;
+const emu = (inches: number) => Math.round(inches * IN);
+
+/** A picture's `a:graphic`; `link`/`embed` are the relationship ids on the blip. */
+const picGraphic = (id: number, name: string, ref: { embed?: string; link?: string }, extra = '') =>
+  `<a:graphic xmlns:a="${DML}"><a:graphicData uri="${PICNS}"><pic:pic xmlns:pic="${PICNS}"><pic:nvPicPr><pic:cNvPr id="${id}" name="${name}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip${ref.embed ? ` r:embed="${ref.embed}"` : ''}${ref.link ? ` r:link="${ref.link}"` : ''}/>${extra}<a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1" cy="1"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic>`;
+
+const inlineDrawing = (id: number, name: string, ref: { embed?: string; link?: string }, wIn: number, hIn: number, descr = '') =>
+  `<w:r><w:drawing><wp:inline xmlns:wp="${WP}" distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${emu(wIn)}" cy="${emu(hIn)}"/><wp:docPr id="${id}" name="${name}"${descr ? ` descr="${descr}"` : ''}/>${picGraphic(id, name, ref)}</wp:inline></w:drawing></w:r>`;
+
+/** An anchored picture: `wrap` is the wp:wrap* element; `posH` the wp:positionH. Offsets as the real R01 has them (relativeFrom column, posOffset). */
+const anchorDrawing = (id: number, name: string, embed: string, wIn: number, hIn: number, wrap: string, posH: string, behindDoc = 0) =>
+  `<w:r><w:drawing><wp:anchor xmlns:wp="${WP}" distT="0" distB="0" distL="114300" distR="114300" simplePos="0" relativeHeight="0" behindDoc="${behindDoc}" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/>${posH}<wp:positionV relativeFrom="paragraph"><wp:posOffset>1123315</wp:posOffset></wp:positionV><wp:extent cx="${emu(wIn)}" cy="${emu(hIn)}"/><wp:effectExtent l="0" t="0" r="0" b="0"/>${wrap}<wp:docPr id="${id}" name="${name}" descr="Floating ${name}"/>${picGraphic(id, name, { embed })}</wp:anchor></w:drawing></w:r>`;
+
+const posOffsetH = (emuOffset: number) => `<wp:positionH relativeFrom="column"><wp:posOffset>${emuOffset}</wp:posOffset></wp:positionH>`;
+const posAlignH = (align: string) => `<wp:positionH relativeFrom="margin"><wp:align>${align}</wp:align></wp:positionH>`;
+
+const IMAGES_RELS = BODY_RELS.replace(
+  '</Relationships>',
+  `<Relationship Id="rId20" Type="${R}/image" Target="media/image1.png"/><Relationship Id="rId21" Type="${R}/image" Target="media/image2.png"/><Relationship Id="rId22" Type="${R}/image" Target="media/image3.webp"/><Relationship Id="rId30" Type="${R}/image" Target="https://example.org/figures/linked.png" TargetMode="External"/></Relationships>`,
+);
+
+const IMAGES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="${W}" xmlns:r="${R}"><w:body>
+${plain('Introductory paragraph.')}
+<w:p><w:pPr><w:jc w:val="center"/></w:pPr>${inlineDrawing(1, 'Inline A', { embed: 'rId20' }, 3.25, 2, 'Inline figure alt text')}</w:p>
+<w:p><w:pPr><w:pStyle w:val="Caption"/></w:pPr>${run('Figure 1. Inline figure caption.')}</w:p>
+<w:p>${anchorDrawing(2, 'Right B', 'rId21', 3.55, 1.18, `<wp:wrapSquare wrapText="bothSides" distT="0" distB="0" distL="0" distR="0"/>`, posOffsetH(3609975))}${run('Text beside the picture that floats to the right.')}</w:p>
+<w:p>${anchorDrawing(3, 'Left A', 'rId20', 4.2, 4.06, `<wp:wrapSquare wrapText="bothSides" distT="0" distB="0" distL="114300" distR="114300"/>`, posOffsetH(4446))}${run('Text beside the picture that floats to the left.')}</w:p>
+<w:p>${anchorDrawing(4, 'Centred B', 'rId21', 4, 1.5, '<wp:wrapTopAndBottom/>', posAlignH('center'))}${run('Text above and below the centred picture.')}</w:p>
+<w:p>${inlineDrawing(5, 'Missing', { embed: 'rId99' }, 2, 1)}</w:p>
+<w:p>${inlineDrawing(6, 'Linked', { link: 'rId30' }, 2, 1, 'A linked picture')}</w:p>
+<w:p>${inlineDrawing(7, 'WebP', { embed: 'rId22' }, 1, 1)}</w:p>
+${plain('Closing paragraph.')}
+<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:body></w:document>`;
+
 function basePackage(
   opts: { main?: string; documentXml?: string; stylesXml?: string | null; relsXml?: string; extra?: Record<string, string | Uint8Array>; contentTypesXml?: string } = {},
 ): JSZip {
@@ -536,6 +629,20 @@ const fixtures: Record<string, () => Promise<Uint8Array>> = {
     ),
 
   'tables.docx': () => build(basePackage({ documentXml: TABLES, stylesXml: STYLES_TABLES, relsXml: BODY_RELS })),
+
+  'images.docx': () =>
+    build(
+      basePackage({
+        documentXml: IMAGES,
+        stylesXml: STYLES_BODY,
+        relsXml: IMAGES_RELS,
+        contentTypesXml: contentTypes(CT_MAIN).replace(
+          '<Override',
+          '<Default Extension="png" ContentType="image/png"/><Default Extension="webp" ContentType="image/webp"/><Override',
+        ),
+        extra: { 'word/media/image1.png': png(200, 30, 30), 'word/media/image2.png': png(30, 30, 200, 8, 4), 'word/media/image3.webp': WEBP },
+      }),
+    ),
 
   'truncated.docx': () =>
     build(basePackage({ documentXml: DOCUMENT.slice(0, DOCUMENT.indexOf('<w:t>Second') + '<w:t>Sec'.length) })),

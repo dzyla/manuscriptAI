@@ -234,13 +234,15 @@ function isBlank(d: ParagraphDraft): boolean {
 /**
  * The paragraph that follows `drafts[i]` in the document, skipping blank ones, or null if the run of paragraphs ends first.
  * A bullet or numbered list standing right there (after blank paragraphs too) counts as what follows: its first item is
- * returned, flagged `isListLead`. A table, figure or heading in between still ends the search.
+ * returned, flagged `isListLead`; a figure on a line of its own counts the same way (flagged `isFigureLead`), because a title
+ * followed by a picture is a title. A table or heading in between still ends the search. Pictures lifted out of the next
+ * paragraph (`liftedAfter`) are not in between: they belong to it.
  */
 function followingParagraph(drafts: ParagraphDraft[], i: number): ParagraphDraft | null {
   let prev = drafts[i];
   for (let j = i + 1; j < drafts.length; j++) {
     const d = drafts[j];
-    if (d.index !== prev.index + 1) return prev.leadsIntoList ?? null; // a list leads on; a table, figure or heading stands between
+    if (d.index !== prev.index + 1 + (prev.liftedAfter ?? 0)) return prev.leadsIntoList ?? null; // a list or figure leads on; a table or heading stands between
     if (!isBlank(d)) return d;
     prev = d;
   }
@@ -249,6 +251,7 @@ function followingParagraph(drafts: ParagraphDraft[], i: number): ParagraphDraft
 
 /** How the evidence describes what follows a title. */
 function followerWords(next: ParagraphDraft): string {
+  if (next.isFigureLead) return 'a figure';
   return next.isListLead ? 'a list whose first item is not bold or larger' : 'a body paragraph that is not bold or larger';
 }
 
@@ -369,7 +372,9 @@ function detect(drafts: ParagraphDraft[], ctx: DetectContext): HeadingCandidate[
         lastLevel1 ? `placed below the level-1 heading "${lastLevel1.text}", so level 2` : 'no section heading precedes it, so level 2',
         d.allBold ? 'entire paragraph is bold' : 'not bold (not required for an aim title)',
         TERMINAL_PERIOD.test(d.text) ? `${shape} (limit ${MAX_WORDS_LONG} words), trailing period ignored` : `${shape} (limit ${MAX_WORDS_LONG} words)`,
-        next.isListLead
+        next.isFigureLead
+          ? 'followed by a figure, and no contents-list dot leaders'
+          : next.isListLead
           ? `followed by a list whose first item (${plural(next.words, 'word')}) is not bold or larger, and no contents-list dot leaders`
           : `followed by a body paragraph of ${plural(next.words, 'word')} that is not bold or larger, and no contents-list dot leaders`,
       ];

@@ -4,6 +4,7 @@ import type { PreservationStore } from '../preserve/types';
 import type { DocxPackage } from './package';
 import type { NumberingMap } from './numbering';
 import type { StylesResult } from './styles';
+import type { MediaIndex } from './drawings';
 
 /** A binary asset found in the package, committed by the repository only after the author confirms. */
 export interface AssetDraft {
@@ -24,6 +25,13 @@ export interface ReadContext {
    * body, table cells) goes through that function; do not call `readNumbering` directly or the part is parsed, and warned about, twice.
    */
   numbering?: NumberingMap;
+  /**
+   * The document's images, loaded and hashed by `prepareMedia` (drawings.ts) before the body is read. The body reader is
+   * synchronous and hashing is not, so without it a `w:drawing` is kept as an opaque atom, exactly as before images were read.
+   */
+  media?: MediaIndex;
+  /** The width of the text area in inches (page width less margins); an image's `width` is its share of this. 6.5 when unknown. */
+  contentWidthIn?: number;
   /** Unique ids for blocks and fragments. */
   nextId: () => string;
 }

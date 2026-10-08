@@ -57,7 +57,7 @@ export function findDuplicateFragmentIds(doc: PMNode): Array<{ pos: number; frag
   const seen = new Set<string>();
   const dupes: Array<{ pos: number; fragmentId: string }> = [];
   doc.descendants((node, pos) => {
-    if (node.type.name !== 'opaqueInline' && node.type.name !== 'opaqueBlock') return;
+    if (node.type.name !== 'opaqueInline' && node.type.name !== 'opaqueBlock' && node.type.name !== 'resizableImage') return;
     const id = node.attrs.fragmentId as string;
     if (!id) return;
     if (seen.has(id)) dupes.push({ pos, fragmentId: id });

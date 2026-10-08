@@ -9,6 +9,8 @@ import { captureFragment, captureShell } from '../preserve/xml';
 import { warnOnce, type ReadContext } from './context';
 import { M_NS, W_NS, firstW, wAttr } from './ooxml';
 
+const A_NS = 'http://schemas.openxmlformats.org/drawingml/2006/main';
+
 /**
  * Classify a complex field by its WHOLE instruction (every w:instrText between `begin` and
  * `separate`, concatenated: Word and the managers split an instruction across runs at arbitrary
@@ -141,10 +143,24 @@ export function classifyOpaque(el: Element): OpaqueClass {
       case 'commentRangeStart':
       case 'commentRangeEnd':
       case 'commentReference': return { kind: 'unknownField', label: 'comment anchor', semantic: 'comment' };
-      case 'drawing': return { kind: 'unknownField', label: 'drawing' };
+      case 'drawing': return classifyDrawing(el);
       case 'pict': return { kind: 'unknownField', label: 'picture' };
       default: break;
     }
   }
   return { kind: 'unknownField', label: el.localName };
+}
+
+/**
+ * What a `w:drawing` that did not become an image node is. SmartArt is category 4 (kept, not editable); a chart, a shape and a
+ * text box are named on their chip. Every one of them is kept verbatim.
+ */
+function classifyDrawing(el: Element): OpaqueClass {
+  const uri = el.getElementsByTagNameNS(A_NS, 'graphicData')[0]?.getAttribute('uri') ?? '';
+  if (/\/diagram$/.test(uri)) return { kind: 'unknownField', label: 'SmartArt', semantic: 'smartArt' };
+  if (/\/chart(?:$|\/)/.test(uri)) return { kind: 'unknownField', label: 'chart' };
+  if (/wordprocessing(?:Shape|Group|Canvas)$/.test(uri)) {
+    return { kind: 'unknownField', label: el.getElementsByTagNameNS(W_NS, 'txbxContent').length ? 'text box' : 'shape' };
+  }
+  return { kind: 'unknownField', label: 'drawing' };
 }

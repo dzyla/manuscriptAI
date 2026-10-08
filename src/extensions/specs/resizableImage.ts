@@ -1,5 +1,14 @@
 import { Node, mergeAttributes } from '@tiptap/core';
 
+const numberAttr = (htmlName: string, key: string) => ({
+  default: null,
+  parseHTML: (el: HTMLElement) => {
+    const n = Number(el.getAttribute(htmlName));
+    return el.hasAttribute(htmlName) && Number.isFinite(n) ? n : null;
+  },
+  renderHTML: (attrs: Record<string, unknown>) => (typeof attrs[key] === 'number' ? { [htmlName]: attrs[key] } : {}),
+});
+
 export const ResizableImageSpec = Node.create({
   name: 'resizableImage',
   group: 'block',
@@ -27,6 +36,49 @@ export const ResizableImageSpec = Node.create({
         default: null,
         parseHTML: (el: HTMLElement) => el.getAttribute('data-asset-id'),
         renderHTML: (attrs: Record<string, unknown>) => (attrs.assetId ? { 'data-asset-id': attrs.assetId } : {}),
+      },
+      /**
+       * How a Word image sits in its text: in line with it, floated to one side (square or tight wrap), or on a line of its
+       * own. Set by the DOCX reader; an image the author inserts here has none (null).
+       */
+      wrap: {
+        default: null,
+        parseHTML: (el: HTMLElement) => {
+          const w = el.getAttribute('data-wrap');
+          return w === 'inline' || w === 'left' || w === 'right' || w === 'block' ? w : null;
+        },
+        renderHTML: (attrs: Record<string, unknown>) => (attrs.wrap ? { 'data-wrap': attrs.wrap } : {}),
+      },
+      /** The size Word gave the image, in inches (`width` is that as a share of the content width). */
+      widthIn: numberAttr('data-width-in', 'widthIn'),
+      heightIn: numberAttr('data-height-in', 'heightIn'),
+      /** Word's crop of the picture (`a:srcRect`, percent of each edge); the stored bytes are the whole picture. */
+      crop: {
+        default: null,
+        parseHTML: (el: HTMLElement) => {
+          try {
+            const v = JSON.parse(el.getAttribute('data-crop') ?? 'null');
+            return v && typeof v === 'object' && ['l', 't', 'r', 'b'].every(k => typeof v[k] === 'number') ? v : null;
+          } catch {
+            return null;
+          }
+        },
+        renderHTML: (attrs: Record<string, unknown>) => (attrs.crop ? { 'data-crop': JSON.stringify(attrs.crop) } : {}),
+      },
+      /** The preserved `<w:r>` (run properties and the `w:drawing`) the image was read from: a key of `preservation.fragments`. */
+      fragmentId: {
+        default: '',
+        parseHTML: (el: HTMLElement) => el.getAttribute('data-fragment-id') ?? '',
+        renderHTML: (attrs: Record<string, unknown>) => (attrs.fragmentId ? { 'data-fragment-id': attrs.fragmentId } : {}),
+      },
+      /**
+       * Set when the image was lifted out of a paragraph that has other content (a picture anchored in a paragraph of text):
+       * the `ooxml.blockId` of that paragraph, whose original XML still contains the drawing.
+       */
+      anchorBlockId: {
+        default: null,
+        parseHTML: (el: HTMLElement) => el.getAttribute('data-anchor-block-id'),
+        renderHTML: (attrs: Record<string, unknown>) => (attrs.anchorBlockId ? { 'data-anchor-block-id': attrs.anchorBlockId } : {}),
       },
     };
   },
