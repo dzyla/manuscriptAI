@@ -4,7 +4,7 @@ import { BubbleMenu } from '@tiptap/react/menus';
 import Placeholder from '@tiptap/extension-placeholder';
 import { forwardRef, useImperativeHandle, useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { AgentType, Suggestion, ManuscriptSource } from '../types';
+import { AgentType, Suggestion, ManuscriptSource, SentenceAudit, AuditMetrics } from '../types';
 import { GrammarChecker } from '../extensions/GrammarChecker';
 import { getSchemaExtensions } from '../extensions/schema';
 import { OpaqueFragmentGuard } from '../extensions/preserve/OpaqueNodes';
@@ -17,6 +17,7 @@ import {
 import { getThesaurus, generateCompletion } from '../services/ai';
 import { AISettings } from '../types';
 import { AutoComplete } from '../extensions/AutoComplete';
+import { StyleHighlights } from '../extensions/StyleHighlights';
 import { NodeSelection } from 'prosemirror-state';
 import { expandCitationNums, fetchCrossrefDoi, looksLikeDoi, normalizeDoi } from '../services/citations';
 import { useSourceStore } from '../stores/useSourceStore';
@@ -47,6 +48,10 @@ interface EditorProps {
   onInsertFigure?: () => void;
   /** render dashed page-break guides at NIH-format intervals (grant mode) */
   showPageGuides?: boolean;
+  /** flagged sentences to tint (sub-project H); empty disables highlighting */
+  styleSentences?: SentenceAudit[];
+  showStyleHighlights?: boolean;
+  onStyleAudit?: (metrics: AuditMetrics) => void;
 }
 
 export interface EditorRef {
@@ -69,6 +74,8 @@ export interface EditorRef {
   getFigureOrder: () => string[];
   updateFigures: (registry: Record<string, number>) => void;
   insertFigureLabelNode: (figureId: string, num: number) => void;
+  /** Replace an exact document range (used by "rewrite in my voice"). */
+  replaceRange: (from: number, to: number, text: string) => boolean;
 }
 
 // Tiered matcher (exact → normalized → fuzzy) with citation-aware position
@@ -122,7 +129,7 @@ const BUBBLE_ACTIONS: { label: string; instruction: string; agent: AgentType; ic
   },
 ];
 
-const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocChange, suggestions, onSuggestionClick, onSelectionQuery, onTransformSelection, onRewriteSection, onAnalyzeSection, onVerifyClaim, onSearchSimilar, sources, citationRegistry, onInsertCitation, isDistractionFree, editorZoom = 100, editorWidth = 'normal', aiSettings, onAnalyzeImage, onInsertFigure, showPageGuides = false }, ref) => {
+const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocChange, suggestions, onSuggestionClick, onSelectionQuery, onTransformSelection, onRewriteSection, onAnalyzeSection, onVerifyClaim, onSearchSimilar, sources, citationRegistry, onInsertCitation, isDistractionFree, editorZoom = 100, editorWidth = 'normal', aiSettings, onAnalyzeImage, onInsertFigure, showPageGuides = false, styleSentences, showStyleHighlights, onStyleAudit }, ref) => {
   const [isMounted, setIsMounted] = useState(false);
 
   // ── Page guides: dashed page-break lines at NIH-format intervals ──────────
@@ -194,6 +201,10 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
   useEffect(() => { aiSettingsRef.current = aiSettings; }, [aiSettings]);
   useEffect(() => { autocompleteEnabledRef.current = autocompleteEnabled; }, [autocompleteEnabled]);
 
+  const styleSentencesRef = useRef<SentenceAudit[]>(styleSentences ?? []);
+  const showStyleHighlightsRef = useRef(!!showStyleHighlights);
+  const onStyleAuditRef = useRef(onStyleAudit);
+
   const editor = useEditor({
     extensions: [
       ...getSchemaExtensions(),
@@ -207,6 +218,11 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
           return generateCompletion(contextText, aiSettingsRef.current, signal, meta?.heading);
         },
         onLoadingChange: setAutocompleteLoading,
+      }),
+      StyleHighlights.configure({
+        getEnabled: () => showStyleHighlightsRef.current,
+        getSentences: () => styleSentencesRef.current,
+        onReport: (m) => onStyleAuditRef.current?.(m),
       }),
     ],
     content,
@@ -245,6 +261,10 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
       attributes: { class: 'prose max-w-none focus:outline-none min-h-[500px]' },
     },
   });
+
+  useEffect(() => { styleSentencesRef.current = styleSentences ?? []; editor?.commands.refreshStyleAudit(); }, [styleSentences, editor]);
+  useEffect(() => { showStyleHighlightsRef.current = !!showStyleHighlights; editor?.commands.refreshStyleAudit(); }, [showStyleHighlights, editor]);
+  useEffect(() => { onStyleAuditRef.current = onStyleAudit; }, [onStyleAudit]);
 
   // Handle clicks on highlight marks: find suggestion by ProseMirror position (TipTap Highlight
   // doesn't render custom attributes to DOM, so we can't use data-suggestion-id on the element)
@@ -673,6 +693,13 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
   };
 
   useImperativeHandle(ref, () => ({
+    replaceRange: (from: number, to: number, text: string) => {
+      if (!editor) return false;
+      const size = editor.state.doc.content.size;
+      if (from < 0 || to > size || to <= from) return false;
+      editor.chain().focus().insertContentAt({ from, to }, text).run();
+      return true;
+    },
     applySuggestion: (originalText, suggestedText) => {
       if (!editor) return false;
       const posMatch = findTextPosition(editor.state.doc, originalText);
