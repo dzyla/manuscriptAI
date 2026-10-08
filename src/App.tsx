@@ -42,8 +42,8 @@ function AgentIcon({ agent, size = 12 }: { agent: AgentType; size?: number }) {
 export default function App() {
   // ─── Zustand stores ────────────────────────────────────────────────────────
   const {
-    title, content, saveState, citationRegistry,
-    setTitle, setContent, setDocJson, setSaveState,
+    title, content, saveState, citationRegistry, pendingDocument,
+    setTitle, setContent, syncDerivedContent, clearPendingDocument, setDocJson, setSaveState,
     insertCitation: storeInsertCitation,
     removeCitation: storeRemoveCitation,
     renumberCitations: storeRenumberCitations,
@@ -260,6 +260,13 @@ export default function App() {
         showToast(lastLoad.quarantined
           ? 'Your last save could not be read. Restored the most recent backup; a protected copy of the unreadable save was kept.'
           : 'Your last save could not be read. Restored the most recent backup. The unreadable save could not be protected and may be replaced by later saves.', 'error');
+      }
+      // Feed the loaded document to the editor as JSON (no HTML round trip). The Editor also does this from its
+      // pendingDocument prop as soon as it is ready; whichever runs first clears the flag, so it applies once.
+      const pending = useDocumentStore.getState().pendingDocument;
+      if (pending && editorRef.current) {
+        editorRef.current.setDocument(pending);
+        useDocumentStore.getState().clearPendingDocument();
       }
       // After loading, apply citation migration to content if needed
       const { content: loadedContent, citationRegistry: reg } = useDocumentStore.getState();
@@ -1399,6 +1406,9 @@ export default function App() {
             showPageGuides={mode === 'grant'}
             onChange={(html) => setContent(html)}
             onDocChange={setDocJson}
+            pendingDocument={pendingDocument}
+            onPendingDocumentApplied={clearPendingDocument}
+            onContentSynced={syncDerivedContent}
             suggestions={suggestions}
             onSuggestionClick={handleSuggestionClick}
             onSelectionQuery={handleSelectionQuery}

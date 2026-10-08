@@ -27,6 +27,14 @@ interface EditorProps {
   onChange: (content: string) => void;
   /** Called with the canonical document after every content change (including external setContent). */
   onDocChange?: (doc: JSONContent) => void;
+  /**
+   * A freshly loaded canonical document. Applied as JSON (never via HTML) as soon as the editor exists,
+   * and the HTML sync effect stands down while it is set. Cleared through onPendingDocumentApplied.
+   */
+  pendingDocument?: JSONContent | null;
+  onPendingDocumentApplied?: () => void;
+  /** Receives the editor's own HTML after setDocument without implying a user edit (falls back to onChange). */
+  onContentSynced?: (content: string) => void;
   suggestions: Suggestion[];
   onSuggestionClick: (suggestionId: string) => void;
   onSelectionQuery?: (selectedText: string, instruction: string, agent: AgentType) => void;
@@ -58,6 +66,8 @@ export interface EditorRef {
   getPlainText: () => string;
   getJSON: () => Record<string, unknown>;
   setContent: (html: string) => void;
+  /** Set the editor from canonical JSON (no HTML round trip) and report it via onDocChange. */
+  setDocument: (doc: JSONContent) => void;
   getSelectedText: () => string;
   getCurrentSection: () => string | null;
   getCurrentSectionText: () => string | null;
@@ -122,7 +132,7 @@ const BUBBLE_ACTIONS: { label: string; instruction: string; agent: AgentType; ic
   },
 ];
 
-const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocChange, suggestions, onSuggestionClick, onSelectionQuery, onTransformSelection, onRewriteSection, onAnalyzeSection, onVerifyClaim, onSearchSimilar, sources, citationRegistry, onInsertCitation, isDistractionFree, editorZoom = 100, editorWidth = 'normal', aiSettings, onAnalyzeImage, onInsertFigure, showPageGuides = false }, ref) => {
+const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocChange, pendingDocument, onPendingDocumentApplied, onContentSynced, suggestions, onSuggestionClick, onSelectionQuery, onTransformSelection, onRewriteSection, onAnalyzeSection, onVerifyClaim, onSearchSimilar, sources, citationRegistry, onInsertCitation, isDistractionFree, editorZoom = 100, editorWidth = 'normal', aiSettings, onAnalyzeImage, onInsertFigure, showPageGuides = false }, ref) => {
   const [isMounted, setIsMounted] = useState(false);
 
   // ── Page guides: dashed page-break lines at NIH-format intervals ──────────
@@ -159,6 +169,10 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
   const [selectionWordCount, setSelectionWordCount] = useState(0);
   const onDocChangeRef = useRef(onDocChange);
   useEffect(() => { onDocChangeRef.current = onDocChange; }, [onDocChange]);
+  const onChangeRef = useRef(onChange);
+  useEffect(() => { onChangeRef.current = onChange; }, [onChange]);
+  const onContentSyncedRef = useRef(onContentSynced);
+  useEffect(() => { onContentSyncedRef.current = onContentSynced; }, [onContentSynced]);
   const isExternalUpdate = useRef(false);
   const lastExternalContent = useRef(content);
   const instructionInputRef = useRef<HTMLInputElement>(null);
@@ -460,9 +474,42 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
     return parts.join(' ').replace(/\s+/g, ' ').trim();
   };
 
+  /**
+   * Set the editor from canonical JSON. The store's derived HTML `content` is also written from the editor's own
+   * output, so the "sync content from parent" effect below sees content === lastExternalContent and does not
+   * re-apply (lossily, through HTML) what we just set.
+   */
+  const applyDocument = useCallback((doc: JSONContent) => {
+    if (!editor) return;
+    isExternalUpdate.current = true;
+    editor.commands.setContent(doc);
+    const html = editor.getHTML();
+    lastExternalContent.current = html;
+    onDocChangeRef.current?.(editor.getJSON());
+    (onContentSyncedRef.current ?? onChangeRef.current)(html);
+    setTimeout(() => { isExternalUpdate.current = false; }, 0);
+  }, [editor]);
+
+  // Feed a freshly loaded document as JSON (runs before the content sync below, which stands down meanwhile).
+  const lastPendingAppliedRef = useRef<{ editor: unknown; json: string } | null>(null);
+  useEffect(() => {
+    if (!editor || !pendingDocument) return;
+    // Dev StrictMode runs the app's init effect (and so initialize()) twice, delivering an identical document
+    // twice: apply a given document to a given editor once.
+    const json = JSON.stringify(pendingDocument);
+    const last = lastPendingAppliedRef.current;
+    if (!last || last.editor !== editor || last.json !== json) {
+      lastPendingAppliedRef.current = { editor, json };
+      applyDocument(pendingDocument);
+    }
+    onPendingDocumentApplied?.();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor, pendingDocument, applyDocument]);
+
   // Sync content from parent
   useEffect(() => {
     if (!editor) return;
+    if (pendingDocument) return; // the JSON path owns this load
     if (content !== lastExternalContent.current) {
       isExternalUpdate.current = true;
       editor.commands.setContent(content);
@@ -767,6 +814,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
       lastExternalContent.current = html;
       setTimeout(() => { isExternalUpdate.current = false; }, 0);
     },
+    setDocument: (doc: JSONContent) => applyDocument(doc),
     getSelectedText,
     getCurrentSection: () => currentSectionTitle,
     getCurrentSectionText: () => currentSectionTitle ? getSectionText(currentSectionTitle) : null,

@@ -14,6 +14,11 @@ interface DocumentState {
   content: string;
   /** Canonical document, always produced by the editor (onDocChange) or the repository. */
   docJson: JSONContent | null;
+  /**
+   * Set once per load by initialize(): the canonical document the editor must be fed as JSON
+   * (EditorRef.setDocument), so attributes without parseHTML/renderHTML survive. Cleared by whoever applies it.
+   */
+  pendingDocument: JSONContent | null;
   format: DocFormat;
   comments: CommentThread[];
   lastLoad: { migrated: boolean; recoveredFromBackup: boolean; unreadableRowPresent: boolean; quarantined: boolean };
@@ -42,6 +47,9 @@ interface DocumentState {
   setFormat: (format: DocFormat) => void;
   setComments: (comments: CommentThread[]) => void;
   setContent: (content: string) => void;
+  /** Update the derived HTML to match what the editor now shows, without marking the document as edited. */
+  syncDerivedContent: (content: string) => void;
+  clearPendingDocument: () => void;
   setSaveState: (s: DocumentState['saveState']) => void;
   setCitationRegistry: (reg: Record<string, number>) => void;
   setMode: (mode: DocumentMode) => void;
@@ -108,6 +116,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   title: 'Untitled Manuscript',
   content: DEFAULT_CONTENT,
   docJson: null,
+  pendingDocument: null,
   format: createFormat('nih'),
   comments: [],
   lastLoad: { migrated: false, recoveredFromBackup: false, unreadableRowPresent: false, quarantined: false },
@@ -127,6 +136,8 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   setComments: (comments) => set({ comments, saveState: 'Draft' }),
   setTitle: (title) => set({ title, saveState: 'Draft' }),
   setContent: (content) => set({ content, saveState: 'Draft' }),
+  syncDerivedContent: (content) => set({ content }),
+  clearPendingDocument: () => set({ pendingDocument: null }),
   setSaveState: (saveState) => set({ saveState }),
   setCitationRegistry: (citationRegistry) => set({ citationRegistry }),
   setMode: (mode) => set({ mode, saveState: 'Draft' }),
@@ -190,6 +201,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     title: 'Untitled Manuscript',
     content: DEFAULT_CONTENT,
     docJson: null,
+    pendingDocument: null,
     format: createFormat('nih'),
     comments: [],
     saveState: 'Draft',
@@ -233,6 +245,8 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
           title: d.title,
           content: docToHtml(d.docJson),
           docJson: d.docJson,
+          // The editor is fed this JSON directly; `content` above is only the derived HTML channel.
+          pendingDocument: d.docJson,
           format: d.format,
           comments: d.comments,
           saveState: d.saveState,
