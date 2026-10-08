@@ -21,7 +21,7 @@ import { StyleHighlights, replaceRangeWithText } from '../extensions/StyleHighli
 import { NodeSelection } from 'prosemirror-state';
 import { expandCitationNums, fetchCrossrefDoi, looksLikeDoi, normalizeDoi } from '../services/citations';
 import { useSourceStore } from '../stores/useSourceStore';
-import { findTextPositionRobust, flattenDoc } from '../utils/textMatch';
+import { findTextPositionRobust, flattenDoc, flatSpanToPm } from '../utils/textMatch';
 
 interface EditorProps {
   content: string;
@@ -76,6 +76,8 @@ export interface EditorRef {
   insertFigureLabelNode: (figureId: string, num: number) => void;
   /** Replace an exact document range with literal text (not HTML; newlines become hard breaks; keeps the block and the range's marks; does not take focus). Returns false for an invalid range or empty text. */
   replaceRange: (from: number, to: number, text: string) => boolean;
+  /** Select and scroll to a span given in getPlainText() offsets. False if the span no longer maps into the document. */
+  selectFlatRange: (start: number, end: number) => boolean;
 }
 
 // Tiered matcher (exact → normalized → fuzzy) with citation-aware position
@@ -694,6 +696,15 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
 
   useImperativeHandle(ref, () => ({
     replaceRange: (from: number, to: number, text: string) => (editor ? replaceRangeWithText(editor, from, to, text) : false),
+    selectFlatRange: (start: number, end: number) => {
+      if (!editor) return false;
+      const flat = flattenDoc(editor.state.doc);
+      if (start < 0 || end > flat.text.length || end <= start) return false;
+      const span = flatSpanToPm(flat, start, end);
+      if (!span) return false;
+      editor.chain().focus().setTextSelection({ from: span.from, to: span.to }).scrollIntoView().run();
+      return true;
+    },
     applySuggestion: (originalText, suggestedText) => {
       if (!editor) return false;
       const posMatch = findTextPosition(editor.state.doc, originalText);

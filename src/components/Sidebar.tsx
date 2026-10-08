@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo, createElement } from 'react';
 import { AgentType, Message, Suggestion, HistoryItem, SuggestionSeverity, AISettings, AttachedImage } from '../types';
-import { Send, Sparkles, Check, X, MessageSquare, History as HistoryIcon, Info, CheckCheck, XCircle, Filter, ChevronDown, ChevronUp, BookOpen, Trash2, FileText, UploadCloud, FolderOpen, BookMarked, Plus, List, AlertTriangle, CheckCircle2, Library, Search, ExternalLink, Copy, Zap, RefreshCw, ImagePlus, Square, ArrowRight, Hash } from 'lucide-react';
+import { Send, Sparkles, Check, X, MessageSquare, History as HistoryIcon, Info, CheckCheck, XCircle, Filter, ChevronDown, ChevronUp, BookOpen, Trash2, FileText, UploadCloud, FolderOpen, BookMarked, Plus, List, PenLine, AlertTriangle, CheckCircle2, Library, Search, ExternalLink, Copy, Zap, RefreshCw, ImagePlus, Square, ArrowRight, Hash } from 'lucide-react';
 import { SemanticSearchResult, ManuscriptSource, PdfMatchScore } from '../types';
 import { searchSimilarManuscripts, resultToBibtex, doiToUrl } from '../services/manuscriptSearch';
 import { motion, AnimatePresence } from 'motion/react';
@@ -9,6 +9,7 @@ import remarkGfm from 'remark-gfm';
 import { wrap } from 'comlink';
 import type { DocxWorkerApi } from '../workers/docxWorker';
 import { extractTextFromPDF } from '../workers/pdfWorker';
+import { StylePanel, type StylePanelProps } from './style/StylePanel';
 
 import { Cite } from '@citation-js/core';
 import '@citation-js/plugin-bibtex';
@@ -33,8 +34,10 @@ interface SidebarProps {
   onStop?: () => void;
   highlightedSuggestionId?: string | null;
   analysisProgress?: { agent: string; total: number; done: number } | null;
-  activeTabOverride?: 'chat' | 'suggestions' | 'history' | 'sources' | 'outline';
-  onTabChange?: (tab: 'chat' | 'suggestions' | 'history' | 'sources' | 'outline') => void;
+  activeTabOverride?: 'chat' | 'suggestions' | 'history' | 'sources' | 'outline' | 'style';
+  /** Props for the Style tab (sub-project H); the tab shows nothing useful without them. */
+  stylePanel?: StylePanelProps;
+  onTabChange?: (tab: 'chat' | 'suggestions' | 'history' | 'sources' | 'outline' | 'style') => void;
   onAgentChange?: (agent: AgentType) => void;
   manuscriptContent?: string;
   manuscriptHtml?: string;
@@ -120,6 +123,7 @@ export default function Sidebar({
   highlightedSuggestionId,
   analysisProgress,
   activeTabOverride,
+  stylePanel,
   onTabChange,
   onAgentChange,
   manuscriptContent = '',
@@ -146,7 +150,7 @@ export default function Sidebar({
   const [showSourcePicker, setShowSourcePicker] = useState(false);
   const [attachedSourceIds, setAttachedSourceIds] = useState<Set<string>>(new Set(['__full__']));
   const sourcePickerRef = useRef<HTMLDivElement>(null);
-  const [activeTab, setActiveTabLocal] = useState<'chat' | 'suggestions' | 'history' | 'sources' | 'outline'>('chat');
+  const [activeTab, setActiveTabLocal] = useState<'chat' | 'suggestions' | 'history' | 'sources' | 'outline' | 'style'>('chat');
 
   // ─── Web Workers (Comlink) ───────────────────────────────────────────────────
   // PDF parsing runs on the main thread (pdfjs spawns its own internal worker).
@@ -476,7 +480,7 @@ export default function Sidebar({
     if (activeTabOverride) setActiveTabLocal(activeTabOverride);
   }, [activeTabOverride]);
 
-  const setActiveTab = (tab: 'chat' | 'suggestions' | 'history' | 'sources' | 'outline') => {
+  const setActiveTab = (tab: 'chat' | 'suggestions' | 'history' | 'sources' | 'outline' | 'style') => {
     setActiveTabLocal(tab);
     onTabChange?.(tab);
   };
@@ -621,6 +625,7 @@ export default function Sidebar({
           { key: 'history' as const, icon: <HistoryIcon size={14} />, label: 'History' },
           { key: 'sources' as const, icon: <BookOpen size={14} />, label: 'Sources' },
           { key: 'outline' as const, icon: <List size={14} />, label: 'Outline' },
+          { key: 'style' as const, icon: <PenLine size={14} />, label: 'Style' },
         ]).map(tab => (
           <button
             key={tab.key}
@@ -2083,6 +2088,8 @@ export default function Sidebar({
               </div>
             )}
           </div>
+        ) : activeTab === 'style' ? (
+          stylePanel ? <StylePanel {...stylePanel} /> : null
         ) : null}
       </div>
 
