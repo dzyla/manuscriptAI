@@ -24,8 +24,11 @@ import { usePageCanvas } from './editor/usePageCanvas';
 import { useEditorHandle } from './editor/useEditorHandle';
 import { NO_SELECTION, sameSelection, selectionInfo, type SelectionInfo } from './editor/selectionKind';
 import { SelectionBar } from './editor/SelectionBar';
+import type { SelectionAI } from './editor/SelectionAIMenu';
 
 interface EditorProps {
+  /** The AI actions for a selection, shown on the floating bar. Absent, the bar carries formatting only (the top bar's AI menu is unaffected). */
+  selectionAI?: SelectionAI;
   content: string;
   onChange: (content: string) => void;
   /** Called with the canonical document after every content change (including external setContent). */
@@ -127,7 +130,7 @@ const HISTORY_PLUGIN_KEY = 'history$';
 const DEFAULT_CANVAS_FORMAT: DocFormat = createFormat('nih');
 
 
-const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocChange, pendingDocument, onPendingDocumentApplied, onDuplicateFragment, loadSettled = false, onDocumentReady, onContentSynced, suggestions, onSuggestionClick, sources, citationRegistry, onInsertCitation, isDistractionFree, editorZoom = 100, aiSettings, autocompleteEnabled = false, onAutocompleteLoading, onAnalyzeImage, format, styleSentences, styleAuditEnabled, onStyleAudit, onEditorReady, onSelectionChange }, ref) => {
+const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocChange, pendingDocument, onPendingDocumentApplied, onDuplicateFragment, loadSettled = false, onDocumentReady, onContentSynced, suggestions, onSuggestionClick, sources, citationRegistry, onInsertCitation, isDistractionFree, editorZoom = 100, aiSettings, autocompleteEnabled = false, onAutocompleteLoading, onAnalyzeImage, format, styleSentences, styleAuditEnabled, onStyleAudit, onEditorReady, onSelectionChange, selectionAI }, ref) => {
   const [isMounted, setIsMounted] = useState(false);
   const canvasFormat = format ?? DEFAULT_CANVAS_FORMAT;
 
@@ -503,10 +506,10 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
         options={{ placement: 'top', offset: 8 }}
       >
         <div
-          className="flex items-center gap-1 rounded-lg px-1.5 py-1 shadow-lg"
+          className="flex items-center gap-1 rounded-lg px-1.5 py-1 shadow-lg max-w-[520px]"
           style={{ background: 'var(--surface-1)', border: '1px solid var(--border)' }}
         >
-          <SelectionBar kind={selectionInfo(editor).kind} editor={editor} format={format} />
+          <SelectionBar kind={selectionInfo(editor).kind} editor={editor} format={format} ai={selectionAI} />
         </div>
       </BubbleMenu>
 

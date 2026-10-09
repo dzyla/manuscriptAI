@@ -3,6 +3,8 @@ import { useEditorState } from '@tiptap/react';
 import { Bold, Italic, Underline as UnderlineIcon } from 'lucide-react';
 import type { DocFormat } from '../../types';
 import type { SelectionKind } from './selectionKind';
+import { DirectPresets, AIMenu, type SelectionAI } from './SelectionAIMenu';
+import { press } from './press';
 import { alignOf, applyBlock, blockOf, blockOptions, type AlignId, type BlockId } from './blocks';
 
 export type { SelectionKind } from './selectionKind';
@@ -21,21 +23,20 @@ const TABLE_CONTROLS: { id: string; label: string; run: (e: Editor) => void; dan
   { id: 'delete-table', label: 'Delete table', run: e => e.chain().focus().deleteTable().run(), danger: true },
 ];
 
-const IDLE = { bold: false, italic: false, underline: false, block: 'normal' as BlockId, align: 'left' as AlignId };
+const Divider = () => <div role="separator" aria-orientation="vertical" className="self-stretch w-px mx-0.5" style={{ background: 'var(--border)' }} />;
 
-/** Mouse-down is swallowed so the editor keeps its selection; the action runs on click. */
-const press = (fn: () => void) => ({ onMouseDown: (e: React.MouseEvent) => e.preventDefault(), onClick: fn });
+const IDLE = { bold: false, italic: false, underline: false, block: 'normal' as BlockId, align: 'left' as AlignId };
 
 /**
  * Block type under the cursor. Shared by the selection bar and the top bar's at-rest "body style" selector (same control, different slot),
  * so the two can never disagree about what the current block is.
  */
-export function BlockTypeSelect({ editor, format, testId = 'control-block-type' }: { editor: Editor | null; format?: DocFormat | null; testId?: string }) {
+export function BlockTypeSelect({ editor, format, testId = 'control-block-type', className = '' }: { editor: Editor | null; format?: DocFormat | null; testId?: string; className?: string }) {
   const block = useEditorState({ editor, selector: ({ editor: e }) => (e && !e.isDestroyed ? blockOf(e) : 'normal') });
   return (
     <select data-testid={testId} aria-label="Block type" value={block} disabled={!editor}
       onChange={e => { if (editor) applyBlock(editor, e.target.value as BlockId); }}
-      className="text-xs rounded border px-1.5 py-1" style={{ background: 'var(--surface-1)', borderColor: 'var(--border)', color: 'var(--text-primary)' }}>
+      className={`text-xs rounded border px-1.5 py-1 ${className}`} style={{ background: 'var(--surface-1)', borderColor: 'var(--border)', color: 'var(--text-primary)' }}>
       {blockOptions(format).map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
     </select>
   );
@@ -45,7 +46,7 @@ export function BlockTypeSelect({ editor, format, testId = 'control-block-type' 
  * The part of the top bar that depends on what is selected. Nothing is drawn with no selection or a figure selected (a figure's controls float
  * on the figure itself); text shows inline marks, block type and alignment; a table shows row and column controls.
  */
-export function SelectionBar({ kind, editor, format }: { kind: SelectionKind; editor: Editor | null; format?: DocFormat | null }) {
+export function SelectionBar({ kind, editor, format, ai }: { kind: SelectionKind; editor: Editor | null; format?: DocFormat | null; ai?: SelectionAI }) {
   const st = useEditorState({
     editor,
     selector: ({ editor: e }) => (e && !e.isDestroyed
@@ -64,18 +65,27 @@ export function SelectionBar({ kind, editor, format }: { kind: SelectionKind; ed
   );
 
   return (
-    <div data-testid="selection-bar" role="toolbar" aria-label={kind === 'table' ? 'Table' : 'Text formatting'} className="flex items-center gap-1">
+    <div data-testid="selection-bar" role="toolbar" aria-label={kind === 'table' ? 'Table' : 'Text formatting'} className="flex items-center gap-1 flex-nowrap">
       {kind === 'text' && (
         <>
           {mark('bold', 'Bold', Bold, e => e.chain().focus().toggleBold().run())}
           {mark('italic', 'Italic', Italic, e => e.chain().focus().toggleItalic().run())}
           {mark('underline', 'Underline', UnderlineIcon, e => e.chain().focus().toggleUnderline().run())}
-          <BlockTypeSelect editor={editor} format={format} />
+          <Divider />
+          <BlockTypeSelect editor={editor} format={format} className="w-[92px]" />
           <select data-testid="control-align" aria-label="Alignment" title="Alignment" value={st.align} disabled={!editor}
             onChange={e => { editor?.chain().focus().setTextAlign(e.target.value as AlignId).run(); }}
-            className="text-xs rounded border px-1.5 py-1" style={{ background: 'var(--surface-1)', borderColor: 'var(--border)', color: 'var(--text-primary)' }}>
+            className="text-xs rounded border px-1.5 py-1 w-[88px]" style={{ background: 'var(--surface-1)', borderColor: 'var(--border)', color: 'var(--text-primary)' }}>
             {ALIGNS.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
           </select>
+          {ai && (
+            <>
+              <Divider />
+              <DirectPresets ai={ai} />
+              <Divider />
+              <AIMenu ai={ai} />
+            </>
+          )}
         </>
       )}
       {kind === 'table' && TABLE_CONTROLS.map(c => (

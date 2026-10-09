@@ -5,7 +5,7 @@ import TaskPanels from './components/shell/TaskPanels';
 import { AppShell } from './components/shell/AppShell';
 import { StatusBar } from './components/shell/StatusBar';
 import { TopBar } from './components/shell/TopBar';
-import { useTopBarItems } from './components/shell/useTopBarItems';
+import { useTopBarItems, type MenuActions } from './components/shell/useTopBarItems';
 import { Toast, StorageBanner, ExportWarning, ShortcutsModal, type ToastState } from './components/shell/AppOverlays';
 import { BlockTypeSelect } from './components/editor/SelectionBar';
 import { NO_SELECTION, type SelectionInfo } from './components/editor/selectionKind';
@@ -235,6 +235,13 @@ export default function App() {
   useEffect(() => { if (selection.kind !== 'text') selectionAI.clearThesaurus(); }, [selection.kind]); // eslint-disable-line react-hooks/exhaustive-deps
   const textOf = () => selectionAI.selected();
   const withText = (run: (text: string) => void) => () => { const t = textOf(); if (t.trim()) run(t); };
+  // The selection's AI actions: one set of handlers for the top bar's AI menu and the floating bar on the selection.
+  const selectionActions: Pick<MenuActions, 'onPreset' | 'onRewrite' | 'onInstruct' | 'onSynonyms' | 'onPickSynonym' | 'onVerify' | 'onSimilar'> = {
+    onPreset: p => withText(t => { void (p.mode === 'transform' ? selectionAI.handleTransformSelection(t, p.instruction, p.agent) : selectionAI.handleSelectionQuery(t, p.instruction, p.agent)); })(),
+    onRewrite: withText(t => { void selectionAI.handleRewriteSection(t); }), onInstruct: (text, agent) => withText(t => { void selectionAI.handleSelectionQuery(t, text, agent); })(),
+    onSynonyms: () => { void selectionAI.handleSynonyms(); }, onPickSynonym: selectionAI.replaceWithSynonym,
+    onVerify: withText(t => { void selectionAI.handleVerifyClaim(t); }), onSimilar: withText(t => selectionAI.handleSearchSimilar(t)),
+  };
   const menus = useTopBarItems({
     selection, busy: isAnalyzing, autocomplete, autocompleteLoading, darkMode, focusMode: isDistractionFree, zoom, thesaurus: selectionAI.thesaurus,
     agents: review.reviewAgents, storedReport: !!importer.storedReport, revertTarget: importer.revertTarget,
@@ -246,10 +253,7 @@ export default function App() {
     onAnalyze: () => { void analysis.handleAnalyze(); }, onAnalyzeAgent: a => { void analysis.handleAnalyze(a); }, onSummary: () => { void analysis.handleManuscriptSummary(); },
     onStop: analysis.stopRequest, onToggleAutocomplete: () => setAutocomplete(v => !v),
     onAnalyzeSection: () => { if (selection.section) void chat.handleAnalyzeSection(editorRef.current?.getSectionTextByTitle(selection.section) ?? '', selection.section); },
-    onPreset: p => withText(t => { void (p.mode === 'transform' ? selectionAI.handleTransformSelection(t, p.instruction, p.agent) : selectionAI.handleSelectionQuery(t, p.instruction, p.agent)); })(),
-    onRewrite: withText(t => { void selectionAI.handleRewriteSection(t); }), onInstruct: (text, agent) => withText(t => { void selectionAI.handleSelectionQuery(t, text, agent); })(),
-    onSynonyms: () => { void selectionAI.handleSynonyms(); }, onPickSynonym: selectionAI.replaceWithSynonym,
-    onVerify: withText(t => { void selectionAI.handleVerifyClaim(t); }), onSimilar: withText(t => selectionAI.handleSearchSimilar(t)),
+    ...selectionActions,
     onSettings: () => setIsSettingsOpen(true), onPostDrafting: () => setIsPostDraftingOpen(true), onShortcuts: () => setShowShortcuts(s => !s),
     onToggleDark: () => setDarkMode(d => !d), onToggleFocus: () => setIsDistractionFree(f => !f),
     onZoomOut: () => setZoom(z => Math.max(50, z - 10)), onZoomIn: () => setZoom(z => Math.min(200, z + 10)),
@@ -295,6 +299,7 @@ export default function App() {
           <div className="h-full overflow-y-auto p-4 sm:p-6 md:p-8" style={{ background: 'var(--surface-0)' }}>
             <Editor
               ref={editorRef}
+              selectionAI={{ words: selection.words, busy: isAnalyzing, thesaurus: selectionAI.thesaurus, ...selectionActions }}
               content={content}
               format={format}
               onChange={(html) => setContent(html)}
