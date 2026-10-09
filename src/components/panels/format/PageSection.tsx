@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { DocFormat, FormatPreset } from '../../../types';
 import { getGrantTemplate } from '../../../services/grantTemplates';
 import { MAX_PAGE_LIMIT, parsePageLimitInput, readPageLimit, withPageLimit } from '../../../services/pageLimit';
@@ -17,6 +18,9 @@ const Warn = ({ id, text }: { id: string; text: string }) => (
 /** Sheet, margins, preset, body font and the author's own page limit, with the two NIH checks that are hard limits. */
 export function PageSection({ format, templateId, onChange }: { format: DocFormat | null; templateId: string | null; onChange: (f: DocFormat) => void }) {
   const f = baseFormat(format);
+  // A preset replaces the page and the built-in styles, so the format it replaced is kept for one Undo, offered only while that preset's result is still the format.
+  const [applied, setApplied] = useState<{ previous: DocFormat | null; result: DocFormat } | null>(null);
+  const applyPreset = (id: Exclude<FormatPreset, 'custom'>) => { const result = withPreset(f, id); setApplied({ previous: format, result }); onChange(result); };
   const limit = readPageLimit(f.pageLimitPages);
   const budgets = (getGrantTemplate(templateId)?.sections ?? []).filter(s => s.pageLimit);
   const mWarn = marginWarning(f), fWarn = fontWarning(f);
@@ -26,11 +30,17 @@ export function PageSection({ format, templateId, onChange }: { format: DocForma
     <div className="space-y-3">
       <div>
         <label htmlFor="format-preset" className="block text-[10px] font-semibold mb-0.5" style={{ color: 'var(--text-muted)' }}>Format preset</label>
-        <select id="format-preset" data-testid="control-preset" value={f.preset} onChange={e => onChange(withPreset(f, e.target.value as Exclude<FormatPreset, 'custom'>))}
+        <select id="format-preset" data-testid="control-preset" value={f.preset} onChange={e => applyPreset(e.target.value as Exclude<FormatPreset, 'custom'>)}
           className="w-full text-xs rounded-lg border px-2 py-1" style={fieldStyle}>
           {f.preset === 'custom' && <option value="custom" disabled>Custom</option>}
           {PRESETS.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
         </select>
+        {applied && format === applied.result && (
+          <p data-testid="preset-applied" role="status" className="text-[11px] mt-1 flex items-center gap-2" style={{ color: 'var(--text-secondary)' }}>
+            Preset applied.
+            <button data-testid="control-preset-undo" onClick={() => { onChange(applied.previous ?? baseFormat(null)); setApplied(null); }} className="font-semibold underline">Undo</button>
+          </p>
+        )}
         <p className="text-[10px] mt-1 leading-snug" style={{ color: 'var(--text-muted)' }}>A preset sets the sheet, margins, body font and the built-in styles. Your page limit is kept.</p>
       </div>
 

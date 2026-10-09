@@ -7,7 +7,6 @@ import { PLACEHOLDER_TEXT } from '../db/placeholder';
 import { htmlToDoc, docToHtml, isValidDoc } from '../extensions/schema';
 import { migrateLegacyCitations } from '../utils/migrateCitations';
 import { createFormat } from '../services/formatPresets';
-import { carryPageLimit } from '../services/pageLimit';
 import type { CommentThread, DocFormat, DocumentMode } from '../types';
 import type { ImportResult, HeadingCandidate } from '../docx/read';
 import { applyHeadings } from '../docx/read/headings';
@@ -372,7 +371,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     const doc = applyHeadings(result.doc, decisions.acceptedHeadings);
     return replaceOpenDocument(set, get, async () => {
       const { importId } = await documentRepository.importDocx({ ...result, doc }, { title: decisions.title, acceptedHeadingIndexes: decisions.acceptedHeadings.map(h => h.index) });
-      return { importId, fallback: { docJson: doc, title: decisions.title.trim() || 'Untitled Manuscript', format: carryPageLimit(result.format, get().format) } };
+      return { importId, fallback: { docJson: doc, title: decisions.title.trim() || 'Untitled Manuscript', format: result.format } };
     });
   },
 

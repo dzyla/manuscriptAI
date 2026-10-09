@@ -25,9 +25,3 @@ export function withPageLimit(format: DocFormat, limit: number | null): DocForma
   const { pageLimitPages: _drop, ...rest } = format;
   return limit === null ? rest : { ...rest, pageLimitPages: limit };
 }
-
-/** A format that replaces another (a DOCX import) keeps the author's limit: it is not something a Word file says. */
-export function carryPageLimit(next: DocFormat, prev: DocFormat | null | undefined): DocFormat {
-  const limit = readPageLimit(prev?.pageLimitPages);
-  return limit === null ? next : withPageLimit(next, limit);
-}

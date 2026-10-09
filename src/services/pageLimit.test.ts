@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readPageLimit, parsePageLimitInput, withPageLimit, carryPageLimit, MAX_PAGE_LIMIT } from './pageLimit';
+import { readPageLimit, parsePageLimitInput, withPageLimit, MAX_PAGE_LIMIT } from './pageLimit';
 import { createFormat } from './formatPresets';
 
 describe('readPageLimit', () => {
@@ -22,16 +22,11 @@ describe('parsePageLimitInput', () => {
   });
 });
 
-describe('withPageLimit and carryPageLimit', () => {
+describe('withPageLimit', () => {
   it('sets and removes the limit without touching the rest', () => {
     const f = createFormat('nih');
     const set = withPageLimit(f, 12);
     expect(set).toEqual({ ...f, pageLimitPages: 12 });
     expect('pageLimitPages' in withPageLimit(set, null)).toBe(false);
-  });
-  it('carries a valid limit onto a replacement format and drops an invalid one', () => {
-    expect(carryPageLimit(createFormat('a4'), { ...createFormat('nih'), pageLimitPages: 10 }).pageLimitPages).toBe(10);
-    expect(carryPageLimit(createFormat('a4'), { ...createFormat('nih'), pageLimitPages: -2 }).pageLimitPages).toBeUndefined();
-    expect(carryPageLimit(createFormat('a4'), null).pageLimitPages).toBeUndefined();
   });
 });

@@ -7,7 +7,6 @@ import { stableStringify } from '../docx/preserve/hash';
 import { collectFragmentIds, pruneFragments } from '../docx/preserve/refs';
 import type { PreservationStore } from '../docx/preserve/types';
 import { createFormat } from '../services/formatPresets';
-import { carryPageLimit } from '../services/pageLimit';
 import { isBlankDoc } from './placeholder';
 
 export interface LoadedDocument {
@@ -413,7 +412,7 @@ export function createDexieRepository(db: ManuscriptDb, deps: RepositoryDeps): D
           id: 'current',
           title,
           docJson: result.doc,
-          format: carryPageLimit(result.format, prev?.format),
+          format: result.format,
           comments: [],
           schemaVersion: 3,
           saveState: 'Saved',

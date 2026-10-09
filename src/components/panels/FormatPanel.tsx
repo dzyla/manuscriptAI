@@ -62,6 +62,8 @@ export const FormatPanel = memo(function FormatPanel(p: FormatPanelProps) {
           {p.onModeChange && (
             <div className="flex items-center rounded-lg p-0.5 w-fit" style={{ border: '1px solid var(--border)', background: 'var(--surface-2)' }}>
               <button
+                data-testid="control-mode-manuscript"
+                aria-pressed={!grant}
                 onClick={() => p.onModeChange!('manuscript')}
                 className={`px-2 py-0.5 text-[10px] font-bold rounded-md transition-colors ${!grant ? 'bg-white shadow text-stone-800' : ''}`}
                 style={!grant ? {} : { color: 'var(--text-muted)' }}
@@ -71,6 +73,7 @@ export const FormatPanel = memo(function FormatPanel(p: FormatPanelProps) {
               </button>
               <button
                 data-testid="control-mode"
+                aria-pressed={grant}
                 onClick={() => p.onModeChange!('grant')}
                 className={`px-2 py-0.5 text-[10px] font-bold rounded-md transition-colors ${grant ? 'bg-emerald-700 text-white shadow' : ''}`}
                 style={grant ? {} : { color: 'var(--text-muted)' }}

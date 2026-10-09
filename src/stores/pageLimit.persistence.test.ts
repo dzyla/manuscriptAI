@@ -44,23 +44,15 @@ describe('the author\'s page limit, stored on the document\'s format', () => {
     expect(documentPageLimit(store().format)).toBeNull();
   });
 
-  it('survives a Word import, which replaces the format with the file\'s own', async () => {
+  it('is unset after a Word import: the file is a different document whose limit the app does not know', async () => {
     await store().initialize();
     store().setFormat(withPageLimit(store().format, 13));
     await store().persist();
     const r = await readDocx(loadDocx('body-basics.docx'), undefined, 'body-basics.docx');
-    expect(r.format.pageLimitPages).toBeUndefined();
     await store().importDocx(r, { title: 'Imported', acceptedHeadings: [] });
-    expect(documentPageLimit(store().format)).toBe(13);
-    expect((await db.documents.get('current'))!.format.pageLimitPages).toBe(13);
+    expect(documentPageLimit(store().format)).toBeNull();
+    expect((await db.documents.get('current'))!.format.pageLimitPages).toBeUndefined();
     await reload();
-    expect(documentPageLimit(store().format)).toBe(13);
-  });
-
-  it('an import into a document with no limit does not invent one', async () => {
-    await store().initialize();
-    const r = await readDocx(loadDocx('body-basics.docx'), undefined, 'body-basics.docx');
-    await store().importDocx(r, { title: 'Imported', acceptedHeadings: [] });
     expect(documentPageLimit(store().format)).toBeNull();
   });
 

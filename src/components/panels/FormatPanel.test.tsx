@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { useState } from 'react';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { FormatPanel } from './FormatPanel';
 import type { DocFormat } from '../../types';
 import { createFormat } from '../../services/formatPresets';
+import { withPreset } from './format/formatEdit';
 
 afterEach(cleanup);
 
@@ -213,5 +215,74 @@ describe('FormatPanel', () => {
     fireEvent.click(screen.getByTestId('section-page'));
     fireEvent.click(screen.getByTestId('section-page'));
     expect((screen.getByTestId('control-margin-top') as HTMLInputElement).value).toBe('-1');
+  });
+
+  describe('the mode toggle', () => {
+    it('Grant sets grant and Manuscript sets manuscript, and aria-pressed follows the mode', () => {
+      const onModeChange = vi.fn();
+      const { rerender } = render(<FormatPanel {...props} mode="manuscript" onModeChange={onModeChange} />);
+      expect(screen.getByTestId('control-mode').getAttribute('aria-pressed')).toBe('false');
+      expect(screen.getByTestId('control-mode-manuscript').getAttribute('aria-pressed')).toBe('true');
+      fireEvent.click(screen.getByTestId('control-mode'));
+      expect(onModeChange).toHaveBeenLastCalledWith('grant');
+      rerender(<FormatPanel {...props} mode="grant" onModeChange={onModeChange} />);
+      expect(screen.getByTestId('control-mode').getAttribute('aria-pressed')).toBe('true');
+      fireEvent.click(screen.getByTestId('control-mode-manuscript'));
+      expect(onModeChange).toHaveBeenLastCalledWith('manuscript');
+    });
+  });
+
+  describe('applying a preset', () => {
+    const Host = ({ start }: { start: DocFormat }) => { const [f, setF] = useState(start); return <FormatPanel {...props} format={f} onFormatChange={setF} />; };
+    it('offers Undo that restores the margins and style edits the preset replaced', () => {
+      const custom = createFormat('nih');
+      custom.page.marginsIn = { top: 0.6, right: 0.7, bottom: 0.8, left: 0.9 };
+      custom.styles.heading1.fontSizePt = 15;
+      render(<Host start={{ ...custom, preset: 'custom', pageLimitPages: 12 }} />);
+      fireEvent.change(screen.getByTestId('control-preset'), { target: { value: 'manuscript' } });
+      expect((screen.getByTestId('control-margin-left') as HTMLInputElement).value).toBe('1');
+      expect(screen.getByTestId('preset-applied').textContent).toContain('Preset applied.');
+      fireEvent.click(screen.getByTestId('control-preset-undo'));
+      expect((screen.getByTestId('control-margin-left') as HTMLInputElement).value).toBe('0.9');
+      expect((screen.getByTestId('control-margin-top') as HTMLInputElement).value).toBe('0.6');
+      expect((screen.getByTestId('control-style-size-heading1') as HTMLInputElement).value).toBe('15');
+      expect((screen.getByTestId('control-page-limit') as HTMLInputElement).value).toBe('12');
+      expect(screen.queryByTestId('preset-applied')).toBeNull();
+    });
+    it('stops offering Undo once something else has changed the format', () => {
+      render(<Host start={createFormat('nih')} />);
+      fireEvent.change(screen.getByTestId('control-preset'), { target: { value: 'manuscript' } });
+      type('control-margin-left', '2');
+      expect(screen.queryByTestId('preset-applied')).toBeNull();
+    });
+    it('keeps what a Word import recorded on built-in styles, so the document stays writable', () => {
+      const f = createFormat('nih');
+      f.styles.normal = { ...f.styles.normal, preserved: { pPrXml: '<w:pPr/>' }, wordDefault: true, customStyle: true };
+      const out = withPreset(f, 'manuscript');
+      expect(out.styles.normal.preserved).toEqual({ pPrXml: '<w:pPr/>' });
+      expect(out.styles.normal.wordDefault).toBe(true);
+      expect(out.styles.normal.customStyle).toBe(true);
+      expect(out.styles.normal.fontFamily).toBe('Times New Roman'); // the preset's own values still replace
+    });
+  });
+
+  describe('style font families', () => {
+    it('Normal\'s family cannot be blanked', () => {
+      const onFormatChange = vi.fn();
+      render(<FormatPanel {...props} format={createFormat('nih')} onFormatChange={onFormatChange} />);
+      const box = screen.getByTestId('control-style-font-normal') as HTMLInputElement;
+      fireEvent.change(box, { target: { value: '' } });
+      fireEvent.blur(box);
+      expect(onFormatChange).not.toHaveBeenCalled();
+      expect(box.value).toBe('Arial');
+    });
+    it('Enter commits the family without leaving the box', () => {
+      const onFormatChange = vi.fn();
+      render(<FormatPanel {...props} format={createFormat('nih')} onFormatChange={onFormatChange} />);
+      const box = screen.getByTestId('control-style-font-caption');
+      fireEvent.change(box, { target: { value: 'Georgia' } });
+      fireEvent.keyDown(box, { key: 'Enter' });
+      expect(last(onFormatChange).styles.caption.fontFamily).toBe('Georgia');
+    });
   });
 });

@@ -163,6 +163,7 @@ export const ENTRY_POINTS: EntryPoint[] = [
   row('edit a named style', [F, 'section:styles', 'control:style-size-normal']),
   // New in Task 7: nothing existed to lose. The limit is the author's own number, never one the app supplies.
   row('set the document page limit', [F, 'section:page', 'control:page-limit']),
+  row('undo a format preset', [F, 'section:page', 'choose:Manuscript: Letter, Times, double spaced', 'control:preset-undo']),
   row('choose the paper size', [F, 'section:page', 'control:page-size']),
   row('set the body font size', [F, 'section:page', 'control:body-font-size']),
   // File and document (top bar)
@@ -466,6 +467,10 @@ async function step(spec: string, isLast: boolean): Promise<void> {
   if (kind === 'count') { const [t, n] = arg.split('='); await waitStep(`${spec} (clicking it changed what the chat will send)`, () => candidates('ptext', t).length === Number(n)); return; }
   if (kind === 'expect') { await expectation(arg); return; }
   if (kind === 'gone') { await waitStep(`${spec} disappears`, () => Object.keys({ text: 1, ...SCOPES }).every(k => candidates(k, arg).length === 0)); return; }
+  if (kind === 'choose') { // pick an option in a <select> and carry on, so a later step can reach what the choice reveals
+    const sel = await waitStep(spec, () => candidates('select', arg)[0]) as HTMLSelectElement;
+    const opt = [...sel.options].find(o => matches(norm(o.textContent), arg))!; fireEvent.change(sel, { target: { value: opt.value } }); await settle(0); return;
+  }
   if (kind === 'select') {
     const sel = await waitStep(spec, () => candidates('select', arg)[0]) as HTMLSelectElement;
     if (isLast) { const opt = [...sel.options].find(o => matches(norm(o.textContent), arg))!; fireEvent.change(sel, { target: { value: opt.value } }); await waitStep(`${spec}: the choice took`, () => sel.value === opt.value); }
