@@ -199,6 +199,12 @@ export interface DocFormat {
   styles: Record<string, StyleDef>;
   defaults: { fontFamily: string; fontSizePt: number };
   preset: FormatPreset;
+  /**
+   * The author's own page limit for the whole document, in pages. Absent means the author has not set one, and nothing
+   * shows a limit. It is document metadata beside the format (never an editor schema attribute); read it through
+   * `readPageLimit`, which ignores a value that is not a sane positive number.
+   */
+  pageLimitPages?: number;
 }
 
 /** A style with its basedOn chain and document defaults fully applied. */

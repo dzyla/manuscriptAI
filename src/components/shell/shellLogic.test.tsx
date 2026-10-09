@@ -37,9 +37,17 @@ describe('railSelect and revealTab', () => {
 });
 
 describe('documentPageLimit', () => {
-  it('reports no limit rather than an inferred one, in any mode or template', () => {
-    expect(documentPageLimit('grant', 'nih-r01')).toBeNull();
-    expect(documentPageLimit('manuscript', null)).toBeNull();
+  it('is null while the author has set none, whatever the format', () => {
+    expect(documentPageLimit(null)).toBeNull();
+    expect(documentPageLimit(undefined)).toBeNull();
+    expect(documentPageLimit(createFormat('nih'))).toBeNull();
+  });
+  it('reads the author\'s own limit from the format', () => {
+    expect(documentPageLimit({ ...createFormat('nih'), pageLimitPages: 13 })).toBe(13);
+    expect(documentPageLimit({ ...createFormat('nih'), pageLimitPages: 13.5 })).toBe(13.5);
+  });
+  it('ignores a stored value that is not a sane positive number', () => {
+    for (const bad of [0, -3, NaN, Infinity, 1e6, '12' as any]) expect(documentPageLimit({ ...createFormat('nih'), pageLimitPages: bad })).toBeNull();
   });
 });
 

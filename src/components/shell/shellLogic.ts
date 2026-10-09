@@ -1,6 +1,7 @@
 import { useDeferredValue, useMemo } from 'react';
 import type { JSONContent } from '@tiptap/core';
-import type { DocFormat, DocumentMode, VoiceProfile } from '../../types';
+import type { DocFormat, VoiceProfile } from '../../types';
+import { readPageLimit } from '../../services/pageLimit';
 import { estimatePages, type PageEstimate } from '../../services/pagination';
 import { styleDistance } from '../../services/proseAudit/score';
 import { activeSummary } from '../../services/proseAudit/profile';
@@ -17,13 +18,13 @@ export const TAB_TASK: Record<SidebarTab, RailTask> = {
 };
 
 /**
- * The page limit shown beside the count. Deliberately null for now: summing a template's section
- * limits gives 14 for an R01, where NIH's page-limited body is 13 (1 page Specific Aims + 12 Research
- * Strategy), and an author at 13.5 pages would read "not over". The explicit `documentPageLimit` per
- * template lands in Task 7, with values sourced from NIH guidance or the FOA, never inferred here.
+ * The page limit shown beside the count: the author's own, set in the Format panel and stored on the document's format.
+ * Null while unset, and the status bar then shows the estimate alone. The app never supplies a number itself: real
+ * limits depend on the activity code and the funding announcement, and a template's section limits do not sum to a
+ * document limit (an R01's sections sum to 14, its page-limited body is 13).
  */
-export function documentPageLimit(_mode: DocumentMode, _templateId: string | null | undefined): number | null {
-  return null;
+export function documentPageLimit(format: DocFormat | null | undefined): number | null {
+  return readPageLimit(format?.pageLimitPages);
 }
 
 /** The style distance to the author's own voice, or null when there is no honest figure to show. */

@@ -24,7 +24,7 @@ import { reviewRows, styleRowId } from './components/panels/reviewRows';
 import { performStyleRewrite } from './components/style/styleRewrite';
 import { sentencesToDraw, auditMatchesDoc } from './components/style/styleSync';
 import { setDocumentContext, trimSectionToLimit, type AgentTool } from './services/ai';
-import { GrantTemplatePicker, GrantInstructionsModal, GrantToolbar } from './components/GrantPanel';
+import { GrantTemplatePicker, GrantInstructionsModal } from './components/GrantPanel';
 import { loadCustomTemplates, getGrantTemplate, WORDS_PER_PAGE, type GrantTemplate } from './services/grantTemplates';
 import { Sparkles, FileText, Settings, Download, Keyboard, Eye, Moon, Sun, ChevronDown, FilePlus, Coins, BookOpen, Github, Square } from 'lucide-react';
 import { saveAs } from 'file-saver';
@@ -71,7 +71,7 @@ export default function App() {
     renumberFigures: storeRenumberFigures,
     resetDocument, persist: persistDocument, initialize: initDocument,
     mode, grantInstructions, grantTemplateId, format, docJson,
-    setMode, setGrantInstructions, setGrantTemplateId,
+    setMode, setGrantInstructions, setGrantTemplateId, setFormat,
     loadStatus, blockedByUnreadable, lastLoad, allowOverwrite, replaceWithHtml, importDocx, revertImport, queueFragmentClone, importId,
   } = useDocumentStore();
 
@@ -300,7 +300,7 @@ export default function App() {
   // The editor only audits (and reports) while its style plugin is enabled, so the plugin is on whenever
   // the Style tab is open or highlights are shown. Highlights themselves are drawn only when the user opts in.
   // The review list shows flagged sentences as rows, so the audit also runs while the Review task is open.
-  const styleAuditOn = sidebarTab === 'style' || drawStyleHighlights || railTask === 'review';
+  const styleAuditOn = drawStyleHighlights || railTask === 'review';
 
   // The plugin reports on edits only; run one audit when metrics are switched on so the panel is
   // populated immediately instead of after the first keystroke.
@@ -1301,7 +1301,7 @@ export default function App() {
   }, [railTask]);
 
   const pageEstimate = usePageEstimate(docJson, format);
-  const limitPages = documentPageLimit(mode, grantTemplateId);
+  const limitPages = documentPageLimit(format);
   const voiceProfile = aiSettings.voiceProfile;
   const currentText = useMemo(() => editorRef.current?.getPlainText(), [docJson]); // eslint-disable-line react-hooks/exhaustive-deps
   const voiceDistance = useMemo(
@@ -1486,26 +1486,6 @@ export default function App() {
               {wordCount} words
             </span>
 
-            {/* Document mode toggle: manuscript / grant */}
-            <div className="flex items-center rounded-lg p-0.5 shrink-0" style={{ border: '1px solid var(--border)', background: 'var(--surface-2)' }}>
-              <button
-                onClick={() => setMode('manuscript')}
-                className={`px-2 py-0.5 text-[10px] font-bold rounded-md transition-colors ${mode === 'manuscript' ? 'bg-white shadow text-stone-800' : ''}`}
-                style={mode === 'manuscript' ? {} : { color: 'var(--text-muted)' }}
-                title="Manuscript mode — journal-style agents"
-              >
-                Manuscript
-              </button>
-              <button
-                onClick={() => setMode('grant')}
-                className={`px-2 py-0.5 text-[10px] font-bold rounded-md transition-colors ${mode === 'grant' ? 'bg-emerald-700 text-white shadow' : ''}`}
-                style={mode === 'grant' ? {} : { color: 'var(--text-muted)' }}
-                title="Grant mode — NIH-style agents, templates, and page budgets"
-              >
-                Grant
-              </button>
-            </div>
-
             <div className="flex-1" />
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -1626,18 +1606,6 @@ export default function App() {
           </div>
         </header>
 
-        {/* Grant toolbar: templates, funder instructions, page budgets */}
-        {mode === 'grant' && (
-          <GrantToolbar
-            htmlContent={content}
-            templateId={grantTemplateId}
-            hasInstructions={grantInstructions.trim().length > 0}
-            onOpenTemplates={() => setShowTemplatePicker(true)}
-            onOpenInstructions={() => setShowGrantInstructions(true)}
-            onTrimSection={handleTrimSection}
-            trimmingSection={trimmingSection}
-          />
-        )}
           </>
         )}
         canvas={(
@@ -1737,6 +1705,19 @@ export default function App() {
               agents: reviewAgents,
               onAcceptAll: handleAcceptAll,
               onRejectAll: handleRejectAll,
+            }}
+            formatPanel={{
+              format,
+              onFormatChange: setFormat,
+              templateId: grantTemplateId,
+              onPickTemplate: () => setShowTemplatePicker(true),
+              onEditInstructions: () => setShowGrantInstructions(true),
+              mode,
+              onModeChange: setMode,
+              hasInstructions: grantInstructions.trim().length > 0,
+              htmlContent: content,
+              onTrimSection: handleTrimSection,
+              trimmingSection,
             }}
             stylePanel={{
               metrics: styleAudit?.metrics ?? null,

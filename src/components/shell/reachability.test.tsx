@@ -80,7 +80,6 @@ export interface EntryPoint { feature: string; path: string[]; pending?: number;
 const W = 'rail:write', C = 'rail:cite', R = 'rail:review', F = 'rail:format';
 const row = (feature: string, path: string[], pending?: number, now?: string[], seed?: Seed[]): EntryPoint =>
   ({ feature, path, ...(pending ? { pending } : {}), ...(now ? { now } : {}), ...(seed ? { seed } : {}) });
-const fresh = (feature: string, path: string[], pending: number): EntryPoint => ({ feature, path, pending, isNew: true });
 
 export const ENTRY_POINTS: EntryPoint[] = [
   // Write
@@ -154,14 +153,18 @@ export const ENTRY_POINTS: EntryPoint[] = [
   row('run a single agent', [R, 'control:analyze-agent']),
   row('summarize the manuscript and its gaps', [R, 'control:summary']),
   // Format
-  row('pick a grant template', [F, 'section:template'], 7, ['title:Grant mode*', 'title:Start from an NIH grant template', 'css:[aria-label="Choose grant template"]']),
-  row('edit grant instructions', [F, 'section:template', 'control:instructions'], 7, ['title:Grant mode*', 'title:Add funder instructions*', 'css:[aria-label="Grant instructions"]']),
-  row('see grant section page budgets', [F, 'section:template', 'control:budgets'], 7, ['title:Grant mode*', 'htext:*/1 pg'], ['grant']),
-  row('trim an over-budget section', [F, 'section:template', 'control:trim'], 7, ['title:Grant mode*', 'htext:Trim'], ['grant']),
-  row('switch between manuscript and grant mode', [F, 'section:template', 'control:mode'], 7, ['title:Grant mode*']),
-  fresh('set page margins', [F, 'section:page'], 7),
-  fresh('choose a format preset', [F, 'section:page', 'control:preset'], 7),
-  fresh('edit a named style', [F, 'section:styles'], 7),
+  row('pick a grant template', [F, 'section:template', 'control:template', 'css:[aria-label="Choose grant template"]']),
+  row('edit grant instructions', [F, 'section:template', 'control:instructions', 'css:[aria-label="Grant instructions"]']),
+  row('see grant section page budgets', [F, 'section:template', 'control:budgets'], undefined, undefined, ['grant']),
+  row('trim an over-budget section', [F, 'section:template', 'control:trim'], undefined, undefined, ['grant']),
+  row('switch between manuscript and grant mode', [F, 'section:template', 'control:mode']),
+  row('set page margins', [F, 'section:page', 'control:margin-left']),
+  row('choose a format preset', [F, 'section:page', 'control:preset']),
+  row('edit a named style', [F, 'section:styles', 'control:style-size-normal']),
+  // New in Task 7: nothing existed to lose. The limit is the author's own number, never one the app supplies.
+  row('set the document page limit', [F, 'section:page', 'control:page-limit']),
+  row('choose the paper size', [F, 'section:page', 'control:page-size']),
+  row('set the body font size', [F, 'section:page', 'control:body-font-size']),
   // File and document (top bar)
   row('start a new manuscript', ['topbar:file', 'item:new'], 8, ['title:New Manuscript']),
   row('import a Word, JSON, Markdown or text file', ['topbar:file', 'item:import'], 8, ['text:Load Document (.json, .docx, .md, .txt)']),
@@ -583,10 +586,10 @@ const ICON_ONLY_BUTTONS: Record<string, number> = {
   // Editor 9: mobile toolbar toggle (a phone-width control, `sm:hidden`, not reachable at desktop width by design), bubble Bold/Italic/Underline, synonym chips,
   // custom-instruction send, figure-question send, table menu items and @-picker sources (each has rows).
   'src/components/Editor.tsx': 9,
-  // Sidebar 4: tab bar, the inline chat suggestion cards' accept/reject, agent chips, vision X, send.
+  // Sidebar 3: the inline chat suggestion cards' accept/reject, agent chips, vision X, send. (Task 7 removed the Sources/Style tab strip with the Style tab.)
   // (Task 4 moved the severity filter and the suggestion cards' own buttons to the Review panel, which names its controls with test ids.
   // Task 5 moved clear-reference-search, trash, source tabs and PDF tabs to the Cite panel, which names every one with a test id.)
-  'src/components/Sidebar.tsx': 4,
+  'src/components/Sidebar.tsx': 3,
   'src/components/style/StylePanel.tsx': 1, // jump to a flagged sentence
   'src/components/style/VoiceProfileManager.tsx': 0,
   'src/components/panels/ReviewPanel.tsx': 4, // section toggles (rows: read the style comparison / open chat), severity chips, row action buttons, named-agent items
@@ -598,6 +601,8 @@ const ICON_ONLY_BUTTONS: Record<string, number> = {
   'src/components/panels/cite/Library.tsx': 0, 'src/components/panels/cite/PdfMatch.tsx': 0, 'src/components/panels/cite/Search.tsx': 0,
   'src/components/panels/WritePanel.tsx': 1, // section toggles (rows: every section: step)
   'src/components/panels/write/Outline.tsx': 0, 'src/components/panels/write/History.tsx': 0, 'src/components/panels/write/Versions.tsx': 0,
+  'src/components/panels/FormatPanel.tsx': 1, // section toggles (rows: every section: step); the mode buttons carry titles
+  'src/components/panels/format/PageSection.tsx': 0, 'src/components/panels/format/StylesSection.tsx': 0, 'src/components/panels/format/NumField.tsx': 0,
 };
 
 /** The body of the `{...}` that opens at `i` (balanced), or null. */
@@ -668,7 +673,8 @@ const GUARDED = ['src/App.tsx', 'src/components/Editor.tsx', 'src/components/Sid
   'src/components/panels/ReviewPanel.tsx', 'src/components/panels/SuggestionBody.tsx', 'src/components/panels/suggestionParts.tsx',
   'src/components/panels/CitePanel.tsx', 'src/components/panels/cite/Library.tsx', 'src/components/panels/cite/SourceCard.tsx', 'src/components/panels/cite/PdfMatch.tsx',
   'src/components/panels/cite/SourceTabs.tsx', 'src/components/panels/cite/Search.tsx', 'src/components/panels/cite/ReferenceManager.tsx',
-  'src/components/panels/WritePanel.tsx', 'src/components/panels/write/Outline.tsx', 'src/components/panels/write/History.tsx', 'src/components/panels/write/Versions.tsx'];
+  'src/components/panels/WritePanel.tsx', 'src/components/panels/write/Outline.tsx', 'src/components/panels/write/History.tsx', 'src/components/panels/write/Versions.tsx',
+  'src/components/panels/FormatPanel.tsx', 'src/components/panels/format/PageSection.tsx', 'src/components/panels/format/StylesSection.tsx', 'src/components/panels/format/NumField.tsx'];
 
 describe('the list itself', () => {
   it('covers every rail task', () => {
@@ -723,6 +729,7 @@ describe('the list itself', () => {
       'src/components/panels/cite/PdfMatch.tsx': ['ptext'], 'src/components/panels/cite/SourceTabs.tsx': ['ptext'], 'src/components/panels/cite/Search.tsx': ['ptext'],
       'src/components/panels/cite/ReferenceManager.tsx': ['ptext', 'select'],
       'src/components/panels/WritePanel.tsx': ['ptext'], 'src/components/panels/write/Outline.tsx': ['ptext'], 'src/components/panels/write/History.tsx': ['ptext'], 'src/components/panels/write/Versions.tsx': ['ptext'],
+      'src/components/panels/FormatPanel.tsx': ['ptext'], 'src/components/panels/format/PageSection.tsx': ['ptext'], 'src/components/panels/format/StylesSection.tsx': ['ptext'], 'src/components/panels/format/NumField.tsx': ['ptext'],
     };
     const steps = ENTRY_POINTS.flatMap(stepsOf).map(st => ({ kind: st.slice(0, st.indexOf(':')), v: st.slice(st.indexOf(':') + 1).replace(/#\d+$/, '') }));
     const uncovered: string[] = [];
@@ -834,12 +841,31 @@ describe('App wiring (behaviour)', () => {
     expect(wide.pages, 'wider margins must give more pages from the same text').toBeGreaterThan(narrow.pages);
   }, 40000);
 
+  it('a margin typed in the Format panel moves the page canvas, and a page limit typed there reaches the status bar', async () => {
+    await mount();
+    fireEvent.click(railBtn('Format'));
+    const canvas = await waitStep('the page canvas', () => screen.queryByTestId('page-canvas')) as HTMLElement;
+    const left = await waitStep('the left margin', () => screen.queryByTestId('control-margin-left')) as HTMLInputElement;
+    expect(canvas.style.paddingLeft).toBe('0.5in');
+    fireEvent.change(left, { target: { value: '1.5' } });
+    await waitFor(() => expect(canvas.style.paddingLeft).toBe('1.5in'));
+    fireEvent.change(left, { target: { value: '-1' } }); // rejected: the page keeps the last good margin
+    await settle(50);
+    expect(canvas.style.paddingLeft).toBe('1.5in');
+    const status = () => [...document.querySelectorAll('[role=status] span')].map(x => norm(x.textContent));
+    expect(status().some(t => /^~?\d+ pp$/.test(t))).toBe(true); // no limit set: the estimate alone
+    fireEvent.change(screen.getByTestId('control-page-limit'), { target: { value: '13' } });
+    await waitFor(() => expect(status().some(t => /^~?\d+ of 13$/.test(t))).toBe(true));
+    fireEvent.change(screen.getByTestId('control-page-limit'), { target: { value: '' } });
+    await waitFor(() => expect(status().some(t => /^~?\d+ pp$/.test(t))).toBe(true));
+  }, 20000);
+
   it('the rail decides what is open; closing it stays closed and a tab change moves both together', async () => {
     await mount();
     const open = (n: string) => railBtn(n).getAttribute('aria-pressed') === 'true';
     fireEvent.click(railBtn('Format'));
     expect(open('Format')).toBe(true);
-    await waitStep('format opens the Style tab', () => screen.queryByText(/compare the draft with your own writing style|Highlight flagged/));
+    await waitStep('format opens the Format panel', () => screen.queryByTestId('control-margin-left'));
     fireEvent.click(railBtn('Format')); // the active task again closes the panel
     expect(open('Format')).toBe(false);
     expect(panel().hasAttribute('hidden')).toBe(true);
@@ -849,8 +875,9 @@ describe('App wiring (behaviour)', () => {
     fireEvent.click(railBtn('Cite')); // reopening from closed opens that task on its own tab
     expect(open('Cite')).toBe(true);
     await waitStep('cite opens Sources', () => screen.queryByText('Browse files'));
-    fireEvent.click(screen.getAllByTestId('section-style').find(b => !b.closest('[data-testid="review-view"]'))!); // the tab strip's button, not the Review panel's section toggle inside review-view; a legacy tab change moves the rail with it (the Outline tab went with Task 6: the Write panel replaced it)
-    expect(open('Format')).toBe(true);
+    await act(async () => { useSourceStore.setState({ sources: [{ id: 'p1', name: 'paper.pdf', type: 'pdf', text: 'Body', digest: 'dig' } as any] }); });
+    fireEvent.click(await waitStep('a source card to chat about', () => screen.queryByTestId('control-chat-source'))); // a legacy tab change (the chat button on a source) moves the rail with it
+    expect(open('Review')).toBe(true);
     expect(open('Cite')).toBe(false);
   });
 

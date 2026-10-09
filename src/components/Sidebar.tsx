@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, createElement } from 'react';
 import { AgentType, Message, Suggestion, HistoryItem, SuggestionSeverity, AISettings, AttachedImage } from '../types';
-import { Send, Sparkles, Check, X, MessageSquare, Info, CheckCheck, XCircle, Filter, BookOpen, FileText, BookMarked, Plus, List, PenLine, AlertTriangle, Search, ImagePlus, Square, ArrowRight } from 'lucide-react';
+import { Send, Sparkles, Check, X, MessageSquare, Info, CheckCheck, XCircle, Filter, BookOpen, FileText, BookMarked, Plus, List, AlertTriangle, Search, ImagePlus, Square, ArrowRight } from 'lucide-react';
 import { ManuscriptSource, VersionSnapshot } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
@@ -9,6 +9,7 @@ import { StylePanel, type StylePanelProps } from './style/StylePanel';
 import { ReviewPanel, type ReviewPanelProps } from './panels/ReviewPanel';
 import { CitePanel } from './panels/CitePanel';
 import { WritePanel } from './panels/WritePanel';
+import { FormatPanel, type FormatPanelProps } from './panels/FormatPanel';
 import { useOutline } from './panels/write/outline';
 import { SuggestionDetail, RebuttalBox } from './panels/SuggestionBody';
 import { AgentIcon, CategoryBadge, DiffView } from './panels/suggestionParts';
@@ -36,6 +37,8 @@ interface SidebarProps {
   activeTabOverride?: 'chat' | 'suggestions' | 'history' | 'sources' | 'outline' | 'style';
   /** Props for the Style tab (sub-project H); the tab shows nothing useful without them. */
   stylePanel?: StylePanelProps;
+  /** The Format panel (the 'style' tab is its home): page setup, named styles, the grant template. */
+  formatPanel?: FormatPanelProps;
   /** The Review panel: one list of everything the AI and the style audit have to say, in document order, with chat folded in. */
   review?: Omit<ReviewPanelProps, 'chat' | 'analyzing' | 'highlightedRowId' | 'renderDetail' | 'renderFooter' | 'progress' | 'chatOpen' | 'onChatOpenChange' | 'zoom'>;
   /** Bumped by the host each time it wants the chat to be seen (a reply arrived); the Chat section opens. */
@@ -81,6 +84,7 @@ export default function Sidebar({
   analysisProgress,
   activeTabOverride,
   stylePanel,
+  formatPanel,
   review,
   chatRequest,
   onTabChange,
@@ -705,33 +709,6 @@ export default function Sidebar({
 
   return (
     <div className="w-full h-full flex flex-col overflow-hidden" style={{ borderLeft: '1px solid var(--border)', background: 'var(--surface-0)' }}>
-      {!reviewView && (
-      <div className="flex" style={{ borderBottom: '1px solid var(--border)' }}>
-        {([
-          { key: 'sources' as const, icon: <BookOpen size={14} />, label: 'Sources' },
-          { key: 'style' as const, icon: <PenLine size={14} />, label: 'Style' },
-        ]).map(tab => (
-          <button
-            key={tab.key}
-            data-testid={`section-${tab.key}`}
-            onClick={() => setActiveTab(tab.key)}
-            className={`flex-1 py-3.5 text-xs font-semibold flex items-center justify-center gap-1.5 transition-all duration-200 ${
-              activeTab === tab.key 
-                ? 'border-b-2 border-stone-800' 
-                : 'hover:bg-white/50'
-            }`}
-            style={{ 
-              color: activeTab === tab.key ? 'var(--text-primary)' : 'var(--text-tertiary)',
-              background: activeTab === tab.key ? 'var(--surface-1)' : 'transparent',
-            }}
-          >
-            {tab.icon}
-            {tab.label}
-          </button>
-        ))}
-      </div>
-      )}
-
       {/* Analysis progress */}
       {isAnalyzing && !reviewView && (
         <div className="px-4 py-2" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
@@ -815,11 +792,14 @@ export default function Sidebar({
         />
       </div>
 
-      {!reviewView && activeTab === 'style' && (
-        <div className="flex-1 overflow-y-auto p-4" style={{ fontSize: `${contentZoom}%` }}>
-          {stylePanel ? <StylePanel {...stylePanel} /> : null}
-        </div>
-      )}
+      {/* The format view stays mounted when another task is open: a half-typed margin or limit keeps its place. */}
+      <div
+        className="flex-1 overflow-y-auto p-4"
+        style={{ fontSize: `${contentZoom}%`, ...(activeTab === 'style' ? {} : { display: 'none' }) }}
+        data-testid="format-view"
+      >
+        {formatPanel ? <FormatPanel {...formatPanel} /> : null}
+      </div>
     </div>
   );
 }
