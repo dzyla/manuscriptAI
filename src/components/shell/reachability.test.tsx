@@ -1209,6 +1209,19 @@ describe('Top bar (behaviour)', () => {
     await waitFor(() => expect(useAIStore.getState().messages.some(m => m.role === 'user' && m.content === FIGURE_PROMPTS.describe)).toBe(true), { timeout: 4000 });
   }, 20000);
 
+  it('Ctrl+S saves what is in the app NOW, not what it held when the page loaded', async () => {
+    vi.mocked(saveAs).mockClear();
+    await resolve([], []);
+    await act(async () => { useAIStore.setState({ suggestions: [{ id: 'added-after-mount', originalText: 'Alpha', suggestedText: 'Beta', explanation: 'late', agent: 'editor', startIndex: 0, endIndex: 5, severity: 'minor' } as any] }); });
+    await act(async () => { useDocumentStore.getState().setTitle('Retitled after mount'); });
+    fireEvent.keyDown(window, { key: 's', ctrlKey: true, bubbles: true, cancelable: true });
+    await waitFor(() => expect(saveAs).toHaveBeenCalledTimes(1), { timeout: 4000 });
+    const blob = vi.mocked(saveAs).mock.calls[0][0] as Blob;
+    const text = await new Promise<string>((res) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.readAsText(blob); });
+    expect(text).toContain('added-after-mount');
+    expect(text).toContain('Retitled after mount');
+  }, 20000);
+
   it('the figure controls show which alignment is set, and follow a change', async () => {
     await resolve(['figure:selected'], ['figure']);
     const align = () => screen.getAllByTestId('control-align-figure');
