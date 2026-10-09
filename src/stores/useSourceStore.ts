@@ -21,6 +21,10 @@ interface SourceState {
   persist: () => Promise<void>;
 }
 
+let persistQueue: Promise<unknown> = Promise.resolve();
+/** Resolves when every persist started so far has finished (or failed). */
+export const flushPersist = (): Promise<unknown> => persistQueue;
+
 export const useSourceStore = create<SourceState>((set, get) => ({
   sources: [],
   pendingApiSources: [],
@@ -74,13 +78,17 @@ export const useSourceStore = create<SourceState>((set, get) => ({
     }
   },
 
-  persist: async () => {
-    const { sources } = get();
-    await db.sources.clear();
-    if (sources.length > 0) {
-      await db.sources.bulkPut(
-        sources.map((source, order) => ({ ...source, order } as SourceRow))
-      );
-    }
+  persist: () => {
+    // Serialised: concurrent persists used to interleave their clear() and bulkPut(), so a stale write could land last and resurrect a removed source.
+    // The sources are read inside the queued run, so the latest state always wins. Not coalesced: each call runs, in order.
+    const run = persistQueue.then(() => db.transaction('rw', db.sources, async () => {
+      const { sources } = get();
+      await db.sources.clear();
+      if (sources.length > 0) {
+        await db.sources.bulkPut(sources.map((source, order) => ({ ...source, order } as SourceRow)));
+      }
+    }));
+    persistQueue = run.catch(() => undefined);
+    return run;
   },
 }));

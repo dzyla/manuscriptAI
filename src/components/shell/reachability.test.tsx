@@ -16,7 +16,7 @@ vi.mock('../../services/manuscriptSearch', async (orig) => {
 import App from '../../App';
 import { db } from '../../db/manuscriptDb';
 import { useAIStore } from '../../stores/useAIStore';
-import { useSourceStore } from '../../stores/useSourceStore';
+import { useSourceStore, flushPersist } from '../../stores/useSourceStore';
 import { useDocumentStore, documentRepository } from '../../stores/useDocumentStore';
 import { readDocx } from '../../docx/read';
 import { expose } from 'comlink';
@@ -523,9 +523,7 @@ const seedAfter = async (seeds: Seed[] = []) => {
 
 async function resetWorld() {
   cleanup();
-  // The source store persists with a clear() then a bulkPut() of what it held at the time. A row that ended just after adding a source (add a search result)
-  // can have that second write still in flight; clearing the tables now would let it land afterwards and seed the NEXT row's App with a stale source.
-  await new Promise(r => setTimeout(r, 60));
+  await flushPersist(); // a persist still in flight from the last row must land before the tables are cleared
   localStorage.clear();
   useAIStore.setState(useAIStore.getInitialState(), true);
   useSourceStore.setState(useSourceStore.getInitialState(), true);
