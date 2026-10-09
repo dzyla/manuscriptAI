@@ -5,7 +5,7 @@ import 'fake-indexeddb/auto';
 import VersionHistoryPopup from './VersionHistoryPopup';
 import { WritePanel } from './panels/WritePanel';
 import { db } from '../db/manuscriptDb';
-import { restoreIfPresent } from '../services/versionSnapshots';
+import { restoreIfPresent, SNAPSHOT_GONE_MESSAGE } from '../services/versionSnapshots';
 
 afterEach(async () => { cleanup(); vi.restoreAllMocks(); await db.versionSnapshots.clear(); });
 
@@ -94,6 +94,26 @@ describe('the popup and the Write panel share one live list', () => {
     expect(onRestore).not.toHaveBeenCalled();
     expect(await restoreIfPresent('a', onRestore)).toBe(true);
     expect(onRestore).toHaveBeenCalledWith(expect.objectContaining({ id: 'a', content: '<p>STORED</p>' }));
+  });
+
+  it('a refused restore tells the author in the panel and in the popup, and does not touch the document', async () => {
+    await db.versionSnapshots.add(snap('a', 'Vanishing', '<p>x</p>'));
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const alert = vi.spyOn(window, 'alert').mockImplementation(() => {});
+    const onRestore = vi.fn();
+    const panelView = panel(onRestore);
+    await screen.findByText('Vanishing');
+    vi.spyOn(db.versionSnapshots, 'get').mockResolvedValue(undefined); // the record went between the list render and the click
+    fireEvent.click(screen.getByTestId('control-restore-version'));
+    await waitFor(() => expect(alert).toHaveBeenCalledWith(SNAPSHOT_GONE_MESSAGE));
+    panelView.unmount();
+    alert.mockClear();
+    render(<VersionHistoryPopup currentTitle="t" currentContent="<p>x</p>" onRestore={onRestore} />);
+    openPopup();
+    const li = (await screen.findByText('Vanishing')).closest('li')!;
+    fireEvent.click(li.querySelector('[title="Restore"]')!);
+    await waitFor(() => expect(alert).toHaveBeenCalledWith(SNAPSHOT_GONE_MESSAGE));
+    expect(onRestore).not.toHaveBeenCalled();
   });
 
   it('a snapshot deleted elsewhere leaves the panel list (its restore button goes with it)', async () => {

@@ -10,7 +10,7 @@ import { Toast, StorageBanner, ExportWarning, ShortcutsModal, type ToastState } 
 import { SelectionBar, BlockTypeSelect } from './components/editor/SelectionBar';
 import { NO_SELECTION, type SelectionInfo } from './components/editor/selectionKind';
 import type { RailTask } from './components/shell/Rail';
-import { railSelect, revealTab, type PanelTab, documentPageLimit, usePageEstimate, docStats } from './components/shell/shellLogic';
+import { railSelect, revealTab, type PanelTab, documentPageLimit, usePageEstimate, useOverBudget, docStats } from './components/shell/shellLogic';
 import SettingsModal from './components/SettingsModal';
 import PostDraftingView from './components/PostDraftingView';
 import VersionHistoryPopup from './components/VersionHistoryPopup';
@@ -257,6 +257,7 @@ export default function App() {
 
   // ─── Status bar ────────────────────────────────────────────────────────────
   const pageEstimate = usePageEstimate(docJson, format);
+  const overBudget = useOverBudget(content, grantTemplateId, mode === 'grant');
   const wordCount = stripHtml(content).split(/\s+/).filter(w => w.length > 0).length;
   const stats = docStats(useDeferredValue(docJson), wordCount);
 
@@ -328,6 +329,7 @@ export default function App() {
           <StatusBar
             estimate={pageEstimate}
             limitPages={documentPageLimit(format)}
+            overBudget={overBudget}
             words={wordCount}
             voiceDistance={review.voiceDistance}
             saveState={saveState}
@@ -391,11 +393,8 @@ export default function App() {
             }}
             stylePanel={{
               metrics: review.styleAudit?.metrics ?? null,
-              onJumpToSentence: review.handleStyleJump,
-              onRewrite: review.handleStyleRewrite,
               highlightsOn: review.drawStyleHighlights,
               onToggleHighlights: review.setDrawStyleHighlights,
-              rewritingId: review.rewritingId,
             }}
             manuscriptContent={stripHtml(content)}
             manuscriptHtml={content}

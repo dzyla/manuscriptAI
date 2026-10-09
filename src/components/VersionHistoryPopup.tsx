@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { useSnapshots, restoreIfPresent, saveSnapshot as persistSnapshot, deleteSnapshot as removeSnapshot, wordCount, formatSnapshotDate } from '../services/versionSnapshots';
+import { useSnapshots, restoreOrExplain, saveSnapshot as persistSnapshot, deleteSnapshot as removeSnapshot, wordCount, formatSnapshotDate } from '../services/versionSnapshots';
 import type { VersionSnapshot } from '../types';
 import { Clock, Plus, Trash2, RotateCcw, Eye, X, History } from 'lucide-react';
 
@@ -208,7 +208,7 @@ export default function VersionHistoryPopup({ currentTitle, currentContent, onRe
                         <button
                           onClick={() => {
                             if (window.confirm(`Restore snapshot "${snap.name}"? Current content will be replaced.`)) {
-                              void restoreIfPresent(snap.id, onRestore);
+                              void restoreOrExplain(snap.id, onRestore);
                               setOpen(false);
                             }
                           }}
@@ -268,9 +268,10 @@ export default function VersionHistoryPopup({ currentTitle, currentContent, onRe
               </div>
               <div className="flex gap-2">
                 <button
+                  data-testid="control-popup-restore-from-preview"
                   onClick={() => {
                     if (window.confirm(`Restore snapshot "${previewSnapshot.name}"?`)) {
-                      void restoreIfPresent(previewSnapshot.id, onRestore);
+                      void restoreOrExplain(previewSnapshot.id, onRestore);
                       setPreviewId(null);
                       setOpen(false);
                     }
@@ -281,6 +282,8 @@ export default function VersionHistoryPopup({ currentTitle, currentContent, onRe
                   <RotateCcw size={11} /> Restore
                 </button>
                 <button
+                  data-testid="control-popup-close-preview"
+                  title="Close preview"
                   onClick={() => setPreviewId(null)}
                   className="p-1.5 rounded-lg transition-colors"
                   style={{ color: 'var(--text-muted)' }}

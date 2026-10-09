@@ -58,7 +58,7 @@ TipTap editor with custom extensions in `src/extensions/`:
 - **`GrammarChecker`** — passive grammar checking
 - **`ResizableImage`** — draggable/resizable image nodes
 
-The `@` key triggers a floating citation picker. Citation numbers are plain text `[N]` patterns in HTML; renumbering scans the full HTML in document order.
+The `@` key triggers a floating citation picker. Citations are schema nodes (`citation`, `src/extensions/specs/citation.ts`; an inline atom carrying `sourceIds`), not text: `[N]` is how a node renders and exports. Renumbering walks the ProseMirror doc in document order (`getCitationOrder` in `src/components/editor/useEditorHandle.ts`), never the HTML.
 
 ### The shell (`src/components/shell/`, `src/components/panels/`)
 
@@ -73,7 +73,9 @@ Where each old sidebar tab went:
 Page numbers, the page limit and layout:
 - All page numbers come from `src/services/pagination.ts`. Sub-project A3 replaces `estimatePages`' body and flips `approximate` to false with no UI change.
 - The page limit is author-set (`DocFormat.pageLimitPages`). The app must never assert an NIH page limit of its own: real limits vary by activity code and funding announcement.
-- `src/components/shell/reachability.test.tsx` is the contract for feature reachability. A feature that moves updates its row; one that is lost fails the suite. Update it whenever a feature moves.
+- `src/components/shell/reachability.test.tsx` is the contract for feature reachability. A feature that moves updates its row; one that is lost fails the suite. Update it whenever a feature moves. Rows catch deletions; its guards catch additions (a button with a title, a text-only button, an icon-only button, a duplicate test id, a top-bar menu item).
+- **The reachability guards have limits.** They read the source of the guarded files, so they do not see a `<select>`, a checkbox, a `<div onClick>`, a button whose `title` is a bare variable, a templated test id (those are listed in `TEMPLATED_TESTIDS` and must be written out as literals to be checked), or anything in `src/extensions/views/*`. A new control of those kinds needs its row written by hand and a `data-testid`; nothing will fail if you forget. Give a new control a literal `data-testid="control-x"` and a row with `control:x`.
+- The status bar carries the one live NIH compliance signal: the grant section furthest over its page budget (`useOverBudget`, `worstOverBudget` in `GrantPanel.tsx`). Keep it quiet when nothing is over.
 - The page is the width (no width control); zoom is a CSS `zoom` on the page canvas, fit to the available width.
 
 ### Electron (`electron/main.ts`, `electron/preload.mjs`)
@@ -82,7 +84,7 @@ Main process handles IPC for CORS-bypassed network requests via Electron's `net`
 
 ## Key Conventions
 
-- **Citation registry**: `citationRegistry` maps `sourceId → number`. The registry in the store and `[N]` markers in HTML must stay in sync. Always call `useDocumentStore.renumberCitations()` after structural changes and apply the returned `newHtml` to the editor.
+- **Citation registry**: `citationRegistry` maps `sourceId → number`. The registry in the store and the numbers on the editor's `citation` nodes must stay in sync. After a structural change, ask the editor for the order (`editorRef.current.getCitationOrder()`), pass it to `useDocumentStore.renumberCitations(order)`, which returns the new **registry** (not HTML), and apply that with `editorRef.current.updateCitations(registry)` (see `renumberCitations` in `App.tsx`). Never scan or rewrite HTML to renumber.
 - **Suggestion lifecycle**: suggestions are created with `startIndex`/`endIndex` offsets into the plain text. The `SuggestionMark` extension uses these to highlight ranges. On accept, `App.tsx` applies the text replacement and persists the history item.
 - **Provider configuration**: `AIProvider` type is `'gemini' | 'openai' | 'anthropic' | 'local'`. All non-Gemini providers share the OpenAI SDK path; Anthropic uses `https://api.anthropic.com/v1` as base URL with the anthropic API key.
 - **GitHub Pages deployment**: `vite.config.ts` sets `base: '/manuscriptAI/'` in production. Change this if the repo name differs.

@@ -9,6 +9,9 @@ import { useDocumentStore } from '../stores/useDocumentStore';
 import { useAIStore } from '../stores/useAIStore';
 import { useSourceStore } from '../stores/useSourceStore';
 
+/** The section title the Cite panel passes to `onAnalyzeSection` to append a bibliography instead of analysing a section. One constant: a rename in only one file would send the bibliography to the AI. */
+export const BIBLIOGRAPHY_SECTION = '__bibliography__';
+
 const stripHtml = (html: string) => html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
 
 /** The chat: sending a message (with its tools and scopes), a figure question, a section analysis and a literature comparison. */
@@ -156,7 +159,7 @@ export function useChat({ editorRef, showToast, openTab }: AppCtx, abortRef: Mut
 
   const handleAnalyzeSection = async (sectionText: string, sectionTitle: string) => {
     // Special sentinel: bibliography insertion from the Sources tab
-    if (sectionTitle === '__bibliography__') {
+    if (sectionTitle === BIBLIOGRAPHY_SECTION) {
       const currentHtml = editorRef.current?.getHTML() || content;
       editorRef.current?.setContent(currentHtml + sectionText);
       setContent(currentHtml + sectionText);

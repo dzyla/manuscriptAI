@@ -1,3 +1,4 @@
+import { BIBLIOGRAPHY_SECTION } from '../../hooks/useChat';
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { AgentType, Message, Suggestion, HistoryItem, AISettings, AttachedImage, ManuscriptSource, VersionSnapshot } from '../../types';
 import { Sparkles } from 'lucide-react';
@@ -193,7 +194,7 @@ export default function TaskPanels({
             progress={analysisProgress?.agent ? `Processing: ${analysisProgress.agent}` : 'AI agents analyzing in parallel...'}
             renderDetail={renderSuggestionDetail}
             renderFooter={renderSuggestionFooter}
-            styleSection={stylePanel ? <StylePanel {...stylePanel} showWorst={false} /> : undefined}
+            styleSection={stylePanel ? <StylePanel {...stylePanel} /> : undefined}
             zoom={contentZoom}
           />
         </div>
@@ -213,7 +214,7 @@ export default function TaskPanels({
           onRenumberCitations={onRenumberCitations}
           onRemoveCitation={onRemoveCitation}
           onScrollToCitation={onScrollToCitation}
-          onInsertHtml={html => onAnalyzeSection?.(html, '__bibliography__')}
+          onInsertHtml={html => onAnalyzeSection?.(html, BIBLIOGRAPHY_SECTION)}
           onSourcesChange={onSourcesChange}
           externalApiSources={externalApiSources}
           onExternalSourcesMerged={onExternalSourcesMerged}

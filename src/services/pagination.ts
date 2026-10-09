@@ -5,7 +5,7 @@ import { PAGE_SIZES_IN, createFormat } from './formatPresets';
 /**
  * The single source of a DOCUMENT page count. The page guides in the editor
  * read this for how many page boundaries to draw and for their "p. N" labels;
- * the status bar will read it too (a later U task). Nothing else may compute a
+ * the status bar reads it too (`usePageEstimate` in shell/shellLogic.ts). Nothing else may compute a
  * document page count.
  *
  * What is measured versus estimated today: the NUMBER of pages and the labels

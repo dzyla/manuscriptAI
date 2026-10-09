@@ -4,6 +4,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { Rail } from './Rail';
 import { StatusBar } from './StatusBar';
+import { worstOverBudget } from '../GrantPanel';
 import { AppShell } from './AppShell';
 
 afterEach(cleanup);
@@ -85,9 +86,40 @@ describe('StatusBar honesty', () => {
     render(<StatusBar estimate={{ ...estimate, pages: 13 }} limitPages={12} words={1} voiceDistance={null} saveState="Saved" />);
     expect(screen.getByText(/13 of 12/).className).toContain('is-over');
   });
+  it('does not flag a count exactly at the limit: 13 of 13 is compliant, not an alarm', () => {
+    render(<StatusBar estimate={{ ...estimate, approximate: false, pages: 13 }} limitPages={13} words={1} voiceDistance={null} saveState="Saved" />);
+    expect(screen.getByText(/\b13 of 13\b/).className).not.toContain('is-over');
+  });
   it('does not flag a count within the limit', () => {
     render(<StatusBar estimate={estimate} limitPages={12} words={1} voiceDistance={null} saveState="Saved" />);
     expect(screen.getByText(/11 of 12/).className).not.toContain('is-over');
+  });
+});
+
+describe('StatusBar over-budget section', () => {
+  const estimate = { pages: 11, approximate: true, breaks: [] };
+  it('names the section over its page budget and flags it', () => {
+    render(<StatusBar estimate={estimate} limitPages={null} overBudget={{ title: 'Significance', pages: 2.6, limit: 2 }} words={1} voiceDistance={null} saveState="Saved" />);
+    const chip = screen.getByTestId('status-over-budget');
+    expect(chip.textContent).toBe('Significance: 2.6 of 2 pg');
+    expect(chip.className).toContain('is-over');
+  });
+  it('is absent when nothing is over, so the bar stays quiet', () => {
+    render(<StatusBar estimate={estimate} limitPages={null} overBudget={null} words={1} voiceDistance={null} saveState="Saved" />);
+    expect(screen.queryByTestId('status-over-budget')).toBeNull();
+  });
+});
+
+describe('worstOverBudget', () => {
+  const words = (n: number) => Array.from({ length: n }, () => 'word').join(' ');
+  const html = (sig: number, innov: number) => `<h2>Significance</h2><p>${words(sig)}</p><h2>Innovation</h2><p>${words(innov)}</p>`;
+  it('is null outside a template, and null when every section fits (exactly at the allowance is not over)', () => {
+    expect(worstOverBudget(html(2000, 2000), null)).toBeNull();
+    expect(worstOverBudget(html(1000, 500), 'nih-r01')).toBeNull(); // Significance 2 pages = 1000 words, Innovation 1 page = 500
+  });
+  it('names the section furthest over its allowance', () => {
+    const w = worstOverBudget(html(1100, 1000), 'nih-r01');
+    expect(w).toMatchObject({ title: 'Innovation', limit: 1 });
   });
 });
 

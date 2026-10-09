@@ -279,6 +279,32 @@ export function GrantInstructionsModal({ value, onSave, onClose }: InstructionsM
 
 // ─── Grant toolbar: template/instructions buttons + per-section page budgets ──
 
+export interface SectionBudget { ts: GrantTemplateSection; words: number; budgetWords: number; pages: number; ratio: number; over: boolean }
+
+/** Each page-budgeted template section that exists in the document, with its body words against its allowance. */
+export function sectionBudgets(htmlContent: string, templateId: string | null | undefined): SectionBudget[] {
+  const template = getGrantTemplate(templateId);
+  if (!template) return [];
+  const docSections = detectH2Sections(htmlContent);
+  const out: SectionBudget[] = [];
+  for (const ts of template.sections.filter(s => s.pageLimit)) {
+    const match = docSections.find(ds => ds.section.toLowerCase() === ts.title.toLowerCase());
+    if (!match) continue;
+    // Section text includes the title line; subtract it for the body word count
+    const words = Math.max(0, match.text.split(/\s+/).filter(Boolean).length - ts.title.split(/\s+/).length);
+    const budgetWords = Math.round((ts.pageLimit as number) * WORDS_PER_PAGE);
+    const ratio = words / budgetWords;
+    out.push({ ts, words, budgetWords, pages: wordsToPages(words), ratio, over: ratio > 1 });
+  }
+  return out;
+}
+
+/** The section furthest over its page budget, or null when none is: the one live compliance signal the status bar carries. */
+export function worstOverBudget(htmlContent: string, templateId: string | null | undefined): { title: string; pages: number; limit: number } | null {
+  const over = sectionBudgets(htmlContent, templateId).filter(b => b.over).sort((a, b) => b.ratio - a.ratio)[0];
+  return over ? { title: over.ts.title, pages: over.pages, limit: over.ts.pageLimit as number } : null;
+}
+
 interface GrantToolbarProps {
   htmlContent: string;
   templateId: string | null;
@@ -293,19 +319,10 @@ interface GrantToolbarProps {
 }
 
 export function GrantToolbar({ compact, htmlContent, templateId, hasInstructions, onOpenTemplates, onOpenInstructions, onTrimSection, trimmingSection }: GrantToolbarProps) {
-  const template = getGrantTemplate(templateId);
-  const docSections = template ? detectH2Sections(htmlContent) : [];
-  const budgeted = template ? template.sections.filter(s => s.pageLimit) : [];
+  const budgets = sectionBudgets(htmlContent, templateId);
 
-  const chips = budgeted.map(ts => {
-    const match = docSections.find(ds => ds.section.toLowerCase() === ts.title.toLowerCase());
-    if (!match) return null;
-    // Section text includes the title line; subtract it for the body word count
-    const words = Math.max(0, match.text.split(/\s+/).filter(Boolean).length - ts.title.split(/\s+/).length);
-    const budgetWords = Math.round((ts.pageLimit as number) * WORDS_PER_PAGE);
-    const pages = wordsToPages(words);
-    const ratio = words / budgetWords;
-    const over = ratio > 1;
+  const chips = budgets.map(b => {
+    const { ts, words, budgetWords, pages, ratio, over } = b;
     const tone = over ? 'text-rose-600' : ratio > 0.85 ? 'text-amber-600' : 'text-emerald-700';
     return (
       <span key={ts.title} className="flex items-center gap-1 shrink-0" title={`${ts.title}: ${words} words ≈ ${pages} pages of ${ts.pageLimit} allowed (~${budgetWords} words)`}>
@@ -324,7 +341,7 @@ export function GrantToolbar({ compact, htmlContent, templateId, hasInstructions
         )}
       </span>
     );
-  }).filter(Boolean);
+  });
 
   return (
     <div

@@ -1,4 +1,4 @@
-import { memo, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 import { FileText, Palette, Ruler } from 'lucide-react';
 import type { DocFormat, DocumentMode } from '../../types';
 import { GrantToolbar } from '../GrantPanel';
@@ -30,6 +30,8 @@ export const FormatPanel = memo(function FormatPanel(p: FormatPanelProps) {
   const [open, setOpen] = useState({ page: true, styles: false, template: false });
   const toggle = (k: keyof typeof open) => setOpen(o => ({ ...o, [k]: !o[k] }));
   const grant = p.mode === 'grant';
+  // In grant mode the section page budgets and Trim are the live compliance signal, so the template section opens when the mode turns on.
+  useEffect(() => { if (grant) setOpen(o => (o.template ? o : { ...o, template: true })); }, [grant]);
   return (
     <div className="space-y-3">
       <Section id="page" label="Page setup" icon={<Ruler size={13} />} open={open.page} onToggle={() => toggle('page')}>

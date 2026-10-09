@@ -197,11 +197,12 @@ export function ReviewPanel(p: ReviewPanelProps) {
                   {r.actions.map(a => {
                     const m = actionMeta(r, a);
                     // Reject only edits the list, so a row whose text has gone can still be cleared; accept and rewrite touch the document and need a live anchor.
+                    // The test ids below are written out, not templated: the reachability guard reads them from the source and cannot see a computed one.
                     const disabled = a !== 'reject' && !r.canAct;
                     return (
                       <button
                         key={a}
-                        data-testid={`control-${m.id}`}
+                        data-testid={m.id === 'rewrite' ? 'control-rewrite' : m.id === 'insert-note' ? 'control-insert-note' : m.id === 'accept' ? 'control-accept' : m.id === 'dismiss' ? 'control-dismiss' : 'control-reject'}
                         disabled={disabled}
                         onClick={e => { e.stopPropagation(); onAct(r.id, a); }}
                         className={m.primary
@@ -229,8 +230,9 @@ export function ReviewPanel(p: ReviewPanelProps) {
         )}
       </div>
 
+      {/* Kept mounted: the voice-profile form inside holds a paste of the author's own writing, which a collapse must not discard. (Chat unmounts safely: its composer lives in the host.) */}
       {p.styleSection !== undefined && (
-        <Section flat keepMounted={false} id="style" label="Style comparison" icon={<PenLine size={13} />} open={styleOpen} onToggle={() => setStyleOpen(v => !v)}>
+        <Section flat id="style" label="Style comparison" icon={<PenLine size={13} />} open={styleOpen} onToggle={() => setStyleOpen(v => !v)}>
           <div className="px-4 pb-4">{p.styleSection}</div>
         </Section>
       )}

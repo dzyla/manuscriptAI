@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Clock, Eye, Plus, RotateCcw, Trash2, X } from 'lucide-react';
 import type { VersionSnapshot } from '../../../types';
-import { deleteSnapshot, formatSnapshotDate, restoreIfPresent, saveSnapshot, useSnapshots, wordCount } from '../../../services/versionSnapshots';
+import { deleteSnapshot, formatSnapshotDate, restoreOrExplain, saveSnapshot, useSnapshots, wordCount } from '../../../services/versionSnapshots';
 
 export interface VersionsProps {
   getDocument: () => { title: string; content: string };
@@ -31,7 +31,7 @@ export function Versions({ getDocument, onCount, onRestore }: VersionsProps) {
     if (previewId === id) setPreviewId(null);
   };
   const restore = (snap: VersionSnapshot, message: string) => {
-    if (window.confirm(message)) { void restoreIfPresent(snap.id, onRestore); setPreviewId(null); }
+    if (window.confirm(message)) { void restoreOrExplain(snap.id, onRestore); setPreviewId(null); }
   };
   const preview = snapshots.find(s => s.id === previewId);
 

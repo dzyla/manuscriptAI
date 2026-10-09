@@ -9,9 +9,11 @@ export const providerLabel = (p: string) => (p === 'local' ? 'Local' : p === 'an
 export interface DocStats { chars: number; paragraphs: number; readingMin: number }
 export interface AiStatus { tokens: number; suggestions: number; provider: string; localModel?: string }
 
-export function StatusBar({ estimate, limitPages, words, voiceDistance, saveState, stats, ai }: {
+export function StatusBar({ estimate, limitPages, overBudget, words, voiceDistance, saveState, stats, ai }: {
   estimate: PageEstimate;
   limitPages: number | null;
+  /** The grant section furthest over its page budget. Absent when nothing is over, so the bar stays quiet. */
+  overBudget?: { title: string; pages: number; limit: number } | null;
   words: number;
   voiceDistance: number | null;
   saveState: string;
@@ -31,6 +33,7 @@ export function StatusBar({ estimate, limitPages, words, voiceDistance, saveStat
       >
         {pages}
       </span>
+      {overBudget && <span className="u-status-pages is-over" data-testid="status-over-budget">{overBudget.title}: {overBudget.pages} of {overBudget.limit} pg</span>}
       <span>{words.toLocaleString()} words</span>
       {stats && <span>{stats.chars.toLocaleString()} chars</span>}
       {stats && <span>{stats.paragraphs.toLocaleString()} paragraphs</span>}

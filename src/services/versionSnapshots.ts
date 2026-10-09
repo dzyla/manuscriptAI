@@ -55,6 +55,16 @@ export async function restoreIfPresent(id: string, onRestore: (s: VersionSnapsho
   return true;
 }
 
+/** What the author is told when a restore finds its snapshot gone. */
+export const SNAPSHOT_GONE_MESSAGE = 'That snapshot no longer exists, so nothing was restored. Your document is unchanged.';
+
+/** `restoreIfPresent`, but a refusal is said aloud: the author confirmed a replace and must not be left wondering why nothing happened. */
+export async function restoreOrExplain(id: string, onRestore: (s: VersionSnapshot) => void | Promise<void>): Promise<boolean> {
+  const restored = await restoreIfPresent(id, onRestore);
+  if (!restored) window.alert(SNAPSHOT_GONE_MESSAGE);
+  return restored;
+}
+
 /** Every snapshot, newest first, kept current by Dexie's liveQuery: a save or delete from any surface shows in all of them. */
 export function useSnapshots(): VersionSnapshot[] {
   const [snapshots, setSnapshots] = useState<VersionSnapshot[]>([]);

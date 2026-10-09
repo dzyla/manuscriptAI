@@ -3,6 +3,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { ReviewPanel } from './ReviewPanel';
 import type { ReviewRow } from './reviewRows';
+import { VoiceProfileManager } from '../style/VoiceProfileManager';
 
 afterEach(cleanup);
 
@@ -120,5 +121,19 @@ describe('ReviewPanel', () => {
     fireEvent.click(document.querySelector('[data-severity="major"]')!);
     expect(screen.getAllByTestId('row-suggestion').length).toBe(1);
     expect(screen.queryByTestId('row-style')).toBeNull();
+  });
+});
+
+describe('ReviewPanel: the style section keeps what the author typed', () => {
+  it('a long paste survives collapsing and reopening the section', () => {
+    render(<ReviewPanel rows={rows} {...noop} styleSection={<VoiceProfileManager />} />);
+    fireEvent.click(screen.getByTestId('section-style'));
+    fireEvent.click(screen.getByTestId('control-voice-samples'));
+    const essay = Array.from({ length: 400 }, (_, i) => `Sentence ${i} of my own writing.`).join(' ');
+    fireEvent.change(screen.getByPlaceholderText(/Paste at least/), { target: { value: essay } });
+    fireEvent.click(screen.getByTestId('section-style')); // collapse
+    expect(screen.getByTestId('section-style').getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(screen.getByTestId('section-style')); // reopen
+    expect((screen.getByPlaceholderText(/Paste at least/) as HTMLTextAreaElement).value).toBe(essay);
   });
 });

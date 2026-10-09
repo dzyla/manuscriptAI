@@ -458,7 +458,8 @@ mark {
 .page-canvas {
   background: var(--surface-1, #fff);
   box-sizing: border-box;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 8px 24px rgba(0, 0, 0, 0.06);
+  /* The 1px ring is a spread shadow, not a border: a border would take 2px from the content box and skew the page pitch the guides are measured from. It gives the page an edge in dark mode, where the black shadow is invisible. */
+  box-shadow: 0 0 0 1px var(--border-subtle), 0 1px 3px rgba(0, 0, 0, 0.12), 0 8px 24px rgba(0, 0, 0, 0.06);
   max-width: none;
 }
 

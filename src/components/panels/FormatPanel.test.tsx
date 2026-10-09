@@ -68,6 +68,13 @@ describe('FormatPanel', () => {
     expect(screen.getByTestId('control-instructions')).toBeTruthy();
   });
 
+  it('opens the grant template section by default in grant mode, and leaves it closed for a manuscript', () => {
+    const { rerender } = render(<FormatPanel {...props} mode="manuscript" onModeChange={() => {}} />);
+    expect(screen.getByTestId('section-template').getAttribute('aria-expanded')).toBe('false');
+    rerender(<FormatPanel {...props} mode="grant" onModeChange={() => {}} />);
+    expect(screen.getByTestId('section-template').getAttribute('aria-expanded')).toBe('true');
+  });
+
   it('renders with no format at all, and editing starts from the NIH preset', () => {
     const onFormatChange = vi.fn();
     render(<FormatPanel {...props} format={null} onFormatChange={onFormatChange} />);

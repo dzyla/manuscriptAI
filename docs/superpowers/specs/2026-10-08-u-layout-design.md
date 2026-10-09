@@ -118,7 +118,7 @@ Today suggestions, style flags and grammar flags are three surfaces with three s
 
 Chat sits below as a collapsed section. It is a conversational surface, not a positional one, and merging it into the list would misrepresent it.
 
-The rail's Review icon carries a count badge. The count is of actionable rows, never of style flags alone.
+The rail's Review icon carries a count badge. The count is of pending suggestions only, capped at 99+. Style flags are not counted, although they are actionable rows: they exist only while the style audit runs, so counting them would make the badge change with whether the panel had ever been opened, and a badge that moves because of what the user looked at is worse than one that undercounts. (Task 4's ruling: a recorded deviation from the earlier "actionable rows" wording; up to 12 style rows are not announced by the badge.)
 
 **Reasoning:** the user's fourth pain is reconciling AI output against the text. Position is the one axis all three kinds share, so ordering by it is what makes them comparable. The existing per-kind grouping optimises for the producer, not the reader.
 

@@ -105,6 +105,8 @@ export const ENTRY_POINTS: EntryPoint[] = [
   row('name a snapshot in the popup', ['title:Version History', 'title:Save snapshot', 'title:Save with this name']),
   row('preview a snapshot from the popup', ['title:Version History', 'title:Preview'], undefined, undefined, ['snapshot']),
   row('restore a snapshot from the popup', ['title:Version History', 'title:Restore'], undefined, undefined, ['snapshot']),
+  row('restore from the popup\'s snapshot preview', ['title:Version History', 'title:Preview', 'control:popup-restore-from-preview'], undefined, undefined, ['snapshot']),
+  row('close the popup\'s snapshot preview', ['title:Version History', 'title:Preview', 'control:popup-close-preview'], undefined, undefined, ['snapshot']),
   row('delete a snapshot from the popup', ['title:Version History', 'title:Delete'], undefined, undefined, ['snapshot']),
   // Cite
   row('upload a PDF, DOCX, BibTeX or text source', [C, 'section:library', 'control:upload']),
@@ -141,6 +143,7 @@ export const ENTRY_POINTS: EntryPoint[] = [
   row('rewrite a flagged sentence', [R, 'row:style', 'control:rewrite'], undefined, undefined, ['style-text']),
   row('jump to a flagged sentence', [R, 'row:style', 'control:goto'], undefined, undefined, ['style-text']),
   row('read the style comparison', [R, 'section:style']),
+  row('highlight flagged sentences in the editor', [R, 'section:style', 'control:highlight-flagged'], undefined, undefined, ['style-text']),
   row('add writing samples for the voice profile', [R, 'section:style', 'control:voice-samples']),
   row('filter suggestions by severity', [R, 'control:filter'], undefined, undefined, ['suggestion']),
   row('reset the severity filter', [R, 'control:filter', 'control:filter-all'], undefined, undefined, ['suggestion']),
@@ -615,8 +618,9 @@ const ICON_ONLY_BUTTONS: Record<string, number> = {
   // ChatSection/ChatMessages: the inline chat suggestion cards' accept/reject, agent chips, vision X, send. (Task 7 removed the Sources/Style tab strip with the Style tab.)
   // (Task 4 moved the severity filter and the suggestion cards' own buttons to the Review panel, which names its controls with test ids.
   // Task 5 moved clear-reference-search, trash, source tabs and PDF tabs to the Cite panel, which names every one with a test id.)
+  'src/components/shell/Rail.tsx': 0, // every rail button carries a title and aria-label
   'src/components/shell/TaskPanels.tsx': 0, 'src/components/panels/review/ChatSection.tsx': 3, 'src/components/panels/review/ChatMessages.tsx': 0,
-  'src/components/style/StylePanel.tsx': 1, // jump to a flagged sentence
+  'src/components/style/StylePanel.tsx': 0, // (flagged sentences, their jump and rewrite live in the Review panel's style rows)
   'src/components/style/VoiceProfileManager.tsx': 0,
   'src/components/panels/ReviewPanel.tsx': 3, // severity chips, row action buttons, named-agent items
   'src/components/panels/SuggestionBody.tsx': 0, 'src/components/panels/suggestionParts.tsx': 0,
@@ -703,7 +707,16 @@ const SHARED_TESTIDS: Record<string, string> = {
   'control-source-tabs': 'the Summary/Abstract switch on a search-result card and on a PDF/text/BibTeX card; one row proves the switch, both cards render it',
   'control-compare-source': 'the Compare button on a search-result card and on a PDF/text card; one row proves it, both render it',
 };
-const GUARDED = ['src/App.tsx', 'src/components/Editor.tsx', 'src/components/shell/TaskPanels.tsx', 'src/components/panels/review/ChatSection.tsx', 'src/components/panels/review/ChatMessages.tsx', 'src/components/style/StylePanel.tsx', 'src/components/style/VoiceProfileManager.tsx',
+/**
+ * Guarded files that write a control's test id as a template (`control-${id}`). The uniqueness guard cannot read a computed id, so each such tag
+ * is named here with the reason it is safe (its ids come from a closed list the rows cover); a new one fails until it is listed or written out.
+ */
+const TEMPLATED_TESTIDS: Record<string, { count: number; reason: string }> = {
+  'src/components/editor/SelectionBar.tsx': { count: 2, reason: 'the mark buttons and the block/align menu items, each id drawn from a fixed list in this file that the selection-bar rows name' },
+  'src/components/panels/format/StylesSection.tsx': { count: 1, reason: 'one font field per style row (heading and body styles); the id is the style name from a fixed list in this file' },
+  'src/components/panels/format/NumField.tsx': { count: 1, reason: 'one number field per page-setup control; the id is the field name passed by PageSection (margin sides, body font size)' },
+};
+const GUARDED = ['src/components/shell/Rail.tsx', 'src/App.tsx', 'src/components/Editor.tsx', 'src/components/shell/TaskPanels.tsx', 'src/components/panels/review/ChatSection.tsx', 'src/components/panels/review/ChatMessages.tsx', 'src/components/style/StylePanel.tsx', 'src/components/style/VoiceProfileManager.tsx',
   'src/components/panels/ReviewPanel.tsx', 'src/components/panels/Section.tsx', 'src/components/panels/SuggestionBody.tsx', 'src/components/panels/suggestionParts.tsx',
   'src/components/panels/CitePanel.tsx', 'src/components/panels/cite/Library.tsx', 'src/components/panels/cite/SourceCard.tsx', 'src/components/panels/cite/PdfMatch.tsx',
   'src/components/panels/cite/SourceTabs.tsx', 'src/components/panels/cite/Search.tsx', 'src/components/panels/cite/ReferenceManager.tsx',
@@ -747,6 +760,7 @@ describe('the list itself', () => {
     const uncovered: string[] = [];
     for (const f of [...GUARDED, 'src/components/GrantPanel.tsx', 'src/components/VersionHistoryPopup.tsx']) {
       for (const t of titlesIn(source(f))) {
+        if (f === 'src/components/shell/Rail.tsx') continue; // one title per rail task; 'covers every rail task' proves each task has rail: rows
         if (t.raw.startsWith('Editor width')) continue; // the width control is EXCLUDED
         if (t.exact !== null && t.exact in NOT_A_FEATURE) continue;
         if (t.prefix !== null && (t.prefix in NOT_A_FEATURE || t.raw.slice(0, 24) in TEMPLATE_TITLES || Object.keys(TEMPLATE_TITLES).some(k => t.raw.startsWith(k.slice(0, 20))))) continue;
@@ -805,7 +819,7 @@ describe('the list itself', () => {
   it('a test id belongs to one control across the guarded files, so a step cannot vouch for a different button that reuses its name', () => {
     const seen = new Map<string, string>();
     const dupes: string[] = [];
-    for (const f of GUARDED) {
+    for (const f of [...GUARDED, 'src/components/VersionHistoryPopup.tsx']) {
       const src = source(f);
       for (const m of src.matchAll(/data-testid=/g)) for (const id of testidsIn(tagAt(src, m.index!))) {
         if (id.includes('$') || id in SHARED_TESTIDS) continue;
@@ -815,6 +829,16 @@ describe('the list itself', () => {
       }
     }
     expect(dupes).toEqual([]);
+  });
+  it('a templated test id is listed with a reason; a new one is written out so the uniqueness guard can read it', () => {
+    const found: Record<string, number> = {};
+    for (const f of GUARDED) {
+      const src = source(f);
+      const n = [...src.matchAll(/data-testid=\{`control-[^`]*\$\{/g)].length;
+      if (n) found[f] = n;
+    }
+    expect(found).toEqual(Object.fromEntries(Object.entries(TEMPLATED_TESTIDS).map(([f, v]) => [f, v.count])));
+    for (const [f, v] of Object.entries(TEMPLATED_TESTIDS)) expect(v.reason.trim().length, f).toBeGreaterThan(10);
   });
   it('every shared test id states why it is shared, and is still shared', () => {
     for (const [id, reason] of Object.entries(SHARED_TESTIDS)) {

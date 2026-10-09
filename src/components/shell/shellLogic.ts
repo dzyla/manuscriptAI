@@ -6,6 +6,7 @@ import { estimatePages, type PageEstimate } from '../../services/pagination';
 import { styleDistance } from '../../services/proseAudit/score';
 import { activeSummary } from '../../services/proseAudit/profile';
 import { auditMatchesDoc, type StyleAuditSnapshot } from '../style/styleSync';
+import { worstOverBudget } from '../GrantPanel';
 import type { RailTask } from './Rail';
 import type { DocStats } from './StatusBar';
 
@@ -71,4 +72,10 @@ export function docStats(doc: JSONContent | null, words: number): DocStats {
   };
   if (doc) walk(doc);
   return { chars, paragraphs: doc?.content?.length ?? 0, readingMin: Math.ceil(words / 200) };
+}
+
+/** The grant section furthest over its page budget, deferred like the page estimate so typing never waits on it. Null outside grant mode and when nothing is over. */
+export function useOverBudget(html: string, templateId: string | null | undefined, grant: boolean) {
+  const deferred = useDeferredValue(html);
+  return useMemo(() => (grant ? worstOverBudget(deferred, templateId) : null), [deferred, templateId, grant]);
 }
