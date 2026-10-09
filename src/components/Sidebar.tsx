@@ -1,13 +1,15 @@
-import { useState, useRef, useEffect, useMemo, createElement } from 'react';
+import { useState, useRef, useEffect, useCallback, createElement } from 'react';
 import { AgentType, Message, Suggestion, HistoryItem, SuggestionSeverity, AISettings, AttachedImage } from '../types';
-import { Send, Sparkles, Check, X, MessageSquare, History as HistoryIcon, Info, CheckCheck, XCircle, Filter, ChevronDown, ChevronUp, BookOpen, FileText, BookMarked, Plus, List, PenLine, AlertTriangle, Search, ImagePlus, Square, ArrowRight } from 'lucide-react';
-import { ManuscriptSource } from '../types';
+import { Send, Sparkles, Check, X, MessageSquare, Info, CheckCheck, XCircle, Filter, BookOpen, FileText, BookMarked, Plus, List, PenLine, AlertTriangle, Search, ImagePlus, Square, ArrowRight } from 'lucide-react';
+import { ManuscriptSource, VersionSnapshot } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { StylePanel, type StylePanelProps } from './style/StylePanel';
 import { ReviewPanel, type ReviewPanelProps } from './panels/ReviewPanel';
 import { CitePanel } from './panels/CitePanel';
+import { WritePanel } from './panels/WritePanel';
+import { useOutline } from './panels/write/outline';
 import { SuggestionDetail, RebuttalBox } from './panels/SuggestionBody';
 import { AgentIcon, CategoryBadge, DiffView } from './panels/suggestionParts';
 
@@ -43,6 +45,8 @@ interface SidebarProps {
   manuscriptContent?: string;
   manuscriptHtml?: string;
   onScrollToSection?: (headingText: string) => void;
+  documentTitle?: string;
+  onRestoreSnapshot: (snapshot: VersionSnapshot) => void | Promise<void>;
   onAnalyzeSection?: (sectionText: string, sectionTitle: string) => void;
   onSourcesChange?: (sources: ManuscriptSource[]) => void;
   aiSettings?: AISettings;
@@ -83,6 +87,8 @@ export default function Sidebar({
   onAgentChange,
   manuscriptContent = '',
   manuscriptHtml = '',
+  documentTitle = '',
+  onRestoreSnapshot,
   onScrollToSection,
   onAnalyzeSection,
   onSourcesChange,
@@ -157,7 +163,6 @@ export default function Sidebar({
     onAgentChange?.(agent);
   };
   const [showAgentInfo, setShowAgentInfo] = useState(false);
-  const [expandedHistory, setExpandedHistory] = useState<string | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -177,31 +182,11 @@ export default function Sidebar({
     .filter(([id]) => id !== 'manuscript-ai' && id !== 'literature-reviewer' && id !== 'citation-checker')
     .map(([id, info]) => ({ id: id as AgentType, ...info }));
 
-  // Parse headings from manuscript HTML for the Outline tab
-  const outline = useMemo(() => {
-    if (!manuscriptHtml) return [];
-    const re = /<h([23])[^>]*>(.*?)<\/h[23]>/gi;
-    return [...manuscriptHtml.matchAll(re)].map(m => ({
-      level: parseInt(m[1]),
-      text: m[2].replace(/<[^>]*>/g, '').trim(),
-    }));
-  }, [manuscriptHtml]);
-
-  // Word count per H2 section
-  const h2WordCounts = useMemo(() => {
-    if (!manuscriptHtml) return {} as Record<string, number>;
-    const h2Re = /<h2[^>]*>(.*?)<\/h2>/gi;
-    const h2Matches = [...manuscriptHtml.matchAll(h2Re)];
-    const counts: Record<string, number> = {};
-    h2Matches.forEach((m, i) => {
-      const title = m[1].replace(/<[^>]*>/g, '').trim();
-      const start = (m.index ?? 0) + m[0].length;
-      const end = i + 1 < h2Matches.length ? (h2Matches[i + 1].index ?? manuscriptHtml.length) : manuscriptHtml.length;
-      const text = manuscriptHtml.slice(start, end).replace(/<[^>]*>/g, ' ');
-      counts[title] = text.split(/\s+/).filter(w => w.length > 0).length;
-    });
-    return counts;
-  }, [manuscriptHtml]);
+  const { outline, wordCounts } = useOutline(manuscriptHtml);
+  const docRef = useRef({ title: documentTitle, content: manuscriptHtml });
+  docRef.current = { title: documentTitle, content: manuscriptHtml };
+  const getDocument = useCallback(() => docRef.current, []);
+  const goToHeading = useCallback((text: string) => onScrollToSection?.(text), [onScrollToSection]);
 
   const handleSend = () => {
     if (!input.trim() && attachedImages.length === 0) return;
@@ -723,9 +708,7 @@ export default function Sidebar({
       {!reviewView && (
       <div className="flex" style={{ borderBottom: '1px solid var(--border)' }}>
         {([
-          { key: 'history' as const, icon: <HistoryIcon size={14} />, label: 'History' },
           { key: 'sources' as const, icon: <BookOpen size={14} />, label: 'Sources' },
-          { key: 'outline' as const, icon: <List size={14} />, label: 'Outline' },
           { key: 'style' as const, icon: <PenLine size={14} />, label: 'Style' },
         ]).map(tab => (
           <button
@@ -812,126 +795,30 @@ export default function Sidebar({
         />
       </div>
 
-      {!reviewView && (      <div
+      {/* The write view stays mounted when another task is open: its sections keep their state (an expanded change, a half-typed snapshot name). */}
+      <div
         className="flex-1 overflow-y-auto p-4"
-        style={{ fontSize: `${contentZoom}%` }}
+        style={{ fontSize: `${contentZoom}%`, ...(activeTab === 'outline' || activeTab === 'history' ? {} : { display: 'none' }) }}
+        data-testid="write-view"
       >
-        {activeTab === 'history' ? (
-          <div className="space-y-3">
-            {history.length === 0 ? (
-              <div className="text-center py-16" style={{ color: 'var(--text-muted)' }}>
-                <HistoryIcon size={36} className="mx-auto mb-3 opacity-15" />
-                <p className="text-sm font-medium mb-1">No history yet</p>
-                <p className="text-xs">Accepted suggestions will appear here</p>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {history.slice().reverse().map((item) => (
-                  <div 
-                    key={item.id} 
-                    className="border rounded-xl p-4 shadow-sm space-y-2 cursor-pointer hover:border-stone-300 transition-colors"
-                    style={{ borderColor: 'var(--border)', background: 'var(--surface-1)' }}
-                    onClick={() => onHistoryItemClick?.(item)}
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-1.5">
-                        <AgentIcon agent={item.agent} size={10} />
-                        <span className={`text-[9px] uppercase font-bold tracking-widest px-2 py-0.5 rounded-md ${AGENT_INFO[item.agent].color} text-white`}>
-                          {AGENT_INFO[item.agent]?.label}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                          {new Date(item.timestamp).toLocaleTimeString()}
-                        </span>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); setExpandedHistory(expandedHistory === item.id ? null : item.id); }}
-                          className="p-0.5 rounded hover:bg-stone-100 transition-colors"
-                          style={{ color: 'var(--text-muted)' }}
-                          title="Show changes"
-                        >
-                          {expandedHistory === item.id ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                        </button>
-                      </div>
-                    </div>
-                    
-                    {/* Summary line */}
-                    <p className="text-[10px] truncate" style={{ color: 'var(--text-secondary)' }}>
-                      {item.originalText.substring(0, 60)}{item.originalText.length > 60 ? '...' : ''} → {item.suggestedText.substring(0, 60)}{item.suggestedText.length > 60 ? '...' : ''}
-                    </p>
-                    
-                    {/* Expanded diff view */}
-                    {expandedHistory === item.id && (
-                      <div onClick={(e) => e.stopPropagation()}>
-                        <DiffView original={item.originalText} suggested={item.suggestedText} />
-                      </div>
-                    )}
-                    
-                    <button
-                      onClick={(e) => { e.stopPropagation(); onRevertHistory(item.id); }}
-                      className="w-full mt-1 py-1.5 border rounded-lg text-[10px] font-bold uppercase tracking-wider transition-colors hover:bg-stone-50"
-                      style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
-                    >
-                      Revert Change
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        ) : activeTab === 'outline' ? (
-          <div className="space-y-1">
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>Document Outline</span>
-              <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{outline.filter(h => h.level === 2).length} sections</span>
-            </div>
-            {outline.length === 0 ? (
-              <div className="text-center py-12" style={{ color: 'var(--text-muted)' }}>
-                <List size={28} className="mx-auto mb-3 opacity-30" />
-                <p className="text-xs font-medium">No headings found</p>
-                <p className="text-[10px] mt-1 opacity-70">Use H2 headings to structure your manuscript sections</p>
-              </div>
-            ) : (
-              <div className="space-y-0.5">
-                {outline.map((heading, i) => (
-                  <div
-                    key={i}
-                    className={`group flex items-center justify-between rounded-lg transition-colors cursor-pointer hover:bg-stone-100 ${heading.level === 2 ? 'px-2 py-2' : 'pl-5 pr-2 py-1.5'}`}
-                    onClick={() => onScrollToSection?.(heading.text)}
-                    style={{ color: heading.level === 2 ? 'var(--text-primary)' : 'var(--text-secondary)' }}
-                  >
-                    <div className="flex items-center gap-2 min-w-0">
-                      {heading.level === 2
-                        ? <span className="w-1.5 h-1.5 rounded-full bg-stone-400 shrink-0" />
-                        : <span className="w-1 h-1 rounded-full bg-stone-300 shrink-0" />}
-                      <span className={`truncate ${heading.level === 2 ? 'text-[12px] font-semibold' : 'text-[11px]'}`}>
-                        {heading.text}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0 ml-2">
-                      {heading.level === 2 && h2WordCounts[heading.text] !== undefined && (
-                        <span className="text-[9px] font-medium opacity-50">{h2WordCounts[heading.text]}w</span>
-                      )}
-                      {heading.level === 2 && onAnalyzeSection && (
-                        <button
-                          onClick={e => { e.stopPropagation(); onAnalyzeSection('', heading.text); }}
-                          className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-stone-200"
-                          title={`Analyze "${heading.text}" section`}
-                          style={{ color: 'var(--text-muted)' }}
-                        >
-                          <Sparkles size={10} />
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        ) : activeTab === 'style' ? (
-          stylePanel ? <StylePanel {...stylePanel} /> : null
-        ) : null}
+        <WritePanel
+          outline={outline}
+          wordCounts={wordCounts}
+          history={history}
+          onGoTo={goToHeading}
+          onAnalyzeSection={onAnalyzeSection}
+          onRevertHistory={onRevertHistory}
+          onHistoryItemClick={onHistoryItemClick}
+          getDocument={getDocument}
+          onRestore={onRestoreSnapshot}
+          reveal={activeTab === 'history' ? 'history' : undefined}
+        />
       </div>
+
+      {!reviewView && activeTab === 'style' && (
+        <div className="flex-1 overflow-y-auto p-4" style={{ fontSize: `${contentZoom}%` }}>
+          {stylePanel ? <StylePanel {...stylePanel} /> : null}
+        </div>
       )}
     </div>
   );

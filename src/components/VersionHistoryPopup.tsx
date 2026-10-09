@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { db } from '../db/manuscriptDb';
-import { inlineAssetImages } from '../db/assetStore';
+import { listSnapshots, saveSnapshot as persistSnapshot, deleteSnapshot as removeSnapshot, wordCount, formatSnapshotDate } from '../services/versionSnapshots';
 import type { VersionSnapshot } from '../types';
 import { Clock, Plus, Trash2, RotateCcw, Eye, X, History } from 'lucide-react';
 
@@ -10,20 +9,8 @@ interface VersionHistoryPopupProps {
   onRestore: (snapshot: VersionSnapshot) => void | Promise<void>;
 }
 
-function stripHtml(html: string) {
-  return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-}
-
-function wc(html: string) {
-  return stripHtml(html).split(/\s+/).filter(w => w.length > 0).length;
-}
-
-function formatDate(ts: number) {
-  return new Date(ts).toLocaleString(undefined, {
-    month: 'short', day: 'numeric',
-    hour: '2-digit', minute: '2-digit',
-  });
-}
+const wc = wordCount;
+const formatDate = formatSnapshotDate;
 
 export default function VersionHistoryPopup({ currentTitle, currentContent, onRestore }: VersionHistoryPopupProps) {
   const [open, setOpen] = useState(false);
@@ -37,8 +24,7 @@ export default function VersionHistoryPopup({ currentTitle, currentContent, onRe
   const panelRef = useRef<HTMLDivElement>(null);
 
   const loadSnapshots = useCallback(async () => {
-    const all = await db.versionSnapshots.orderBy('timestamp').reverse().toArray();
-    setSnapshots(all);
+    setSnapshots(await listSnapshots());
   }, []);
 
   useEffect(() => {
@@ -71,18 +57,8 @@ export default function VersionHistoryPopup({ currentTitle, currentContent, onRe
   }, [open]);
 
   const saveSnapshot = async () => {
-    const name = newName.trim() || `Snapshot — ${new Date().toLocaleString()}`;
     setIsSaving(true);
-    const snapshot: VersionSnapshot = {
-      id: `snap-${Date.now()}`,
-      name,
-      timestamp: Date.now(),
-      title: currentTitle,
-      // Self-contained copy: session blob: image URLs would be dead after a reload.
-      content: await inlineAssetImages(currentContent),
-      wordCount: wc(currentContent),
-    };
-    await db.versionSnapshots.put(snapshot);
+    const snapshot = await persistSnapshot(currentTitle, currentContent, newName);
     setSnapshots(prev => [snapshot, ...prev]);
     setNewName('');
     setShowNameInput(false);
@@ -90,7 +66,7 @@ export default function VersionHistoryPopup({ currentTitle, currentContent, onRe
   };
 
   const deleteSnapshot = async (id: string) => {
-    await db.versionSnapshots.delete(id);
+    await removeSnapshot(id);
     setSnapshots(prev => prev.filter(s => s.id !== id));
     if (previewId === id) setPreviewId(null);
   };

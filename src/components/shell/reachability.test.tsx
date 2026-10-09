@@ -85,15 +85,23 @@ const fresh = (feature: string, path: string[], pending: number): EntryPoint => 
 export const ENTRY_POINTS: EntryPoint[] = [
   // Write
   row('see the outline', [W, 'section:outline'], undefined, undefined, ['outline']),
-  row('jump to a heading from the outline', [W, 'section:outline', 'control:goto-heading'], 6, [W, 'section:outline', 'cursor:30', 'ptext:Intro', 'expect:cursor:1'], ['outline']),
-  row('analyze one section from the outline', [W, 'section:outline', 'control:analyze-section'], 6, [W, 'section:outline', 'title:Analyze "Intro" section'], ['outline']),
+  row('jump to a heading from the outline', [W, 'section:outline', 'cursor:30', 'control:goto-heading', 'expect:cursor:1'], undefined, undefined, ['outline']),
+  row('analyze one section from the outline', [W, 'section:outline', 'control:analyze-section'], undefined, undefined, ['outline']),
   row('see applied-suggestion history', [W, 'section:history'], undefined, undefined, ['history']),
-  row('inspect an applied change', [W, 'section:history', 'control:show-changes'], 6, [W, 'section:history', 'title:Show changes'], ['history']),
-  row('revert an applied change', [W, 'section:history', 'control:revert-change'], 6, [W, 'section:history', 'title:Show changes', 'ptext:Revert Change'], ['history']),
-  row('restore a version snapshot', [W, 'section:versions', 'control:restore-version'], 6, ['title:Version History', 'title:Restore'], ['snapshot']),
-  row('save a version snapshot', [W, 'section:versions', 'control:save-version'], 6, ['title:Version History', 'title:Save snapshot']),
-  row('preview a version snapshot', [W, 'section:versions', 'control:preview-version'], 6, ['title:Version History', 'title:Preview'], ['snapshot']),
-  row('delete a version snapshot', [W, 'section:versions', 'control:delete-version'], 6, ['title:Version History', 'title:Delete'], ['snapshot']),
+  row('inspect an applied change', [W, 'section:history', 'control:show-changes'], undefined, undefined, ['history']),
+  row('revert an applied change', [W, 'section:history', 'control:revert-change'], undefined, undefined, ['history']),
+  row('restore a version snapshot', [W, 'section:versions', 'control:restore-version'], undefined, undefined, ['snapshot']),
+  row('restore from the snapshot preview', [W, 'section:versions', 'control:preview-version', 'control:restore-from-preview'], undefined, undefined, ['snapshot']),
+  row('close the snapshot preview', [W, 'section:versions', 'control:preview-version', 'control:close-preview'], undefined, undefined, ['snapshot']),
+  row('save a version snapshot', [W, 'section:versions', 'control:save-version']),
+  row('preview a version snapshot', [W, 'section:versions', 'control:preview-version'], undefined, undefined, ['snapshot']),
+  row('delete a version snapshot', [W, 'section:versions', 'control:delete-version'], undefined, undefined, ['snapshot']),
+  // The top-bar version-history popup (the live component; the Write panel's Versions section is a second route to the same table)
+  row('open the version-history popup', ['title:Version History']),
+  row('save a snapshot from the popup', ['title:Version History', 'title:Save snapshot']),
+  row('preview a snapshot from the popup', ['title:Version History', 'title:Preview'], undefined, undefined, ['snapshot']),
+  row('restore a snapshot from the popup', ['title:Version History', 'title:Restore'], undefined, undefined, ['snapshot']),
+  row('delete a snapshot from the popup', ['title:Version History', 'title:Delete'], undefined, undefined, ['snapshot']),
   // Cite
   row('upload a PDF, DOCX, BibTeX or text source', [C, 'section:library', 'control:upload']),
   row('add a source by DOI', [C, 'section:library', 'typein:10.1234/journal.article|10.1000/xyz', 'control:doi']),
@@ -238,7 +246,7 @@ export const ENTRY_POINTS: EntryPoint[] = [
   row('click a suggestion to find it in the text', [R, 'row:suggestion', 'control:locate', 'expect:selection:Alpha'], undefined, undefined, ['suggestion', 'outline']),
   row('insert an advisory suggestion as a note', [R, 'row:suggestion', 'control:insert-note'], undefined, undefined, ['advisory', 'outline']),
   row('dismiss an advisory suggestion', [R, 'row:suggestion', 'control:dismiss'], undefined, undefined, ['advisory']),
-  row('click an applied change to find it in the text', [W, 'section:history', 'control:locate'], 6, [W, 'section:history', 'ptext:Alpha → beta gamma', 'expect:selection:beta gamma'], ['history', 'outline']),
+  row('click an applied change to find it in the text', [W, 'section:history', 'control:locate-change', 'expect:selection:beta gamma'], undefined, undefined, ['history', 'outline']),
   row('run an analysis from the top bar', ['topbar:ai', 'item:analyze'], 8, ['htext:Analyze All']),
   row('run a single agent from the top bar', ['topbar:ai', 'item:analyze-agent'], 8, ['nextto:Analyze All*', 'htext:Run Single Agent']),
   row('run one named agent from the top bar', ['topbar:ai', 'item:analyze-agent-one'], 8, ['nextto:Analyze All*', 'htext:Language Surgeon']),
@@ -587,6 +595,8 @@ const ICON_ONLY_BUTTONS: Record<string, number> = {
   'src/components/panels/cite/SourceCard.tsx': 1, // trash (row: remove a source)
   'src/components/panels/cite/SourceTabs.tsx': 2, // the Summary/Abstract switch on a search-result card and on a document card (rows: switch a PDF between summary and abstract)
   'src/components/panels/cite/Library.tsx': 0, 'src/components/panels/cite/PdfMatch.tsx': 0, 'src/components/panels/cite/Search.tsx': 0,
+  'src/components/panels/WritePanel.tsx': 1, // section toggles (rows: every section: step)
+  'src/components/panels/write/Outline.tsx': 0, 'src/components/panels/write/History.tsx': 0, 'src/components/panels/write/Versions.tsx': 0,
 };
 
 /** The body of the `{...}` that opens at `i` (balanced), or null. */
@@ -656,7 +666,8 @@ const SHARED_TESTIDS: Record<string, string> = {
 const GUARDED = ['src/App.tsx', 'src/components/Editor.tsx', 'src/components/Sidebar.tsx', 'src/components/style/StylePanel.tsx', 'src/components/style/VoiceProfileManager.tsx',
   'src/components/panels/ReviewPanel.tsx', 'src/components/panels/SuggestionBody.tsx', 'src/components/panels/suggestionParts.tsx',
   'src/components/panels/CitePanel.tsx', 'src/components/panels/cite/Library.tsx', 'src/components/panels/cite/SourceCard.tsx', 'src/components/panels/cite/PdfMatch.tsx',
-  'src/components/panels/cite/SourceTabs.tsx', 'src/components/panels/cite/Search.tsx', 'src/components/panels/cite/ReferenceManager.tsx'];
+  'src/components/panels/cite/SourceTabs.tsx', 'src/components/panels/cite/Search.tsx', 'src/components/panels/cite/ReferenceManager.tsx',
+  'src/components/panels/WritePanel.tsx', 'src/components/panels/write/Outline.tsx', 'src/components/panels/write/History.tsx', 'src/components/panels/write/Versions.tsx'];
 
 describe('the list itself', () => {
   it('covers every rail task', () => {
@@ -710,6 +721,7 @@ describe('the list itself', () => {
       'src/components/panels/CitePanel.tsx': ['ptext'], 'src/components/panels/cite/Library.tsx': ['ptext'], 'src/components/panels/cite/SourceCard.tsx': ['ptext'],
       'src/components/panels/cite/PdfMatch.tsx': ['ptext'], 'src/components/panels/cite/SourceTabs.tsx': ['ptext'], 'src/components/panels/cite/Search.tsx': ['ptext'],
       'src/components/panels/cite/ReferenceManager.tsx': ['ptext', 'select'],
+      'src/components/panels/WritePanel.tsx': ['ptext'], 'src/components/panels/write/Outline.tsx': ['ptext'], 'src/components/panels/write/History.tsx': ['ptext'], 'src/components/panels/write/Versions.tsx': ['ptext'],
     };
     const steps = ENTRY_POINTS.flatMap(stepsOf).map(st => ({ kind: st.slice(0, st.indexOf(':')), v: st.slice(st.indexOf(':') + 1).replace(/#\d+$/, '') }));
     const uncovered: string[] = [];
@@ -836,8 +848,8 @@ describe('App wiring (behaviour)', () => {
     fireEvent.click(railBtn('Cite')); // reopening from closed opens that task on its own tab
     expect(open('Cite')).toBe(true);
     await waitStep('cite opens Sources', () => screen.queryByText('Browse files'));
-    fireEvent.click(screen.getByTestId('section-outline')); // a legacy tab change moves the rail with it
-    expect(open('Write')).toBe(true);
+    fireEvent.click(screen.getAllByTestId('section-style').find(b => !b.hasAttribute('aria-expanded'))!); // the tab strip's button, not the Review panel's section toggle; a legacy tab change moves the rail with it (the Outline tab went with Task 6: the Write panel replaced it)
+    expect(open('Format')).toBe(true);
     expect(open('Cite')).toBe(false);
   });
 

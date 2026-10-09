@@ -1749,6 +1749,8 @@ export default function App() {
             onAgentChange={setCurrentAgent}
             manuscriptContent={stripHtml(content)}
             manuscriptHtml={content}
+            documentTitle={title}
+            onRestoreSnapshot={handleRestoreSnapshot}
             onScrollToSection={(heading) => editorRef.current?.scrollToHeading(heading)}
             onAnalyzeSection={handleAnalyzeSection}
             onSourcesChange={() => {}} // sources managed by useSourceStore
