@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
 import { renderHook } from '@testing-library/react';
-import { TASK_TAB, TAB_TASK, railSelect, revealTab, documentPageLimit, voiceFigure, usePageEstimate } from './shellLogic';
+import { TASK_TAB, TAB_TASK, railSelect, revealTab, documentPageLimit, voiceFigure, usePageEstimate, docStats } from './shellLogic';
 import { createFormat } from '../../services/formatPresets';
 import type { AuditMetrics } from '../../types';
 
@@ -76,5 +76,17 @@ describe('usePageEstimate', () => {
   });
   it('tolerates no document and no format', () => {
     expect(renderHook(() => usePageEstimate(null, null)).result.current.pages).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('docStats', () => {
+  it('counts the text only, the top-level blocks, and a minute per 200 words rounded up', () => {
+    expect(docStats(null, 0)).toEqual({ chars: 0, paragraphs: 0, readingMin: 0 });
+    const d = { type: 'doc', content: [
+      { type: 'paragraph', content: [{ type: 'text', text: 'abc' }, { type: 'text', text: 'de', marks: [{ type: 'bold' }] }] },
+      { type: 'bulletList', content: [{ type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'xy' }] }] }] },
+      { type: 'paragraph' },
+    ] };
+    expect(docStats(d, 201)).toEqual({ chars: 7, paragraphs: 3, readingMin: 2 });
   });
 });

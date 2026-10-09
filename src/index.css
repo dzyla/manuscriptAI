@@ -470,6 +470,7 @@ mark {
 /* ─── U shell: top bar, task rail, one panel, page canvas, status bar ─── */
 .u-shell { flex: 1 1 0%; min-width: 0; display: flex; flex-direction: column; height: 100%; overflow: hidden; position: relative; }
 .u-shell-top, .u-shell-status { flex: none; }
+.u-shell-top { position: relative; z-index: 40; } /* the top bar's menus open downward over the page */
 .u-shell-body { flex: 1 1 0%; min-height: 0; display: flex; position: relative; }
 .u-shell-canvas { flex: 1 1 0%; min-width: 0; overflow: hidden; }
 .u-shell-panel { flex: none; max-width: 100%; display: flex; min-height: 0; border-right: 1px solid var(--border); }

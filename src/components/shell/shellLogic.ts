@@ -7,6 +7,7 @@ import { styleDistance } from '../../services/proseAudit/score';
 import { activeSummary } from '../../services/proseAudit/profile';
 import { auditMatchesDoc, type StyleAuditSnapshot } from '../style/styleSync';
 import type { RailTask } from './Rail';
+import type { DocStats } from './StatusBar';
 
 export type SidebarTab = 'chat' | 'suggestions' | 'history' | 'sources' | 'outline' | 'style';
 
@@ -56,4 +57,18 @@ export function railSelect(current: RailTask | null, clicked: RailTask): { task:
 /** A legacy call site revealing a tab: the tab and its owning rail task move together. */
 export function revealTab(tab: SidebarTab): { task: RailTask; tab: SidebarTab } {
   return { task: TAB_TASK[tab], tab };
+}
+
+/**
+ * Characters (text only, no block separators), top-level blocks and reading time (200 words a minute) of the document.
+ * `words` is passed in: the status bar already counts them from the same text it shows.
+ */
+export function docStats(doc: JSONContent | null, words: number): DocStats {
+  let chars = 0;
+  const walk = (n: JSONContent) => {
+    if (n.type === 'text') chars += n.text?.length ?? 0;
+    n.content?.forEach(walk);
+  };
+  if (doc) walk(doc);
+  return { chars, paragraphs: doc?.content?.length ?? 0, readingMin: Math.ceil(words / 200) };
 }

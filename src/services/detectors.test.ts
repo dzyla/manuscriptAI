@@ -120,7 +120,7 @@ describe('freshDetectorSuggestions', () => {
     expect(new Set(a).size).toBe(a.length);
   });
   it('is what the app calls, so the stamp cannot be dropped at the call site', () => {
-    const app = readFileSync('src/App.tsx', 'utf8');
+    const app = readFileSync('src/hooks/useAnalysis.ts', 'utf8'); // the analysis run lives in this hook now
     expect(app).toMatch(/freshDetectorSuggestions\(/);
     expect(app).not.toMatch(/[^h]detectorSuggestions\(/);
   });

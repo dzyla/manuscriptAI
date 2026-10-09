@@ -13,6 +13,9 @@ vi.mock('../../services/manuscriptSearch', async (orig) => {
   const paper = (n: number) => ({ title: `Mock paper ${n} on screens`, authors: `Author${n} A, Other B`, journal: 'Journal X', doi: `10.1000/mock${n}`, abstract: 'An abstract.', year: 2020 + n, score: 0.9, source: 'PubMed' });
   return { ...real, searchSimilarManuscripts: vi.fn(async () => [paper(1), paper(2)]) };
 });
+vi.mock('file-saver', () => ({ saveAs: vi.fn() })); // a download is an assertion target here, not a browser action
+import { saveAs } from 'file-saver';
+import { FIGURE_PROMPTS } from '../editor/figurePrompts';
 import App from '../../App';
 import { db } from '../../db/manuscriptDb';
 import { useAIStore } from '../../stores/useAIStore';
@@ -20,6 +23,7 @@ import { useSourceStore, flushPersist } from '../../stores/useSourceStore';
 import { useDocumentStore, documentRepository } from '../../stores/useDocumentStore';
 import { readDocx } from '../../docx/read';
 import { expose } from 'comlink';
+import { undoDepth } from '@tiptap/pm/history';
 import { readForImport } from '../../workers/docxImportCore';
 import { loadDocx } from '../../test/docxFixtures';
 import { htmlToDoc } from '../../extensions/schema';
@@ -120,7 +124,7 @@ export const ENTRY_POINTS: EntryPoint[] = [
   row('jump to the first citation of a source', [C, 'section:references', 'control:first-citation'], undefined, undefined, ['sources', 'citations']),
   row('remove a citation', [C, 'section:references', 'control:remove-citation'], undefined, undefined, ['sources', 'citations']),
   row('insert the reference list', [C, 'section:references', 'control:insert-reference-list'], undefined, undefined, ['sources', 'citations']),
-  row('insert a citation with @', ['topbar:insert', 'item:citation'], 8, ['key:@', 'text:Insert Citation']),
+  row('insert a citation with @', ['topbar:insert', 'item:citation', 'text:Insert Citation']),
   // Review
   row('open chat', [R, 'section:chat']),
   row('send a chat message', [R, 'section:chat', 'fill:hello', 'control:send']),
@@ -167,61 +171,65 @@ export const ENTRY_POINTS: EntryPoint[] = [
   row('choose the paper size', [F, 'section:page', 'control:page-size']),
   row('set the body font size', [F, 'section:page', 'control:body-font-size']),
   // File and document (top bar)
-  row('start a new manuscript', ['topbar:file', 'item:new'], 8, ['title:New Manuscript']),
-  row('import a Word, JSON, Markdown or text file', ['topbar:file', 'item:import'], 8, ['text:Load Document (.json, .docx, .md, .txt)']),
-  row('see the import report again', ['topbar:file', 'item:import-report'], 8, ['text:Import report*', 'text:Import report'], ['import']),
-  row('restore the previous document', ['topbar:file', 'item:revert-import'], 8, ['text:Restore previous document*'], ['import']),
-  row('save a workspace file', ['topbar:file', 'item:save-workspace'], 8, ['text:Save Workspace']),
-  row('export Markdown', ['topbar:file', 'item:export-md'], 8, ['text:Export Markdown']),
-  row('export Word', ['topbar:file', 'item:export-docx'], 8, ['text:Export Word']),
-  row('export LaTeX', ['topbar:file', 'item:export-tex'], 8, ['text:Export to LaTeX (.zip)']),
-  row('undo', ['topbar:file', 'item:undo'], 8, ['title:Undo']),
-  row('redo', ['topbar:file', 'item:redo'], 8, ['title:Redo']),
-  row('rename the document', ['topbar:title'], 8, ['ph:Untitled Manuscript']),
-  row('open settings', ['topbar:overflow', 'item:settings'], 8, ['icon:settings', 'text:AI Configuration']),
-  row('draft a rebuttal or cover letter', ['topbar:overflow', 'item:post-drafting'], 8, ['title:Post-Drafting: Rebuttal & Cover Letter', 'text:Post-Drafting Assistant']),
-  row('read the keyboard shortcuts', ['topbar:overflow', 'item:shortcuts'], 8, ['title:Keyboard Shortcuts']),
-  row('toggle dark mode', ['topbar:overflow', 'item:dark-mode'], 8, ['title:Dark Mode']),
-  row('enter focus mode', ['topbar:overflow', 'item:focus-mode'], 8, ['title:Focus Mode']),
-  row('zoom out', ['topbar:overflow', 'item:zoom-out'], 8, ['title:Zoom Out']),
-  row('zoom in', ['topbar:overflow', 'item:zoom-in'], 8, ['title:Zoom In']),
+  row('start a new manuscript', ['topbar:file', 'item:new']),
+  row('import a Word, JSON, Markdown or text file', ['topbar:file', 'item:import']),
+  row('see the import report again', ['topbar:file', 'item:import-report'], undefined, undefined, ['import']),
+  row('restore the previous document', ['topbar:file', 'item:revert-import'], undefined, undefined, ['import']),
+  row('save a workspace file', ['topbar:file', 'item:save-workspace']),
+  row('export Markdown', ['topbar:file', 'item:export-md']),
+  row('export Word', ['topbar:file', 'item:export-docx']),
+  row('export LaTeX', ['topbar:file', 'item:export-tex']),
+  row('undo', ['topbar:file', 'item:undo']),
+  row('redo', ['topbar:file', 'item:redo']),
+  row('rename the document', ['topbar:title']),
+  row('open settings', ['topbar:overflow', 'item:settings', 'text:AI Configuration']),
+  row('draft a rebuttal or cover letter', ['topbar:overflow', 'item:post-drafting', 'text:Post-Drafting Assistant']),
+  row('read the keyboard shortcuts', ['topbar:overflow', 'item:shortcuts', 'mtext:Ctrl+Shift+A']),
+  row('toggle dark mode', ['topbar:overflow', 'item:dark-mode']),
+  row('enter focus mode', ['topbar:overflow', 'item:focus-mode']),
+  row('zoom out', ['topbar:overflow', 'item:zoom-out']),
+  row('zoom in', ['topbar:overflow', 'item:zoom-in']),
   // Status
   row('read the page estimate', ['status:pages'], undefined, undefined),
   row('read the word count', ['status:words'], undefined, undefined),
   row('read the save state', ['status:save'], undefined, undefined),
-  row('read the token estimate and provider', ['status:tokens'], 8, ['stext:*tokens']),
-  row('read characters, paragraphs and reading time', ['status:stats'], 8, ['ctext:*min read']),
-  row('analyze the section the cursor is in', ['topbar:ai', 'item:analyze-section'], 8, ['title:Analyze "Intro" section only'], ['outline']),
+  row('read the token estimate and provider', ['status:tokens']),
+  row('read characters, paragraphs and reading time', ['status:stats']),
+  row('analyze the section the cursor is in', ['topbar:ai', 'item:analyze-section'], undefined, undefined, ['outline']),
   // Text formatting and insert (top bar)
-  ...[['bold', 'Bold'], ['italic', 'Italic'], ['underline', 'Underline'], ['heading 2', 'Heading 2'], ['heading 3', 'Heading 3'], ['bullet list', 'Bullet list'],
-    ['numbered list', 'Numbered list'], ['blockquote', 'Blockquote'], ['align left', 'Align left'], ['center text', 'Center'], ['justify text', 'Justify'],
-  ].map(([f, t]) => row(`format text: ${f}`, ['topbar:format', `control:${f.replace(' ', '-')}`], 8, [`title:${t}`])),
-  row('toggle AI autocomplete', ['topbar:ai', 'item:autocomplete'], 8, ['title:Autocomplete*']),
-  row('insert a figure', ['topbar:insert', 'item:figure'], 8, ['title:Insert figure / image']),
-  row('insert a figure label', ['topbar:insert', 'item:figure-label'], 8, ['title:Insert figure label (auto-numbered)']),
-  row('insert a table', ['topbar:insert', 'item:table'], 8, ['title:Insert table']),
+  // Format text: the selection bar's inline marks, block type and alignment (it shows only while text is selected, hence the seed). Each row ends in the effect, not just the control.
+  ...['bold', 'italic', 'underline'].map(m => row(`format text: ${m}`, [`control:${m}`, `expect:${m}`], undefined, undefined, ['text-selection'])),
+  ...[['heading 2', 'Heading 2', 'heading2'], ['heading 3', 'Heading 3', 'heading3'], ['bullet list', 'Bullet list', 'bulletList'], ['numbered list', 'Numbered list', 'orderedList'], ['blockquote', 'Quote', 'blockquote'],
+  ].map(([f, opt, e]) => row(`format text: ${f}`, ['control:block-type', `choose:${opt}`, `expect:${e}`], undefined, undefined, ['text-selection'])),
+  row('format text: align left', ['control:align', 'choose:Center', 'choose:Align left', 'expect:align-left'], undefined, undefined, ['text-selection']),
+  row('format text: center text', ['control:align', 'choose:Center', 'expect:align-center'], undefined, undefined, ['text-selection']),
+  row('format text: justify text', ['control:align', 'choose:Justify', 'expect:align-justify'], undefined, undefined, ['text-selection']),
+  row('toggle AI autocomplete', ['topbar:ai', 'item:autocomplete']),
+  row('insert a figure', ['topbar:insert', 'item:figure']),
+  row('insert a figure label', ['topbar:insert', 'item:figure-label', 'expect:node:figureLabel']),
+  row('insert a table', ['topbar:insert', 'item:table', 'css:#table-picker-portal']),
   // AI on the selection
   ...['Polish', 'Shorten', 'Sharpen', 'Strengthen', 'Critique', 'Explain'].map(l =>
-    row(`${l.toLowerCase()} the selection`, ['topbar:ai', `item:${l.toLowerCase()}`], 8, [`title:${l} —*`], ['text-selection'])),
-  row('rewrite the selection', ['topbar:ai', 'item:rewrite'], 8, ['title:Rewrite and get accept/reject suggestion'], ['text-selection']),
-  row('give a custom instruction', ['topbar:ai', 'item:instruct'], 8, ['title:Custom instruction for selected text'], ['text-selection']),
-  row('find synonyms', ['topbar:ai', 'item:synonyms'], 8, ['title:Find synonyms / alternatives'], ['word-selection']),
-  row('verify a claim against sources', ['topbar:ai', 'item:verify'], 8, ['title:Verify this claim against uploaded PDF sources'], ['text-selection']),
-  row('replace a word with a synonym', ['topbar:ai', 'item:synonym-choice'], 8, ['title:Find synonyms / alternatives', 'text:SYNONYM_X', 'expect:doctext:SYNONYM_X'], ['word-selection']),
-  row('bold the selection from the selection menu', ['topbar:format', 'control:bold-selection'], 8, ['icon:bold#2'], ['text-selection']),
-  row('italicize the selection from the selection menu', ['topbar:format', 'control:italic-selection'], 8, ['icon:italic#2'], ['text-selection']),
-  row('underline the selection from the selection menu', ['topbar:format', 'control:underline-selection'], 8, ['icon:underline#2'], ['text-selection']),
-  row('send a custom instruction', ['topbar:ai', 'item:instruct-send'], 8, ['title:Custom instruction for selected text', 'icon:send'], ['text-selection']),
-  row('find similar manuscripts', ['topbar:ai', 'item:similar'], 8, ['title:Find similar published manuscripts for this selection'], ['text-selection']),
+    row(`${l.toLowerCase()} the selection`, ['topbar:ai', `item:${l.toLowerCase()}`], undefined, undefined, ['text-selection'])),
+  row('rewrite the selection', ['topbar:ai', 'item:rewrite'], undefined, undefined, ['text-selection']),
+  row('give a custom instruction', ['topbar:ai', 'item:instruct'], undefined, undefined, ['text-selection']),
+  row('find synonyms', ['topbar:ai', 'item:synonyms'], undefined, undefined, ['word-selection']),
+  row('verify a claim against sources', ['topbar:ai', 'item:verify'], undefined, undefined, ['text-selection']),
+  row('replace a word with a synonym', ['topbar:ai', 'item:synonyms', 'item:synonym-choice', 'expect:doctext:SYNONYM_X'], undefined, undefined, ['word-selection']),
+  row('bold the selection from the selection menu', ['control:bold', 'expect:bold'], undefined, undefined, ['text-selection']),
+  row('italicize the selection from the selection menu', ['control:italic', 'expect:italic'], undefined, undefined, ['text-selection']),
+  row('underline the selection from the selection menu', ['control:underline', 'expect:underline'], undefined, undefined, ['text-selection']),
+  row('send a custom instruction', ['topbar:ai', 'item:instruct', 'item:instruct-send'], undefined, undefined, ['text-selection']),
+  row('find similar manuscripts', ['topbar:ai', 'item:similar'], undefined, undefined, ['text-selection']),
   // AI and layout on the selected figure
-  row('describe a figure', ['figure:selected', 'control:describe'], 8, ['title:Visual description of what is seen in the figure'], ['figure']),
-  row('check figure quality', ['figure:selected', 'control:quality'], 8, ['title:Check figure quality, spelling, colors, readability'], ['figure']),
-  row('review figure relevance', ['figure:selected', 'control:relevance'], 8, ['title:Review figure relevance and clarity in context of manuscript'], ['figure']),
-  row('type a question about a figure', ['figure:selected', 'control:ask-text'], 8, ['title:Ask a custom question about this figure', 'ph:Ask about this figure…*'], ['figure']),
-  row('ask about a figure', ['figure:selected', 'control:ask'], 8, ['title:Ask a custom question about this figure'], ['figure']),
-  row('align a figure', ['figure:selected', 'control:align-figure'], 8, ['title:Align center'], ['figure']),
-  row('resize a figure', ['figure:selected', 'control:size-figure'], 8, ['title:Set width to 50%'], ['figure']),
-  row('delete a figure', ['figure:selected', 'control:delete-figure'], 8, ['title:Delete figure'], ['figure']),
+  row('describe a figure', ['figure:selected', 'control:describe'], undefined, undefined, ['figure']),
+  row('check figure quality', ['figure:selected', 'control:quality'], undefined, undefined, ['figure']),
+  row('review figure relevance', ['figure:selected', 'control:relevance'], undefined, undefined, ['figure']),
+  row('type a question about a figure', ['figure:selected', 'control:ask', 'control:ask-text'], undefined, undefined, ['figure']),
+  row('ask about a figure', ['figure:selected', 'control:ask'], undefined, undefined, ['figure']),
+  row('align a figure', ['figure:selected', 'control:align-figure', 'expect:figalign:left'], undefined, undefined, ['figure']),
+  row('resize a figure', ['figure:selected', 'control:size-figure', 'expect:figwidth:25%'], undefined, undefined, ['figure']),
+  row('delete a figure', ['figure:selected', 'control:delete-figure', 'expect:nofigure'], undefined, undefined, ['figure']),
 
   // ── Round 1: the interactions, keyboard bindings and Cite/Editor details the first pass left out ──
   // Cite
@@ -252,21 +260,21 @@ export const ENTRY_POINTS: EntryPoint[] = [
   row('insert an advisory suggestion as a note', [R, 'row:suggestion', 'control:insert-note'], undefined, undefined, ['advisory', 'outline']),
   row('dismiss an advisory suggestion', [R, 'row:suggestion', 'control:dismiss'], undefined, undefined, ['advisory']),
   row('click an applied change to find it in the text', [W, 'section:history', 'control:locate-change', 'expect:selection:beta gamma'], undefined, undefined, ['history', 'outline']),
-  row('run an analysis from the top bar', ['topbar:ai', 'item:analyze'], 8, ['htext:Analyze All']),
-  row('run a single agent from the top bar', ['topbar:ai', 'item:analyze-agent'], 8, ['nextto:Analyze All*', 'htext:Run Single Agent']),
-  row('run one named agent from the top bar', ['topbar:ai', 'item:analyze-agent-one'], 8, ['nextto:Analyze All*', 'htext:Language Surgeon']),
-  row('summarize from the top bar', ['topbar:ai', 'item:summary'], 8, ['title:Generate a high-level manuscript review*']),
-  row('stop an analysis from the top bar', ['topbar:ai', 'item:stop'], 8, ['rail:cite', 'htext:Stop'], ['analyzing']),
-  row('confirm the export warning and download', ['topbar:file', 'item:export-confirm'], 8, ['text:Export Markdown', 'mtext:I Acknowledge — Download']),
-  row('cancel the export warning', ['topbar:file', 'item:export-cancel'], 8, ['text:Export Markdown', 'mtext:Cancel']),
-  row('close the shortcuts list', ['topbar:overflow', 'item:shortcuts-close'], 8, ['title:Keyboard Shortcuts', 'mtext:Close']),
+  row('run an analysis from the top bar', ['topbar:ai', 'item:analyze']),
+  row('run a single agent from the top bar', ['topbar:ai', 'item:analyze-agent']),
+  row('run one named agent from the top bar', ['topbar:ai', 'item:analyze-agent', 'item:analyze-agent-one']),
+  row('summarize from the top bar', ['topbar:ai', 'item:summary']),
+  row('stop an analysis from the top bar', ['topbar:ai', 'item:stop'], undefined, undefined, ['analyzing']),
+  row('confirm the export warning and download', ['topbar:file', 'item:export-md', 'control:export-confirm']),
+  row('cancel the export warning', ['topbar:file', 'item:export-md', 'control:export-cancel']),
+  row('close the shortcuts list', ['topbar:overflow', 'item:shortcuts', 'control:shortcuts-close']),
   row('measure my voice from pasted samples', [R, 'section:style', 'control:voice-samples', 'control:voice-measure']),
   row('cancel adding voice samples', [R, 'section:style', 'control:voice-samples', 'control:voice-cancel']),
   row('rebuild the voice profile', [R, 'section:style', 'control:voice-rebuild'], undefined, undefined, ['voice-profile']),
   row('remove the voice profile', [R, 'section:style', 'control:voice-remove'], undefined, undefined, ['voice-profile']),
   // Editor internals that stay in the Editor: their rows are settled, so a move must edit the row
   row('click a highlighted passage to open its suggestion', ['rail:cite', 'markclick:', 'ptext:Accept'], undefined, undefined, ['suggestion', 'outline']),
-  row('pick a table size', ['title:Insert table', 'css:#table-picker-portal div[style*="cursor"]#9', 'expect:table:2x3']),
+  row('pick a table size', ['topbar:insert', 'item:table', 'css:#table-picker-portal div[style*="cursor"]#9', 'expect:table:2x3']),
   row('add a table column before', ['contextmenu:', 'text:*Add column before', 'expect:table:2x3'], undefined, undefined, ['table']),
   row('add a table column after', ['contextmenu:', 'text:*Add column after', 'expect:table:2x3'], undefined, undefined, ['table']),
   row('add a table row above', ['contextmenu:', 'text:*Add row above', 'expect:table:3x2'], undefined, undefined, ['table']),
@@ -281,19 +289,31 @@ export const ENTRY_POINTS: EntryPoint[] = [
   row('insert several typed DOIs with Space', ['key:@', 'type:@10.1000/abc1,10.1000/abc2', 'keyhandled: ']),
   row('dismiss a failed DOI lookup', ['key:@', 'type:@10.1000/abc', 'keyhandled: ', 'text:Dismiss']),
   row('close the @ picker with Escape', ['key:@', 'text:Insert Citation', 'key:Escape', 'gone:Insert Citation']),
-  row('choose the agent for a custom instruction', ['topbar:ai', 'item:instruct-agent'], 8, ['title:Custom instruction for selected text', 'select:Reviewer 2'], ['text-selection']),
-  row('type a custom instruction', ['topbar:ai', 'item:instruct-text'], 8, ['title:Custom instruction for selected text', 'ph:e.g. Make this more concise...'], ['text-selection']),
-  row('read the character count', ['status:chars'], 8, ['ctext:*chars']),
-  row('read the paragraph count', ['status:paragraphs'], 8, ['ctext:*paragraphs']),
+  row('choose the agent for a custom instruction', ['topbar:ai', 'item:instruct', 'select:Reviewer 2'], undefined, undefined, ['text-selection']),
+  row('type a custom instruction', ['topbar:ai', 'item:instruct', 'item:instruct-text'], undefined, undefined, ['text-selection']),
+  row('read the character count', ['status:chars']),
+  row('read the paragraph count', ['status:paragraphs']),
   row('resize the side panel', [R, 'css:.cursor-col-resize', 'drag:-100', 'expect:panelwidth:500px']),
   // Keyboard bindings: independently losable, so each has its own row
-  row('use the restore button on the import message', ['topbar:file', 'item:import-toast-action'], 8, ['importdocx:body-basics.docx', 'css:.toast-enter button', 'text:*Restored the document the import replaced*'], ['saved-doc']),
+  row('use the restore button on the import message', ['topbar:file', 'item:import', 'importdocx:body-basics.docx', 'control:toast-action', 'text:*Restored the document the import replaced*'], undefined, undefined, ['saved-doc']),
   row('save the workspace with Ctrl/Cmd+S', ['keyhandled:Mod+S']),
   row('analyze with Ctrl/Cmd+Shift+A', ['keyhandled:Mod+Shift+A']),
   row('show the shortcuts with Ctrl/Cmd+?', ['key:Mod+?', 'mtext:Ctrl+Shift+A']),
   row('bold with Ctrl+B', ['key:Ctrl+B', 'expect:bold'], undefined, undefined, ['text-selection']),
   row('italic with Ctrl+I', ['key:Ctrl+I', 'expect:italic'], undefined, undefined, ['text-selection']),
   row('underline with Ctrl+U', ['key:Ctrl+U', 'expect:underline'], undefined, undefined, ['text-selection']),
+  // New in Task 8: routes that did not exist before the top bar became selection-aware. Each ends in the effect.
+  row('choose a source after Insert > Citation', ['topbar:insert', 'item:citation', 'text:paper', 'expect:node:citation'], undefined, undefined, ['sources']),
+  row('stop a request from the top bar button', ['topbar:stop'], undefined, undefined, ['analyzing']),
+  row('send a question about a figure', ['figure:selected', 'control:ask', 'typein:Ask about this figure…*|what is plotted', 'control:ask-send', 'expect:message:what is plotted'], undefined, undefined, ['figure']),
+  row('set the block style at rest', ['topbar:body-style', 'choose:Heading 2', 'expect:heading2']),
+  row('add a table row above from the bar', ['control:row-above', 'expect:table:3x2'], undefined, undefined, ['table']),
+  row('add a table row below from the bar', ['control:row-below', 'expect:table:3x2'], undefined, undefined, ['table']),
+  row('add a table column before from the bar', ['control:col-before', 'expect:table:2x3'], undefined, undefined, ['table']),
+  row('add a table column after from the bar', ['control:col-after', 'expect:table:2x3'], undefined, undefined, ['table']),
+  row('delete a table row from the bar', ['control:delete-row', 'expect:table:1x2'], undefined, undefined, ['table']),
+  row('delete a table column from the bar', ['control:delete-column', 'expect:table:2x1'], undefined, undefined, ['table']),
+  row('delete a table from the bar', ['control:delete-table', 'expect:notable'], undefined, undefined, ['table']),
   row('accept autocomplete with Tab', ['ghost: and more words', 'key:Tab', 'expect:doctext: and more words'], undefined, undefined, ['outline']),
 ];
 
@@ -390,6 +410,11 @@ async function expectation(arg: string) {
     selection: () => { const { from, to } = editor().state.selection; return from !== to && editor().state.doc.textBetween(from, to, ' ') === val; },
     cursor: () => editor().state.selection.from === Number(val),
     bold: () => editor().isActive('bold'), italic: () => editor().isActive('italic'), underline: () => editor().isActive('underline'),
+    heading1: () => editor().isActive('heading', { level: 1 }), heading2: () => editor().isActive('heading', { level: 2 }), heading3: () => editor().isActive('heading', { level: 3 }),
+    bulletList: () => editor().isActive('bulletList'), orderedList: () => editor().isActive('orderedList'), blockquote: () => editor().isActive('blockquote'),
+    'align-left': () => editor().isActive({ textAlign: 'left' }), 'align-center': () => editor().isActive({ textAlign: 'center' }), 'align-justify': () => editor().isActive({ textAlign: 'justify' }),
+    figalign: () => editor().getAttributes('resizableImage').align === val, figwidth: () => editor().getAttributes('resizableImage').width === val,
+    nofigure: () => { let f = false; editor().state.doc.descendants((n: any) => { if (n.type.name === 'resizableImage') f = true; }); return !f; },
     doctext: () => editor().state.doc.textContent.includes(val),
     message: () => JSON.stringify(useAIStore.getState().messages).includes(val),
     source: () => useSourceStore.getState().sources.some(s => s.name === val),
@@ -422,7 +447,8 @@ async function step(spec: string, isLast: boolean): Promise<void> {
   }
   if (kind === 'figure') { await waitStep(spec, () => candidates('text', 'Figure AI')[0]); return; }
   if (kind === 'status') {
-    const want = { pages: /^~?\d+ (pp|of \d+)$/, words: /^[\d,]+ words$/, save: /^(Draft|Saved|Auto-saved)$/ }[arg];
+    const want = { pages: /^~?\d+ (pp|of \d+)$/, words: /^[\d,]+ words$/, save: /^(Draft|Saved|Auto-saved)$/,
+      tokens: /^~[\d,]+ tokens$/, chars: /^[\d,]+ chars$/, paragraphs: /^[\d,]+ paragraphs$/, stats: /^\d+ min read$/ }[arg];
     await waitStep(spec, () => want && [...document.querySelectorAll('[role=status] span')].some(s => want.test(norm(s.textContent)) && isShown(s))); return;
   }
   if (kind === 'key') { fireEvent.keyDown(editor().view.dom, combo(arg, 'ctrl')); await settle(0); return; }
@@ -564,33 +590,27 @@ const source = (p: string) => readFileSync(p, 'utf8');
 const stepsOf = (e: EntryPoint) => [...e.path, ...(e.now ?? [])];
 /** Titles and button labels that name no feature: static notices, readouts, the other state of a toggle, or a part of a control a row already covers. */
 const NOT_A_FEATURE: Record<string, string> = {
-  'Manuscript AI Editor': 'logo tooltip', 'VC by Dawid Zyla — github.com/dzyla/manuscriptAI': 'credit link',
-  'AI may make mistakes. Researcher is responsible for scientific correctness.': 'static notice', 'Text Zoom': 'readout between the zoom buttons',
   'Manuscript mode — journal-style agents': 'the other half of the mode toggle (row: switch between manuscript and grant mode)',
-  'Light Mode': 'the other state of the dark-mode toggle (row: toggle dark mode)',
   'Remove image': 'chip on an attached chat image (rows: drop/paste an image into chat)',
   'Copy to My Templates for editing': 'inside the template picker, which moves whole (row: pick a grant template)',
   'Page limit (blank = none)': 'inside the template picker, which moves whole',
   'Saved ': 'tooltip on the Restore previous document item (row: restore the previous document)',
   'Over the ': 'tooltip on Trim (row: trim an over-budget section)',
-  'In section: ': 'tooltip on the section indicator in the stats bar (row: analyze the section the cursor is in)',
   'Query: ': 'tooltip on a literature-search source card',
   'Funder instructions active — all agents follow them': 'the other state of the instructions toggle (row: edit grant instructions)',
-  'Analyze "': 'tooltip form of the Analyze Section controls (rows: analyze one section / the section the cursor is in)',
 };
 /** Template titles that start with an expression, so there is no prefix to match; each is covered by the rows named. */
 const TEMPLATE_TITLES: Record<string, string> = {
-  '${action.label} — ${action.mode': 'rows: polish/shorten/sharpen/strengthen/critique/explain the selection',
   '${ts.title}: ${words}': 'tooltip on a grant budget chip (row: see grant section page budgets)',
   '${src.name}': 'tooltip on an attached source (row: choose which sources the chat sees)',
 };
 /** Buttons whose only label is an icon (no title, no text): the guard cannot name them, so it counts them. A new one fails until a row covers it (an `icon:` step) and this count moves. */
 const ICON_ONLY_BUTTONS: Record<string, number> = {
-  // App 5: Download menu trigger (its items have rows), Settings, analyze-menu chevron, each agent in that menu (named by its label), the toast action.
-  'src/App.tsx': 5,
-  // Editor 9: mobile toolbar toggle (a phone-width control, `sm:hidden`, not reachable at desktop width by design), bubble Bold/Italic/Underline, synonym chips,
-  // custom-instruction send, figure-question send, table menu items and @-picker sources (each has rows).
-  'src/components/Editor.tsx': 9,
+  // App 0: the left icon rail, the Download menu, Settings, the analyze chevron and the toast action all left App.tsx (the menus are TopBar's; the toast is AppOverlays').
+  'src/App.tsx': 0,
+  // Editor 0: the mobile toolbar toggle, the bubble's marks, synonym chips and instruction send left with the toolbar (SelectionBar, aiPanels); the table menu items, the @-picker
+  // sources and the figure-question send moved to their own files below.
+  'src/components/Editor.tsx': 0,
   // Sidebar 3: the inline chat suggestion cards' accept/reject, agent chips, vision X, send. (Task 7 removed the Sources/Style tab strip with the Style tab.)
   // (Task 4 moved the severity filter and the suggestion cards' own buttons to the Review panel, which names its controls with test ids.
   // Task 5 moved clear-reference-search, trash, source tabs and PDF tabs to the Cite panel, which names every one with a test id.)
@@ -608,6 +628,13 @@ const ICON_ONLY_BUTTONS: Record<string, number> = {
   'src/components/panels/write/Outline.tsx': 0, 'src/components/panels/write/History.tsx': 0, 'src/components/panels/write/Versions.tsx': 0,
   'src/components/panels/FormatPanel.tsx': 1, // section toggles (rows: every section: step); the mode buttons carry titles
   'src/components/panels/format/PageSection.tsx': 0, 'src/components/panels/format/StylesSection.tsx': 0, 'src/components/panels/format/NumField.tsx': 0,
+  // Task 8. TopBar 0: the menu triggers carry an aria-label or visible words, every menu item a title. The rest, each reached by a row:
+  'src/components/shell/TopBar.tsx': 0, 'src/components/shell/useTopBarItems.tsx': 0,
+  'src/components/shell/aiPanels.tsx': 1, // the synonym chips (rows: replace a word with a synonym)
+  'src/components/shell/AppOverlays.tsx': 1, // the toast's action button, labelled by whoever raised the toast (row: use the restore button on the import message)
+  'src/components/editor/SelectionBar.tsx': 0, 'src/components/editor/FigureControls.tsx': 0,
+  'src/components/editor/TableMenus.tsx': 1, // the table context-menu items (rows: add/delete a table row/column, delete a table)
+  'src/components/editor/CitationPicker.tsx': 1, // a source in the @ picker (row: choose a source in the @ picker)
 };
 
 /** The body of the `{...}` that opens at `i` (balanced), or null. */
@@ -679,7 +706,10 @@ const GUARDED = ['src/App.tsx', 'src/components/Editor.tsx', 'src/components/Sid
   'src/components/panels/CitePanel.tsx', 'src/components/panels/cite/Library.tsx', 'src/components/panels/cite/SourceCard.tsx', 'src/components/panels/cite/PdfMatch.tsx',
   'src/components/panels/cite/SourceTabs.tsx', 'src/components/panels/cite/Search.tsx', 'src/components/panels/cite/ReferenceManager.tsx',
   'src/components/panels/WritePanel.tsx', 'src/components/panels/write/Outline.tsx', 'src/components/panels/write/History.tsx', 'src/components/panels/write/Versions.tsx',
-  'src/components/panels/FormatPanel.tsx', 'src/components/panels/format/PageSection.tsx', 'src/components/panels/format/StylesSection.tsx', 'src/components/panels/format/NumField.tsx'];
+  'src/components/panels/FormatPanel.tsx', 'src/components/panels/format/PageSection.tsx', 'src/components/panels/format/StylesSection.tsx', 'src/components/panels/format/NumField.tsx',
+  // Task 8: the top bar, its menus' panels and the overlays that left App.tsx; the selection bar, the figure controls and the editor's pickers that left Editor.tsx.
+  'src/components/shell/TopBar.tsx', 'src/components/shell/aiPanels.tsx', 'src/components/shell/AppOverlays.tsx', 'src/components/shell/useTopBarItems.tsx',
+  'src/components/editor/SelectionBar.tsx', 'src/components/editor/FigureControls.tsx', 'src/components/editor/TableMenus.tsx', 'src/components/editor/CitationPicker.tsx'];
 
 describe('the list itself', () => {
   it('covers every rail task', () => {
@@ -735,6 +765,8 @@ describe('the list itself', () => {
       'src/components/panels/cite/ReferenceManager.tsx': ['ptext', 'select'],
       'src/components/panels/WritePanel.tsx': ['ptext'], 'src/components/panels/write/Outline.tsx': ['ptext'], 'src/components/panels/write/History.tsx': ['ptext'], 'src/components/panels/write/Versions.tsx': ['ptext'],
       'src/components/panels/FormatPanel.tsx': ['ptext'], 'src/components/panels/format/PageSection.tsx': ['ptext'], 'src/components/panels/format/StylesSection.tsx': ['ptext'], 'src/components/panels/format/NumField.tsx': ['ptext'],
+      'src/components/shell/TopBar.tsx': ['htext'], 'src/components/shell/aiPanels.tsx': ['htext'], 'src/components/shell/AppOverlays.tsx': ['text', 'mtext'], 'src/components/shell/useTopBarItems.tsx': ['htext'],
+      'src/components/editor/SelectionBar.tsx': ['htext'], 'src/components/editor/FigureControls.tsx': ['text', 'ctext'], 'src/components/editor/TableMenus.tsx': ['text', 'ctext'], 'src/components/editor/CitationPicker.tsx': ['text', 'ctext'],
     };
     const steps = ENTRY_POINTS.flatMap(stepsOf).map(st => ({ kind: st.slice(0, st.indexOf(':')), v: st.slice(st.indexOf(':') + 1).replace(/#\d+$/, '') }));
     const uncovered: string[] = [];
@@ -750,6 +782,20 @@ describe('the list itself', () => {
   it('icon-only buttons (no title, no text) are counted: a new one must get a row with an icon: step', () => {
     const counts = Object.fromEntries(GUARDED.map(f => [f, textOnlyButtons(source(f)).filter(b => b.words.length === 0).length]));
     expect(counts).toEqual(ICON_ONLY_BUTTONS);
+  });
+  it('every top-bar menu item has a row that reaches it (a menu item cannot be dropped silently)', () => {
+    const steps = ENTRY_POINTS.flatMap(stepsOf);
+    const src = source('src/components/shell/useTopBarItems.tsx');
+    // ids written out in the menus: `{ id: 'new', ...}`; an item with its own testId is reached by that; the six presets are generated from SELECTION_PRESETS.
+    const ids = new Set<string>();
+    for (const m of src.matchAll(/\{\s*id: '([a-z-]+)'(?:,\s*testId: '([a-z-]+)')?/g)) ids.add(m[2] ?? m[1]);
+    for (const m of src.matchAll(/testId: '([a-z-]+)'/g)) ids.add(m[1]);
+    for (const l of ['Polish', 'Shorten', 'Sharpen', 'Strengthen', 'Critique', 'Explain']) ids.add(l.toLowerCase());
+    expect(ids.size, 'the menu definitions were not found').toBeGreaterThan(25);
+    const unreached = [...ids].filter(id => !steps.includes(`item:${id}`));
+    expect(unreached, 'menu items with no row').toEqual([]);
+    // and the generated presets really are the six this list names
+    expect(source('src/components/shell/selectionPresets.ts').match(/label: '([A-Za-z]+)'/g)!.map(x => x.slice(8, -1))).toEqual(['Polish', 'Shorten', 'Sharpen', 'Strengthen', 'Critique', 'Explain']);
   });
   it('a test id belongs to one control across the guarded files, so a step cannot vouch for a different button that reuses its name', () => {
     const seen = new Map<string, string>();
@@ -814,7 +860,9 @@ describe('reachability: resolves in the mounted App now', () => {
 });
 
 describe('reachability: still reachable at its current home until its task moves it', () => {
-  it.each(ENTRY_POINTS.filter(e => e.pending && e.now))('$feature (Task $pending)', async (e) => { await expect(resolve(e.now!, e.seed)).resolves.toBe(true); }, 30000);
+  const waiting = ENTRY_POINTS.filter(e => e.pending && e.now);
+  if (waiting.length) it.each(waiting)('$feature (Task $pending)', async (e) => { await expect(resolve(e.now!, e.seed)).resolves.toBe(true); }, 30000);
+  else it('no row is waiting on a later task: every feature has reached its new home', () => { expect(ENTRY_POINTS.filter(e => e.pending)).toEqual([]); });
 });
 
 // ── App wiring, observed rather than read ───────────────────────────────────────────────────────────────────────────────
@@ -979,4 +1027,204 @@ describe('unmounting with a pending editor timer', () => {
   it('after a click on an outline heading', async () => { await unmountWhilePending([W, 'section:outline'], ['outline'], 'ptext:Intro'); }, 20000);
   it('after a click on a suggestion card', async () => { await unmountWhilePending([R, 'row:suggestion'], ['suggestion', 'outline'], 'ptext:EXPLAIN_ME'); }, 20000);
   it('after jumping to a citation', async () => { await unmountWhilePending([C, 'section:references'], ['sources', 'citations', 'cited-text'], 'testid:control-goto-citation'); }, 20000);
+});
+
+
+// ── The top bar, observed rather than read: what the menus and the selection bar DO ───────────────────────────────────────────
+describe('Top bar (behaviour)', () => {
+  const menuItem = (id: string) => screen.getByTestId(`item-${id}`) as HTMLButtonElement;
+  const open = async (menu: string) => { const b = await waitStep(`topbar-${menu}`, () => screen.queryByTestId(`topbar-${menu}`)); if (b.getAttribute('aria-expanded') !== 'true') click(b); };
+  const docText = () => editor().state.doc.textContent;
+  const AI_SELECTION_ITEMS = ['polish', 'shorten', 'sharpen', 'strengthen', 'critique', 'explain', 'rewrite', 'instruct', 'verify'];
+
+  it('at rest the bar is the document name, three menus, the block style, version history and the overflow: eight controls or fewer', async () => {
+    await resolve([], []);
+    const bar = document.querySelector('.u-shell-top') as HTMLElement;
+    const controls = [...bar.querySelectorAll('button, select, input')].filter(isShown);
+    expect(controls.length, controls.map(c => c.getAttribute('data-testid') ?? c.getAttribute('title') ?? c.tagName).join(', ')).toBeLessThanOrEqual(8);
+    for (const id of ['topbar-title', 'topbar-file', 'topbar-insert', 'topbar-ai', 'topbar-body-style', 'topbar-overflow']) expect(bar.querySelector(`[data-testid="${id}"]`), id).toBeTruthy();
+    expect(bar.querySelector('[data-testid="selection-bar"]')).toBeNull();
+  }, 20000);
+
+  it('AI menu with no selection: every selection action is disabled and says to select text; the ones that do not need a selection are not', async () => {
+    await resolve([], []);
+    await open('ai');
+    for (const id of AI_SELECTION_ITEMS) {
+      expect(menuItem(id).disabled, id).toBe(true);
+      expect(menuItem(id).getAttribute('title'), id).toMatch(/select/i);
+    }
+    for (const id of ['analyze', 'analyze-agent', 'summary', 'autocomplete']) expect(menuItem(id).disabled, id).toBe(false);
+    expect(menuItem('synonyms').disabled).toBe(true);
+    expect(menuItem('similar').disabled).toBe(true);
+  }, 20000);
+
+  it('the menu follows the selection: enabled while text is selected, disabled again once it collapses; word count gates synonyms and similar', async () => {
+    await resolve(['topbar:ai'], ['text-selection']);
+    for (const id of AI_SELECTION_ITEMS) expect(menuItem(id).disabled, id).toBe(false);
+    expect(menuItem('synonyms').disabled, 'ten words is not a word to look up').toBe(true);
+    expect(menuItem('similar').disabled).toBe(false);
+    await act(async () => { editor().commands.setTextSelection({ from: 8, to: 13 }); });
+    await waitFor(() => expect(menuItem('synonyms').disabled).toBe(false));
+    expect(menuItem('similar').disabled, 'one word is not enough to search the literature').toBe(true);
+    await act(async () => { editor().commands.setTextSelection(3); });
+    await waitFor(() => expect(menuItem('polish').disabled).toBe(true));
+  }, 20000);
+
+  it('a preset with a selection runs on exactly the selected text', async () => {
+    await resolve(['topbar:ai'], ['text-selection']);
+    const selected = editor().state.doc.textBetween(editor().state.selection.from, editor().state.selection.to, ' ');
+    click(menuItem('critique')); // an "analyze" preset: the answer goes to chat, starting with the quoted selection
+    await waitFor(() => expect(JSON.stringify(useAIStore.getState().messages)).toContain(selected.slice(0, 40)), { timeout: 4000 });
+    expect(JSON.stringify(useAIStore.getState().messages)).toContain('Identify the specific scientific weaknesses');
+  }, 20000);
+
+  it('the custom instruction goes out with the chosen agent and the typed words, and an empty box sends the stock request', async () => {
+    await resolve(['topbar:ai'], ['text-selection']);
+    click(menuItem('instruct'));
+    fireEvent.change(screen.getByTestId('item-instruct-agent'), { target: { value: 'reviewer-2' } });
+    fireEvent.change(screen.getByTestId('item-instruct-text'), { target: { value: 'tighten the second sentence' } });
+    click(screen.getByTestId('item-instruct-send'));
+    await waitFor(() => expect(JSON.stringify(useAIStore.getState().messages)).toContain('tighten the second sentence'), { timeout: 4000 });
+    expect(screen.queryByTestId('item-instruct-send'), 'sending closes the menu').toBeNull();
+    await open('ai');
+    click(menuItem('instruct'));
+    click(screen.getByTestId('item-instruct-send'));
+    await waitFor(() => expect(JSON.stringify(useAIStore.getState().messages)).toContain('Suggest improvements for this text.'), { timeout: 4000 });
+  }, 20000);
+
+  it('Undo and Redo in the File menu act on the document, and Ctrl+Z still does too', async () => {
+    await resolve([], []);
+    await act(async () => { editor().commands.insertContent('typed words'); });
+    expect(docText()).toContain('typed words');
+    await open('file'); click(menuItem('undo'));
+    await waitFor(() => expect(docText()).not.toContain('typed words'));
+    await open('file'); click(menuItem('redo'));
+    await waitFor(() => expect(docText()).toContain('typed words'));
+    fireEvent.keyDown(editor().view.dom, { key: 'z', ctrlKey: true, bubbles: true, cancelable: true });
+    await waitFor(() => expect(docText()).not.toContain('typed words'));
+  }, 20000);
+
+  it('Undo right after an import does not bring the replaced document back (a load is not an edit)', async () => {
+    await resolve(['topbar:file', 'item:import', 'importdocx:body-basics.docx'], ['saved-doc']);
+    await waitStep('the import message', () => screen.queryByTestId('control-toast-action'));
+    await settle(500); // the import applies the document and then the stored copy of it; both are loads
+    const imported = docText();
+    expect(imported.length).toBeGreaterThan(10);
+    expect(imported).not.toContain('Work the author already did.');
+    expect(undoDepth(editor().state), 'a load must leave nothing to undo').toBe(0);
+    await open('file'); click(menuItem('undo'));
+    await settle(200);
+    expect(docText()).toBe(imported);
+    await open('file'); click(menuItem('redo'));
+    await settle(200);
+    expect(docText()).toBe(imported);
+  }, 30000);
+
+  it('Dark mode, Zoom and Focus mode do what they say', async () => {
+    await resolve([], []);
+    await open('overflow'); click(menuItem('dark-mode'));
+    expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
+    expect(menuItem('dark-mode').getAttribute('aria-checked')).toBe('true');
+    click(menuItem('dark-mode'));
+    expect(document.documentElement.getAttribute('data-theme')).toBe('light');
+    const canvas = screen.getByTestId('page-canvas') as HTMLElement;
+    expect(canvas.style.zoom).toBe('1');
+    click(menuItem('zoom-in'));
+    await waitFor(() => expect(canvas.style.zoom).toBe('1.1'));
+    expect(menuItem('zoom-in').textContent).toContain('110%');
+    click(menuItem('zoom-out')); click(menuItem('zoom-out'));
+    await waitFor(() => expect(canvas.style.zoom).toBe('0.9'));
+    click(menuItem('focus-mode'));
+    await waitFor(() => expect(screen.queryByRole('navigation', { name: 'Tasks' })).toBeNull());
+    expect(screen.getByTestId('topbar-overflow'), 'the bar stays, so focus mode can be left').toBeTruthy();
+    await open('overflow'); click(menuItem('focus-mode'));
+    await waitFor(() => expect(screen.getByRole('navigation', { name: 'Tasks' })).toBeTruthy());
+  }, 20000);
+
+  it('exporting waits for the acknowledgement: cancel downloads nothing, confirm downloads once', async () => {
+    vi.mocked(saveAs).mockClear();
+    await resolve(['topbar:file'], []);
+    click(menuItem('export-md'));
+    click(await waitStep('the acknowledgement', () => screen.queryByTestId('control-export-cancel')));
+    expect(saveAs).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('control-export-confirm')).toBeNull();
+    await open('file'); click(menuItem('export-md'));
+    click(await waitStep('the acknowledgement', () => screen.queryByTestId('control-export-confirm')));
+    await waitFor(() => expect(saveAs).toHaveBeenCalledTimes(1));
+    expect(String(vi.mocked(saveAs).mock.calls[0][1])).toMatch(/\.md$/);
+    expect(screen.queryByTestId('control-export-confirm')).toBeNull();
+  }, 20000);
+
+  it('the autocomplete switch shows its state and the editor honours it', async () => {
+    await resolve(['topbar:ai'], []);
+    expect(menuItem('autocomplete').getAttribute('aria-checked')).not.toBe('true');
+    click(menuItem('autocomplete'));
+    await waitFor(() => expect(menuItem('autocomplete').getAttribute('aria-checked')).toBe('true'));
+    click(menuItem('autocomplete'));
+    await waitFor(() => expect(menuItem('autocomplete').getAttribute('aria-checked')).not.toBe('true'));
+  }, 20000);
+
+  it('a synonym answer belongs to its selection: collapsing the selection removes it', async () => {
+    await resolve(['topbar:ai'], ['word-selection']);
+    click(menuItem('synonyms'));
+    await waitStep('the synonym chip', () => screen.queryByTestId('item-synonym-choice'));
+    await act(async () => { editor().commands.setTextSelection(3); });
+    await waitFor(() => expect(menuItem('synonyms').disabled).toBe(true));
+    expect(screen.queryByTestId('item-synonym-choice')).toBeNull();
+  }, 20000);
+
+  it('the selection bar tracks the selection: nothing, text, table, figure, and text inside a table', async () => {
+    await resolve([], ['text-selection']);
+    const bar = () => document.querySelector('[data-testid="selection-bar"]');
+    await waitStep('the text controls', () => screen.queryByTestId('control-bold'));
+    await act(async () => { editor().commands.setTextSelection(3); });
+    await waitFor(() => expect(bar()).toBeNull());
+    await act(async () => { editor().commands.insertTable({ rows: 2, cols: 2, withHeaderRow: false }); });
+    await waitStep('the table controls', () => screen.queryByTestId('control-row-above'));
+    expect(screen.queryByTestId('control-bold')).toBeNull();
+    await act(async () => { editor().commands.insertContent('inside the cell'); });
+    const { from } = editor().state.selection;
+    await act(async () => { editor().commands.setTextSelection({ from: from - 8, to: from }); });
+    await waitStep('text controls for words inside a cell', () => screen.queryByTestId('control-bold'));
+    expect(screen.queryByTestId('control-row-above')).toBeNull();
+    let figAt = -1;
+    await act(async () => {
+      editor().chain().insertContent({ type: 'resizableImage', attrs: { src: 'data:image/png;base64,AAAA' } }).run();
+      editor().state.doc.descendants((n: any, p: number) => { if (n.type.name === 'resizableImage') figAt = p; });
+      editor().commands.setNodeSelection(figAt);
+    });
+    await waitFor(() => expect(bar()).toBeNull());
+    expect(screen.queryByTestId('control-bold')).toBeNull();
+  }, 30000);
+
+  it('a figure with no caption is described with the bare prompt: no empty context block is appended', async () => {
+    await resolve([], []);
+    await act(async () => {
+      editor().commands.setContent('<p></p>'); // nothing around the figure: no caption, no neighbouring paragraph
+      editor().chain().insertContent({ type: 'resizableImage', attrs: { src: 'data:image/png;base64,AAAA' } }).run();
+      let pos = -1; editor().state.doc.descendants((n: any, p: number) => { if (n.type.name === 'resizableImage') pos = p; });
+      editor().commands.setNodeSelection(pos);
+    });
+    click(await waitStep('the figure controls', () => screen.queryByTestId('control-describe')));
+    await waitFor(() => expect(useAIStore.getState().messages.some(m => m.role === 'user' && m.content === FIGURE_PROMPTS.describe)).toBe(true), { timeout: 4000 });
+  }, 20000);
+
+  it('the figure controls show which alignment is set, and follow a change', async () => {
+    await resolve(['figure:selected'], ['figure']);
+    const align = () => screen.getAllByTestId('control-align-figure');
+    await waitFor(() => expect(align()[1].className).toContain('bg-stone-600')); // a new figure is centred
+    click(align()[2]);
+    await waitFor(() => expect(align()[2].className).toContain('bg-stone-600'));
+    expect(align()[1].className).not.toContain('bg-stone-600');
+    expect(editor().getAttributes('resizableImage').align).toBe('right');
+  }, 20000);
+
+  it('Insert > Figure label puts a numbered label in the text and Insert > Citation types the @ that opens the picker', async () => {
+    await resolve(['topbar:insert', 'item:figure-label', 'expect:node:figureLabel'], []);
+    await open('insert'); click(menuItem('citation'));
+    await waitStep('the picker', () => candidates('text', 'Insert Citation')[0]);
+    expect(docText()).toContain('@');
+    fireEvent.keyDown(editor().view.dom, { key: 'Escape' });
+    await waitFor(() => expect(candidates('text', 'Insert Citation')).toHaveLength(0));
+  }, 20000);
 });
