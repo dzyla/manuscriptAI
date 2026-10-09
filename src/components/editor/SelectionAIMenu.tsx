@@ -75,6 +75,29 @@ export function AIMenu({ ai }: { ai: SelectionAI }) {
     { id: 'verify', label: 'Verify the selection against sources', hint: 'Check this claim against the uploaded PDF sources', onSelect: ai.onVerify },
   ];
 
+  // Where the menu fits. Measured on open and on resize: `up` only when there is room above,
+  // and the height is capped to whichever side it lands on so it can never run off-screen.
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const [place, setPlace] = useState<{ up: boolean; maxH: number }>({ up: false, maxH: 400 });
+  useEffect(() => {
+    if (!open) return;
+    const measure = () => {
+      const t = root.current?.getBoundingClientRect();
+      if (!t) return;
+      const GAP = 12;
+      const above = t.top - GAP;
+      const below = window.innerHeight - t.bottom - GAP;
+      const wanted = menuRef.current?.scrollHeight ?? 320;
+      // Prefer up (away from the selection the bar sits on), but only if it actually fits
+      // better there; otherwise take the roomier side.
+      const up = above >= Math.min(wanted, below) && above > 120;
+      setPlace({ up, maxH: Math.max(160, Math.floor(up ? above : below)) });
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, [open, instructOpen, ai.thesaurus]);
+
   return (
     <div ref={root} className="relative" onClick={e => { if ((e.target as HTMLElement).closest('[data-closes-menu]')) setOpen(false); }}>
       <button type="button" data-testid="control-ai-menu" aria-haspopup="menu" aria-expanded={open} title="More AI actions for the selection"
@@ -84,7 +107,16 @@ export function AIMenu({ ai }: { ai: SelectionAI }) {
         <Sparkles size={12} />AI<ChevronDown size={11} className={ai.busy ? 'animate-pulse' : ''} />
       </button>
       {open && (
-        <div role="menu" onMouseDown={e => { if (!(e.target as HTMLElement).closest('input,select,textarea')) e.preventDefault(); }} className="absolute top-full right-0 mt-1 border rounded-xl shadow-xl z-50 p-1.5 min-w-[260px]" style={{ background: 'var(--surface-1)', borderColor: 'var(--border)' }}>
+        /*
+          Direction is measured, not fixed. The bar floats just above the selection, so dropping
+          DOWN lands the menu on the sentence being acted on (measured: a 293px menu over a
+          selection at y=195); but always opening UP runs it off the top of the window when the
+          selection is near the first line (measured: y=-140). So: open up only when there is
+          room up there, and cap the height to the space available either way.
+        */
+        <div ref={menuRef} role="menu" onMouseDown={e => { if (!(e.target as HTMLElement).closest('input,select,textarea')) e.preventDefault(); }}
+        style={{ background: 'var(--surface-1)', borderColor: 'var(--border)', maxHeight: place.maxH }}
+        className={`absolute right-0 border rounded-xl shadow-xl z-50 p-1.5 min-w-[260px] overflow-y-auto ${place.up ? 'bottom-full mb-1' : 'top-full mt-1'}`}>
           {items.map(it => (
             <div key={it.id}>
               {it.separatorBefore && <div className="my-1 border-t" style={{ borderColor: 'var(--border-subtle)' }} />}
