@@ -10,3 +10,7 @@ coverage/
 
 # private calibration documents (never commit)
 fixtures/private/
+
+# Agent scratch: SDD ledgers/reports and browser screenshots are workspace artifacts, not source.
+.superpowers/
+.screenshots/
