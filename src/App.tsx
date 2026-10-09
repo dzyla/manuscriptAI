@@ -512,7 +512,9 @@ export default function App() {
 
         // Deterministic detectors run regardless of provider — they never miss
         // and never fabricate, so they set a recall floor under the LLM agents.
-        const detectorAdvisories = detectorSuggestions(plainText);
+        // Ids are stamped per run: a re-run would otherwise repeat `detector-0-79`, and a row action looks its suggestion up by id.
+        const detectorRun = Date.now().toString(36);
+        const detectorAdvisories = detectorSuggestions(plainText).map(d => ({ ...d, id: `${d.id}-${detectorRun}` }));
 
         // Advisory suggestions (flag-only) bypass the Judge/verifier, which are
         // built around edit ORIGINAL→REPLACE reasoning. Detector advisories go

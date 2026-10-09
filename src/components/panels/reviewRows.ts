@@ -51,7 +51,25 @@ function anchorOf(plain: string, s: Suggestion): number | null {
   if (plain.slice(s.startIndex, s.endIndex) === s.originalText) return s.startIndex;
   const exact = plain.indexOf(s.originalText);
   if (exact >= 0) return exact;
-  return findTextSpan(plain, s.originalText)?.start ?? null;
+  return fuzzyAnchor(plain, s);
+}
+
+/**
+ * The fuzzy tier is the only expensive one (about 4 ms per miss on 60 KB), so its answer is remembered per (id, quoted text).
+ * A hit is re-checked by comparing the text at the remembered place; a miss is reused only for the very same document text.
+ * Unchanged stale rows are therefore not re-matched when something else re-renders the list.
+ */
+const fuzzyCache = new Map<string, { plain: string; start: number | null; matched: string }>();
+function fuzzyAnchor(plain: string, s: Suggestion): number | null {
+  const key = `${s.id}\u0000${s.originalText}`;
+  const hit = fuzzyCache.get(key);
+  if (hit) {
+    if (hit.start === null ? hit.plain === plain : plain.slice(hit.start, hit.start + hit.matched.length) === hit.matched) return hit.start;
+  }
+  const m = findTextSpan(plain, s.originalText);
+  if (fuzzyCache.size > 2000) fuzzyCache.clear();
+  fuzzyCache.set(key, { plain, start: m?.start ?? null, matched: m?.matchedText ?? '' });
+  return m?.start ?? null;
 }
 
 export function reviewRows(args: ReviewRowsArgs): ReviewRow[] {
@@ -89,7 +107,8 @@ export function reviewRows(args: ReviewRowsArgs): ReviewRow[] {
   for (const f of flagged) {
     const id = styleRowId(f);
     const evidence = sentenceEvidence(f);
-    const overlapped = overlapsChanged(f.start, f.end);
+    // An applied suggestion's offsets describe the text as it was; they say nothing about a flag measured afterwards.
+    const overlapped = !styleCurrent && overlapsChanged(f.start, f.end);
     const blocked = styleBlocked?.get(id);
     keyed.push({
       key: f.start,

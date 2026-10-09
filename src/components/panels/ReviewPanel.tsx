@@ -46,7 +46,7 @@ export interface ReviewPanelProps {
   docKey?: string;
 }
 
-function Section({ id, title, icon, open, onToggle, children }: { id: string; title: string; icon: ReactNode; open: boolean; onToggle: () => void; children: ReactNode }) {
+function Section({ id, label, icon, open, onToggle, children }: { id: string; label: string; icon: ReactNode; open: boolean; onToggle: () => void; children: ReactNode }) {
   return (
     <div style={{ borderTop: '1px solid var(--border)' }}>
       <button
@@ -58,7 +58,7 @@ function Section({ id, title, icon, open, onToggle, children }: { id: string; ti
       >
         {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         {icon}
-        {title}
+        {label}
       </button>
       {open && <div>{children}</div>}
     </div>
@@ -248,11 +248,11 @@ export function ReviewPanel(p: ReviewPanelProps) {
       </div>
 
       {p.styleSection !== undefined && (
-        <Section id="style" title="Style comparison" icon={<PenLine size={13} />} open={styleOpen} onToggle={() => setStyleOpen(v => !v)}>
+        <Section id="style" label="Style comparison" icon={<PenLine size={13} />} open={styleOpen} onToggle={() => setStyleOpen(v => !v)}>
           <div className="px-4 pb-4">{p.styleSection}</div>
         </Section>
       )}
-      <Section id="chat" title="Chat" icon={<MessageSquare size={13} />} open={chatOpen} onToggle={() => setChatOpen(!chatOpen)}>
+      <Section id="chat" label="Chat" icon={<MessageSquare size={13} />} open={chatOpen} onToggle={() => setChatOpen(!chatOpen)}>
         {p.chat}
       </Section>
     </div>

@@ -697,14 +697,12 @@ export default function Sidebar({
                           )}
                           <div className="flex gap-1.5 mt-2">
                             <button
-                              data-testid={s.kind === 'advisory' ? 'control-insert-note' : 'control-accept'}
                               onClick={(e) => { e.stopPropagation(); onAcceptSuggestion(s); }}
                               className="flex-1 py-1.5 bg-stone-800 text-white rounded-lg text-[11px] font-medium hover:bg-stone-700 transition-colors"
                             >
                               {s.kind === 'advisory' ? 'Insert note' : 'Accept'}
                             </button>
                             <button
-                              data-testid={s.kind === 'advisory' ? 'control-dismiss' : 'control-reject'}
                               onClick={(e) => { e.stopPropagation(); onRejectSuggestion(s); }}
                               className="flex-1 py-1.5 border rounded-lg text-[11px] font-medium hover:bg-stone-50 transition-colors"
                               style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
@@ -726,7 +724,6 @@ export default function Sidebar({
                   </div>
                   {onStop && (
                     <button
-                      data-testid="control-stop"
                       onClick={onStop}
                       className="flex items-center gap-1 px-2 py-0.5 rounded-lg text-[11px] font-semibold transition-colors"
                       style={{ background: 'rgba(220,38,38,0.1)', color: '#dc2626', border: '1px solid rgba(220,38,38,0.3)' }}

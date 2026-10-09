@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { reviewRows } from './reviewRows';
+import { sentenceEvidence } from '../style/styleRows';
 import type { Suggestion, SentenceAudit } from '../../types';
 
 const TEXT = 'Alpha sentence here. Beta sentence here; with a semicolon. Gamma sentence here.';
@@ -46,11 +47,11 @@ describe('reviewRows', () => {
     expect(rows[0].canAct).toBe(false);
   });
 
-  it('disables a style row once a suggestion on the same span is applied', () => {
+  it('disables a style row measured before a suggestion on the same span was applied', () => {
     // Review Focus 2: both rows would rewrite the same text; the second must not act on a stale span.
     const rows = reviewRows({
       suggestions: [sug({ id: 'applied', startIndex: 21, endIndex: 57, originalText: 'Beta sentence here; with a semicolon.' })],
-      flagged: [flag()], grammar: [], plainText: TEXT, appliedIds: new Set(['applied']),
+      flagged: [flag()], grammar: [], plainText: TEXT, appliedIds: new Set(['applied']), styleCurrent: false,
     });
     const style = rows.find(r => r.kind === 'style')!;
     expect(style.canAct).toBe(false);
@@ -105,5 +106,55 @@ describe('reviewRows', () => {
     expect(rows).toHaveLength(500);
     expect(rows.filter(r => r.canAct)).toHaveLength(250);
     expect(performance.now() - t0).toBeLessThan(3000);
+  });
+
+  it('lets a flag measured AFTER the suggestion was applied be rewritten', () => {
+    const rows = reviewRows({
+      suggestions: [sug({ id: 'applied', startIndex: 21, endIndex: 57, originalText: 'Beta sentence here; with a semicolon.' })],
+      flagged: [flag()], grammar: [], plainText: TEXT, appliedIds: new Set(['applied']), styleCurrent: true,
+    });
+    expect(rows.find(r => r.kind === 'style')!.canAct).toBe(true);
+  });
+
+  it('shows H\'s evidence exactly: labels, not tell names', () => {
+    const f = flag({ tells: ['rather than', 'semicolon'], words: 12 });
+    const rows = reviewRows({ suggestions: [], flagged: [f], grammar: [], plainText: TEXT, appliedIds: new Set() });
+    expect(rows[0].evidence).toBe(sentenceEvidence(f));
+    expect(rows[0].evidence).toBe('12 words · contrastive definition, semicolon');
+  });
+
+  it('shows a suggestion\'s explanation untouched', () => {
+    const long = 'Tighten it by removing the second clause and moving the number first.';
+    const rows = reviewRows({ suggestions: [sug({ explanation: long })], flagged: [], grammar: [], plainText: TEXT, appliedIds: new Set() });
+    expect(rows[0].evidence).toBe(long);
+  });
+
+  it('orders by where the text is now, not by the stored offsets', () => {
+    // B was analysed first (offset 0) but its text now sits after A's.
+    const text = 'Alpha one is here. Beta two is here too.';
+    const a = sug({ id: 'a', originalText: 'Alpha one is here.', startIndex: 30, endIndex: 48 });
+    const b = sug({ id: 'b', originalText: 'Beta two is here too.', startIndex: 0, endIndex: 21 });
+    const rows = reviewRows({ suggestions: [b, a], flagged: [], grammar: [], plainText: text, appliedIds: new Set() });
+    expect(rows.map(r => r.id)).toEqual(['suggestion:a', 'suggestion:b']);
+  });
+
+  it('keeps a suggestion actionable when its quote was lightly edited (fuzzy tier)', () => {
+    const quote = 'The treated cohort showed a significantly greater reduction in tumour volume';
+    const text = 'Intro. The treated cohort showed a significantly greater reduction in tumor volume overall. End.';
+    const rows = reviewRows({ suggestions: [sug({ originalText: quote, startIndex: 0, endIndex: quote.length })], flagged: [], grammar: [], plainText: text, appliedIds: new Set() });
+    expect(rows[0].canAct).toBe(true);
+  });
+
+  it('disables a suggestion that overlaps the span of an applied one', () => {
+    const applied = sug({ id: 'applied', originalText: 'Gamma sentence here.', startIndex: 59, endIndex: 79 });
+    const other = sug({ id: 'other', originalText: 'Gamma sentence here.', startIndex: 59, endIndex: 79 });
+    const rows = reviewRows({ suggestions: [applied, other], flagged: [], grammar: [], plainText: TEXT, appliedIds: new Set(['applied']) });
+    expect(rows.map(r => r.id)).toEqual(['suggestion:other']);
+    expect(rows[0].canAct).toBe(false);
+  });
+
+  it('does not list a suggestion that is already applied', () => {
+    const rows = reviewRows({ suggestions: [sug({ id: 'done' })], flagged: [], grammar: [], plainText: TEXT, appliedIds: new Set(['done']) });
+    expect(rows).toEqual([]);
   });
 });
