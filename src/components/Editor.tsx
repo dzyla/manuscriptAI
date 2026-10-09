@@ -23,6 +23,7 @@ import { useCitationPicker } from './editor/useCitationPicker';
 import { usePageCanvas } from './editor/usePageCanvas';
 import { useEditorHandle } from './editor/useEditorHandle';
 import { NO_SELECTION, sameSelection, selectionInfo, type SelectionInfo } from './editor/selectionKind';
+import { SelectionBar } from './editor/SelectionBar';
 
 interface EditorProps {
   content: string;
@@ -484,6 +485,29 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
           onRelevance={() => analyzeFigure(FIGURE_PROMPTS.relevance)}
           onAsk={q => analyzeFigure(q)}
         />
+      </BubbleMenu>
+
+      {/*
+        Text and table controls float ON the selection. They were in the top bar until a author pointed
+        out the obvious: every bold costs a trip to the top of the window and back. Reachability proved
+        the controls were still reachable and said nothing about how far the hand travels. `selectionKind`
+        decides which set shows, so this can never disagree with what the top bar used to show, and
+        'figure' is excluded because the figure menu above owns that case.
+      */}
+      <BubbleMenu
+        editor={editor}
+        shouldShow={({ editor: e }) => {
+          const k = selectionInfo(e).kind;
+          return k === 'text' || k === 'table';
+        }}
+        options={{ placement: 'top', offset: 8 }}
+      >
+        <div
+          className="flex items-center gap-1 rounded-lg px-1.5 py-1 shadow-lg"
+          style={{ background: 'var(--surface-1)', border: '1px solid var(--border)' }}
+        >
+          <SelectionBar kind={selectionInfo(editor).kind} editor={editor} format={format} />
+        </div>
       </BubbleMenu>
 
       {showTablePicker && tablePickerPos && (

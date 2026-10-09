@@ -7,7 +7,7 @@ import { StatusBar } from './components/shell/StatusBar';
 import { TopBar } from './components/shell/TopBar';
 import { useTopBarItems } from './components/shell/useTopBarItems';
 import { Toast, StorageBanner, ExportWarning, ShortcutsModal, type ToastState } from './components/shell/AppOverlays';
-import { SelectionBar, BlockTypeSelect } from './components/editor/SelectionBar';
+import { BlockTypeSelect } from './components/editor/SelectionBar';
 import { NO_SELECTION, type SelectionInfo } from './components/editor/selectionKind';
 import type { RailTask } from './components/shell/Rail';
 import { railSelect, revealTab, type PanelTab, documentPageLimit, usePageEstimate, useOverBudget, docStats } from './components/shell/shellLogic';
@@ -289,7 +289,6 @@ export default function App() {
               </div>
             )}
           >
-            <SelectionBar kind={selection.kind} editor={editorInstance} format={format} />
           </TopBar>
         )}
         canvas={(
