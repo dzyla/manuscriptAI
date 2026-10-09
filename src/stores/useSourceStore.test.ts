@@ -4,6 +4,8 @@ import { useSourceStore, flushPersist } from './useSourceStore';
 import type { ManuscriptSource } from '../types';
 
 const src = (id: string): ManuscriptSource => ({ id, name: id, type: 'text', text: 'x' });
+/** Waits on the queue AND on real time, so the assertion does not depend on the mechanism under test knowing about flushPersist. */
+const quiesce = async () => { await flushPersist(); await new Promise(r => setTimeout(r, 100)); };
 const stored = async () => (await db.sources.orderBy('order').toArray()).map(r => r.id);
 
 beforeEach(async () => { await flushPersist(); await db.sources.clear(); useSourceStore.setState({ sources: [] }); });
@@ -11,16 +13,16 @@ beforeEach(async () => { await flushPersist(); await db.sources.clear(); useSour
 describe('useSourceStore persistence', () => {
   it('add then remove leaves the database empty, not holding the removed source', async () => {
     useSourceStore.getState().addSources([src('X')]);
-    useSourceStore.getState().removeSource('X');
-    await flushPersist();
+    useSourceStore.getState().removeSource('X'); // no await between them
+    await quiesce();
     expect(useSourceStore.getState().sources).toEqual([]);
     expect(await stored()).toEqual([]);
   });
 
   it('add A, add B, remove A leaves exactly B', async () => {
     const s = useSourceStore.getState();
-    s.addSources([src('A')]); s.addSources([src('B')]); s.removeSource('A');
-    await flushPersist();
+    s.addSources([src('A')]); s.addSources([src('B')]); s.removeSource('A'); // no await between them: the interleaving that lost data
+    await quiesce();
     expect(await stored()).toEqual(['B']);
   });
 

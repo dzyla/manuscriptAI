@@ -79,8 +79,11 @@ export const useSourceStore = create<SourceState>((set, get) => ({
   },
 
   persist: () => {
-    // Serialised: concurrent persists used to interleave their clear() and bulkPut(), so a stale write could land last and resurrect a removed source.
-    // The sources are read inside the queued run, so the latest state always wins. Not coalesced: each call runs, in order.
+    // Three mechanisms, not interchangeable:
+    //  - reading get().sources INSIDE the run is what prevents a stale snapshot from being written after a newer state (the add-then-remove resurrection).
+    //  - the db.transaction is what makes clear()+bulkPut() atomic: a failure or tab close cannot leave the table empty. The atomicity test pins it.
+    //  - the promise queue is belt and braces: Dexie does not guarantee ordering across independent transaction() calls, so it stays, but no current
+    //    test fails without it (the reads-inside-the-run rule and the transaction already cover the observed cases).
     const run = persistQueue.then(() => db.transaction('rw', db.sources, async () => {
       const { sources } = get();
       await db.sources.clear();
