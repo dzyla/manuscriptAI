@@ -99,7 +99,7 @@ describe('WritePanel', () => {
     expect((await db.versionSnapshots.toArray())[0].content).toBe('<p>one two three</p>');
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     fireEvent.click(screen.getByTestId('control-restore-version'));
-    expect(onRestore).toHaveBeenCalledWith(expect.objectContaining({ name: 'Before importing', title: 'T1' }));
+    await waitFor(() => expect(onRestore).toHaveBeenCalledWith(expect.objectContaining({ name: 'Before importing', title: 'T1' })));
   });
 
   it('does not restore when the confirmation is declined', async () => {
@@ -122,7 +122,7 @@ describe('WritePanel', () => {
     fireEvent.click(await screen.findByTestId('control-preview-version'));
     expect(screen.getByText('PREVIEWED')).toBeTruthy();
     fireEvent.click(screen.getByTestId('control-restore-from-preview'));
-    expect(onRestore).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(onRestore).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.queryByText('PREVIEWED')).toBeNull());
   });
 });

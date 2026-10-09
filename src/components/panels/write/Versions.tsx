@@ -1,44 +1,37 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Clock, Eye, Plus, RotateCcw, Trash2, X } from 'lucide-react';
 import type { VersionSnapshot } from '../../../types';
-import { deleteSnapshot, formatSnapshotDate, listSnapshots, saveSnapshot, wordCount } from '../../../services/versionSnapshots';
+import { deleteSnapshot, formatSnapshotDate, restoreIfPresent, saveSnapshot, useSnapshots, wordCount } from '../../../services/versionSnapshots';
 
 export interface VersionsProps {
   getDocument: () => { title: string; content: string };
-  /** Reload the list whenever the section is opened: the top-bar popup can save and delete snapshots too. */
-  open: boolean;
   onCount?: (n: number) => void;
   onRestore: (snapshot: VersionSnapshot) => void | Promise<void>;
 }
 
 /** Named snapshots of the whole document: save, preview, restore, delete. The same operations as the top-bar popup, over the same table. */
-export function Versions({ getDocument, open, onCount, onRestore }: VersionsProps) {
-  const [snapshots, setSnapshots] = useState<VersionSnapshot[]>([]);
+export function Versions({ getDocument, onCount, onRestore }: VersionsProps) {
+  const snapshots = useSnapshots(); // live: a save or delete in the top-bar popup shows here without reopening
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [saving, setSaving] = useState(false);
 
-  const reload = useCallback(async () => { setSnapshots(await listSnapshots()); }, []);
-  useEffect(() => { void reload(); }, [reload]);
-  useEffect(() => { if (open) void reload(); }, [open, reload]);
   useEffect(() => { onCount?.(snapshots.length); }, [snapshots.length, onCount]);
 
   const save = async () => {
     setSaving(true);
     try {
       const doc = getDocument();
-      const snap = await saveSnapshot(doc.title, doc.content, name);
-      setSnapshots(prev => [snap, ...prev]);
+      await saveSnapshot(doc.title, doc.content, name);
       setName('');
     } finally { setSaving(false); }
   };
   const remove = async (id: string) => {
     await deleteSnapshot(id);
-    setSnapshots(prev => prev.filter(s => s.id !== id));
     if (previewId === id) setPreviewId(null);
   };
   const restore = (snap: VersionSnapshot, message: string) => {
-    if (window.confirm(message)) { void onRestore(snap); setPreviewId(null); }
+    if (window.confirm(message)) { void restoreIfPresent(snap.id, onRestore); setPreviewId(null); }
   };
   const preview = snapshots.find(s => s.id === previewId);
 

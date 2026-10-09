@@ -65,7 +65,7 @@ export const WritePanel = memo(function WritePanel(p: WritePanelProps) {
         <History history={p.history} onRevert={p.onRevertHistory} onItemClick={p.onHistoryItemClick} />
       </Section>
       <Section id="versions" label="Versions" count={versionCount} icon={<Clock size={13} />} open={open.versions} onToggle={() => toggle('versions')}>
-        <Versions getDocument={p.getDocument} open={open.versions} onCount={onCount} onRestore={p.onRestore} />
+        <Versions getDocument={p.getDocument} onCount={onCount} onRestore={p.onRestore} />
       </Section>
     </div>
   );

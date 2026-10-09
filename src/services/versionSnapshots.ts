@@ -1,3 +1,5 @@
+import { useEffect, useState } from 'react';
+import { liveQuery } from 'dexie';
 import { db } from '../db/manuscriptDb';
 import { inlineAssetImages } from '../db/assetStore';
 import type { VersionSnapshot } from '../types';
@@ -35,4 +37,30 @@ export async function saveSnapshot(title: string, content: string, name: string)
 
 export function deleteSnapshot(id: string) {
   return db.versionSnapshots.delete(id);
+}
+
+/** The snapshot as stored right now, or undefined if it has been deleted (from either surface). */
+export function getSnapshot(id: string) {
+  return db.versionSnapshots.get(id);
+}
+
+/**
+ * Restore a snapshot only if it still exists: the caller's copy may be older than the table. Returns whether it was restored.
+ * The record handed to `onRestore` is the one read from the table, not the caller's in-memory copy.
+ */
+export async function restoreIfPresent(id: string, onRestore: (s: VersionSnapshot) => void | Promise<void>): Promise<boolean> {
+  const fresh = await getSnapshot(id);
+  if (!fresh) return false;
+  await onRestore(fresh);
+  return true;
+}
+
+/** Every snapshot, newest first, kept current by Dexie's liveQuery: a save or delete from any surface shows in all of them. */
+export function useSnapshots(): VersionSnapshot[] {
+  const [snapshots, setSnapshots] = useState<VersionSnapshot[]>([]);
+  useEffect(() => {
+    const sub = liveQuery(listSnapshots).subscribe({ next: setSnapshots, error: e => console.error('Snapshot list failed', e) });
+    return () => sub.unsubscribe();
+  }, []);
+  return snapshots;
 }

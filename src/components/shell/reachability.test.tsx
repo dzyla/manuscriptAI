@@ -99,6 +99,7 @@ export const ENTRY_POINTS: EntryPoint[] = [
   // The top-bar version-history popup (the live component; the Write panel's Versions section is a second route to the same table)
   row('open the version-history popup', ['title:Version History']),
   row('save a snapshot from the popup', ['title:Version History', 'title:Save snapshot']),
+  row('name a snapshot in the popup', ['title:Version History', 'title:Save snapshot', 'title:Save with this name']),
   row('preview a snapshot from the popup', ['title:Version History', 'title:Preview'], undefined, undefined, ['snapshot']),
   row('restore a snapshot from the popup', ['title:Version History', 'title:Restore'], undefined, undefined, ['snapshot']),
   row('delete a snapshot from the popup', ['title:Version History', 'title:Delete'], undefined, undefined, ['snapshot']),
@@ -848,7 +849,7 @@ describe('App wiring (behaviour)', () => {
     fireEvent.click(railBtn('Cite')); // reopening from closed opens that task on its own tab
     expect(open('Cite')).toBe(true);
     await waitStep('cite opens Sources', () => screen.queryByText('Browse files'));
-    fireEvent.click(screen.getAllByTestId('section-style').find(b => !b.hasAttribute('aria-expanded'))!); // the tab strip's button, not the Review panel's section toggle; a legacy tab change moves the rail with it (the Outline tab went with Task 6: the Write panel replaced it)
+    fireEvent.click(screen.getAllByTestId('section-style').find(b => !b.closest('[data-testid="review-view"]'))!); // the tab strip's button, not the Review panel's section toggle inside review-view; a legacy tab change moves the rail with it (the Outline tab went with Task 6: the Write panel replaced it)
     expect(open('Format')).toBe(true);
     expect(open('Cite')).toBe(false);
   });

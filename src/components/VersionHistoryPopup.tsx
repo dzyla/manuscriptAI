@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { listSnapshots, saveSnapshot as persistSnapshot, deleteSnapshot as removeSnapshot, wordCount, formatSnapshotDate } from '../services/versionSnapshots';
+import { useState, useEffect, useRef } from 'react';
+import { useSnapshots, restoreIfPresent, saveSnapshot as persistSnapshot, deleteSnapshot as removeSnapshot, wordCount, formatSnapshotDate } from '../services/versionSnapshots';
 import type { VersionSnapshot } from '../types';
 import { Clock, Plus, Trash2, RotateCcw, Eye, X, History } from 'lucide-react';
 
@@ -14,7 +14,7 @@ const formatDate = formatSnapshotDate;
 
 export default function VersionHistoryPopup({ currentTitle, currentContent, onRestore }: VersionHistoryPopupProps) {
   const [open, setOpen] = useState(false);
-  const [snapshots, setSnapshots] = useState<VersionSnapshot[]>([]);
+  const snapshots = useSnapshots();
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [newName, setNewName] = useState('');
@@ -22,14 +22,6 @@ export default function VersionHistoryPopup({ currentTitle, currentContent, onRe
 
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-
-  const loadSnapshots = useCallback(async () => {
-    setSnapshots(await listSnapshots());
-  }, []);
-
-  useEffect(() => {
-    if (open) loadSnapshots();
-  }, [open, loadSnapshots]);
 
   // Close on outside click
   useEffect(() => {
@@ -58,8 +50,7 @@ export default function VersionHistoryPopup({ currentTitle, currentContent, onRe
 
   const saveSnapshot = async () => {
     setIsSaving(true);
-    const snapshot = await persistSnapshot(currentTitle, currentContent, newName);
-    setSnapshots(prev => [snapshot, ...prev]);
+    await persistSnapshot(currentTitle, currentContent, newName);
     setNewName('');
     setShowNameInput(false);
     setIsSaving(false);
@@ -67,7 +58,6 @@ export default function VersionHistoryPopup({ currentTitle, currentContent, onRe
 
   const deleteSnapshot = async (id: string) => {
     await removeSnapshot(id);
-    setSnapshots(prev => prev.filter(s => s.id !== id));
     if (previewId === id) setPreviewId(null);
   };
 
@@ -163,6 +153,7 @@ export default function VersionHistoryPopup({ currentTitle, currentContent, onRe
               />
               <button
                 onClick={saveSnapshot}
+                title="Save with this name"
                 disabled={isSaving}
                 className="px-3 py-1.5 text-xs rounded-lg font-medium transition-colors shrink-0"
                 style={{ background: 'var(--accent-blue)', color: '#fff', opacity: isSaving ? 0.6 : 1 }}
@@ -217,7 +208,7 @@ export default function VersionHistoryPopup({ currentTitle, currentContent, onRe
                         <button
                           onClick={() => {
                             if (window.confirm(`Restore snapshot "${snap.name}"? Current content will be replaced.`)) {
-                              onRestore(snap);
+                              void restoreIfPresent(snap.id, onRestore);
                               setOpen(false);
                             }
                           }}
@@ -279,7 +270,7 @@ export default function VersionHistoryPopup({ currentTitle, currentContent, onRe
                 <button
                   onClick={() => {
                     if (window.confirm(`Restore snapshot "${previewSnapshot.name}"?`)) {
-                      onRestore(previewSnapshot);
+                      void restoreIfPresent(previewSnapshot.id, onRestore);
                       setPreviewId(null);
                       setOpen(false);
                     }
