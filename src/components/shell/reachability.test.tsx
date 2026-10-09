@@ -225,6 +225,13 @@ export const ENTRY_POINTS: EntryPoint[] = [
   row('underline the selection from the selection menu', ['control:underline', 'expect:underline'], undefined, undefined, ['text-selection']),
   row('send a custom instruction', ['topbar:ai', 'item:instruct', 'item:instruct-send'], undefined, undefined, ['text-selection']),
   row('find similar manuscripts', ['topbar:ai', 'item:similar'], undefined, undefined, ['text-selection']),
+  // The same AI actions on the floating selection bar: Polish and Shorten are buttons, the rest sit in its AI menu. The top-bar rows above are the second route.
+  ...['Polish', 'Shorten'].map(l => row(`${l.toLowerCase()} the selection from the floating bar`, [`control:ai-${l.toLowerCase()}`], undefined, undefined, ['text-selection'])),
+  ...['Rewrite', 'Sharpen', 'Strengthen', 'Critique', 'Explain', 'Verify', 'Similar'].map(l =>
+    row(`${l === 'Similar' ? 'find similar manuscripts' : l.toLowerCase() + ' the selection'} from the floating bar's AI menu`, ['control:ai-menu', `control:ai-${l.toLowerCase()}`], undefined, undefined, ['text-selection'])),
+  row('give a custom instruction from the floating bar\'s AI menu', ['control:ai-menu', 'control:ai-instruct', 'item:instruct-send'], undefined, undefined, ['text-selection']),
+  row('find synonyms from the floating bar\'s AI menu', ['control:ai-menu', 'control:ai-synonyms'], undefined, undefined, ['word-selection']),
+  row('replace a word with a synonym from the floating bar\'s AI menu', ['control:ai-menu', 'control:ai-synonyms', 'item:synonym-choice', 'expect:doctext:SYNONYM_X'], undefined, undefined, ['word-selection']),
   // AI and layout on the selected figure
   row('describe a figure', ['figure:selected', 'control:describe'], undefined, undefined, ['figure']),
   row('check figure quality', ['figure:selected', 'control:quality'], undefined, undefined, ['figure']),
@@ -638,7 +645,9 @@ const ICON_ONLY_BUTTONS: Record<string, number> = {
   'src/components/shell/TopBar.tsx': 0, 'src/components/shell/useTopBarItems.tsx': 0,
   'src/components/shell/aiPanels.tsx': 1, // the synonym chips (rows: replace a word with a synonym)
   'src/components/shell/AppOverlays.tsx': 1, // the toast's action button, labelled by whoever raised the toast (row: use the restore button on the import message)
-  'src/components/editor/SelectionBar.tsx': 0, 'src/components/editor/FigureControls.tsx': 0,
+  'src/components/editor/SelectionBar.tsx': 0,
+  // SelectionAIMenu 0: the floating bar's AI buttons all carry a title or a word.
+  'src/components/editor/SelectionAIMenu.tsx': 0, 'src/components/editor/FigureControls.tsx': 0,
   'src/components/editor/TableMenus.tsx': 1, // the table context-menu items (rows: add/delete a table row/column, delete a table)
   'src/components/editor/CitationPicker.tsx': 1, // a source in the @ picker (row: choose a source in the @ picker)
 };
@@ -712,6 +721,7 @@ const SHARED_TESTIDS: Record<string, string> = {
  * is named here with the reason it is safe (its ids come from a closed list the rows cover); a new one fails until it is listed or written out.
  */
 const TEMPLATED_TESTIDS: Record<string, { count: number; reason: string }> = {
+  'src/components/editor/SelectionAIMenu.tsx': { count: 1, reason: 'the AI menu items, each id drawn from a fixed list in this file that the floating-bar rows name' },
   'src/components/editor/SelectionBar.tsx': { count: 2, reason: 'the mark buttons and the block/align menu items, each id drawn from a fixed list in this file that the selection-bar rows name' },
   'src/components/panels/format/StylesSection.tsx': { count: 1, reason: 'one font field per style row (heading and body styles); the id is the style name from a fixed list in this file' },
   'src/components/panels/format/NumField.tsx': { count: 1, reason: 'one number field per page-setup control; the id is the field name passed by PageSection (margin sides, body font size)' },
@@ -724,7 +734,7 @@ const GUARDED = ['src/components/shell/Rail.tsx', 'src/App.tsx', 'src/components
   'src/components/panels/FormatPanel.tsx', 'src/components/panels/format/PageSection.tsx', 'src/components/panels/format/StylesSection.tsx', 'src/components/panels/format/NumField.tsx',
   // Task 8: the top bar, its menus' panels and the overlays that left App.tsx; the selection bar, the figure controls and the editor's pickers that left Editor.tsx.
   'src/components/shell/TopBar.tsx', 'src/components/shell/aiPanels.tsx', 'src/components/shell/AppOverlays.tsx', 'src/components/shell/useTopBarItems.tsx',
-  'src/components/editor/SelectionBar.tsx', 'src/components/editor/FigureControls.tsx', 'src/components/editor/TableMenus.tsx', 'src/components/editor/CitationPicker.tsx'];
+  'src/components/editor/SelectionBar.tsx', 'src/components/editor/SelectionAIMenu.tsx', 'src/components/editor/FigureControls.tsx', 'src/components/editor/TableMenus.tsx', 'src/components/editor/CitationPicker.tsx'];
 
 describe('the list itself', () => {
   it('covers every rail task', () => {
@@ -785,7 +795,7 @@ describe('the list itself', () => {
       'src/components/panels/WritePanel.tsx': ['ptext'], 'src/components/panels/write/Outline.tsx': ['ptext'], 'src/components/panels/write/History.tsx': ['ptext'], 'src/components/panels/write/Versions.tsx': ['ptext'],
       'src/components/panels/FormatPanel.tsx': ['ptext'], 'src/components/panels/format/PageSection.tsx': ['ptext'], 'src/components/panels/format/StylesSection.tsx': ['ptext'], 'src/components/panels/format/NumField.tsx': ['ptext'],
       'src/components/shell/TopBar.tsx': ['htext'], 'src/components/shell/aiPanels.tsx': ['htext'], 'src/components/shell/AppOverlays.tsx': ['text', 'mtext'], 'src/components/shell/useTopBarItems.tsx': ['htext'],
-      'src/components/editor/SelectionBar.tsx': ['htext'], 'src/components/editor/FigureControls.tsx': ['text', 'ctext'], 'src/components/editor/TableMenus.tsx': ['text', 'ctext'], 'src/components/editor/CitationPicker.tsx': ['text', 'ctext'],
+      'src/components/editor/SelectionBar.tsx': ['htext'], 'src/components/editor/SelectionAIMenu.tsx': ['text', 'ctext'], 'src/components/editor/FigureControls.tsx': ['text', 'ctext'], 'src/components/editor/TableMenus.tsx': ['text', 'ctext'], 'src/components/editor/CitationPicker.tsx': ['text', 'ctext'],
     };
     const steps = ENTRY_POINTS.flatMap(stepsOf).map(st => ({ kind: st.slice(0, st.indexOf(':')), v: st.slice(st.indexOf(':') + 1).replace(/#\d+$/, '') }));
     const uncovered: string[] = [];

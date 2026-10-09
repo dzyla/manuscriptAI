@@ -6,6 +6,10 @@ import { estimatePages, contentWidthIn, contentHeightIn } from '../../services/p
 
 const DEFAULT_FORMAT: DocFormat = createFormat('nih');
 
+/** Guide offsets equal to within a tenth of a pixel. Sub-pixel layout jitter must not count as a change. */
+const same = (a: number[], b: number[]): boolean =>
+  a.length === b.length && a.every((v, i) => Math.abs(v - b[i]) < 0.1);
+
 /**
  * The page canvas's two measured numbers: the zoom actually applied (fit to width, never above what was asked) and where the page guides sit.
  * Moved out of Editor.tsx verbatim; Editor.page.test.tsx and the guide-geometry tests pin it.
@@ -62,7 +66,14 @@ export function usePageCanvas({ editor, fitRef, pageGuideContainerRef, editorZoo
       if (pageHeight < 100) { setPageGuideOffsets([]); return; }
       const n = estimatePages(editor?.getJSON(), format ?? null).pages - 1;
       const contentTop = prose.offsetTop;
-      setPageGuideOffsets(Array.from({ length: Math.min(n, 200) }, (_, i) => contentTop + (i + 1) * pageHeight));
+      const next = Array.from({ length: Math.min(n, 200) }, (_, i) => contentTop + (i + 1) * pageHeight);
+      // Set state only when the numbers actually moved. A fresh array on every
+      // observation re-renders the guides, which lays out, which re-fires this
+      // ResizeObserver: typing a paragraph long enough to add a scrollbar shifts
+      // prose.clientWidth ~15px, changing the pitch, and React only stops at its
+      // 50-update limit ("Maximum update depth exceeded"). Rounding to a tenth of
+      // a pixel keeps sub-pixel layout jitter from restarting the same loop.
+      setPageGuideOffsets(prev => same(prev, next) ? prev : next);
     };
     compute();
     // Absent in jsdom and very old webviews; the guides then just measure once per content change.
