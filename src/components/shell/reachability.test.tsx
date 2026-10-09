@@ -176,6 +176,7 @@ export const ENTRY_POINTS: EntryPoint[] = [
   row('set the body font size', [F, 'section:page', 'control:body-font-size']),
   // File and document (top bar)
   row('start a new manuscript', ['topbar:file', 'item:new']),
+  row('start a new grant from a template', ['topbar:file', 'item:new-grant']),
   row('import a Word, JSON, Markdown or text file', ['topbar:file', 'item:import']),
   row('see the import report again', ['topbar:file', 'item:import-report'], undefined, undefined, ['import']),
   row('restore the previous document', ['topbar:file', 'item:revert-import'], undefined, undefined, ['import']),
@@ -1075,6 +1076,15 @@ describe('Top bar (behaviour)', () => {
   const open = async (menu: string) => { const b = await waitStep(`topbar-${menu}`, () => screen.queryByTestId(`topbar-${menu}`)); if (b.getAttribute('aria-expanded') !== 'true') click(b); };
   const docText = () => editor().state.doc.textContent;
   const AI_SELECTION_ITEMS = ['polish', 'shorten', 'sharpen', 'strengthen', 'critique', 'explain', 'rewrite', 'instruct', 'verify'];
+
+  it('File > New grant from template opens the template picker (it was only reachable through the Format panel before)', async () => {
+    await resolve([], []);
+    await open('file');
+    expect(screen.queryByRole('dialog', { name: /grant template/i }), 'the picker must not be open yet').toBeNull();
+    click(menuItem('new-grant'));
+    const dialog = await waitStep('grant template picker', () => screen.queryByRole('dialog', { name: /grant template/i }));
+    expect(dialog).toBeTruthy();
+  });
 
   it('at rest the bar is the document name, three menus, the block style, version history and the overflow: eight controls or fewer', async () => {
     await resolve([], []);

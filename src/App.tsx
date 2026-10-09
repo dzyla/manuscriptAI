@@ -245,7 +245,7 @@ export default function App() {
   const menus = useTopBarItems({
     selection, busy: isAnalyzing, autocomplete, autocompleteLoading, darkMode, focusMode: isDistractionFree, zoom, thesaurus: selectionAI.thesaurus,
     agents: review.reviewAgents, storedReport: !!importer.storedReport, revertTarget: importer.revertTarget,
-    onNew: docActs.handleNewManuscript, onImport: () => importer.fileInputRef.current?.click(), onImportReport: () => importer.setShowStoredReport(true),
+    onNew: docActs.handleNewManuscript, onNewGrant: () => setShowTemplatePicker(true), onImport: () => importer.fileInputRef.current?.click(), onImportReport: () => importer.setShowStoredReport(true),
     onRevertImport: () => { void importer.handleRevertImport(); }, onSaveWorkspace: () => { void saveWorkspace(); }, onExport: f => { void exporter.handleDownload(f); },
     onUndo: () => editorRef.current?.undo(), onRedo: () => editorRef.current?.redo(),
     onInsertCitation: () => editorRef.current?.openCitationPicker(), onInsertImage: () => editorRef.current?.openImagePicker(),

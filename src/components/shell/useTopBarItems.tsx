@@ -22,7 +22,7 @@ export interface MenuActions {
   storedReport: boolean;
   revertTarget: { title: string; savedAt: number } | null;
   // file
-  onNew: () => void; onImport: () => void; onImportReport: () => void; onRevertImport: () => void; onSaveWorkspace: () => void; onExport: (f: ExportFormat) => void; onUndo: () => void; onRedo: () => void;
+  onNew: () => void; onNewGrant: () => void; onImport: () => void; onImportReport: () => void; onRevertImport: () => void; onSaveWorkspace: () => void; onExport: (f: ExportFormat) => void; onUndo: () => void; onRedo: () => void;
   // insert
   onInsertCitation: () => void; onInsertImage: () => void; onInsertFigureLabel: () => void; onInsertTable: (anchor: DOMRect) => void;
   // ai
@@ -43,6 +43,9 @@ export function useTopBarItems(a: MenuActions): TopBarItems {
 
   const file: MenuItem[] = [
     { id: 'new', label: 'New manuscript', onSelect: a.onNew },
+    // Starting a grant is a primary action. It used to be reachable only through the Format
+    // panel's collapsed "Grant template" section, which is reachable but not findable.
+    { id: 'new-grant', label: 'New grant from template…', hint: 'NIH, NSF and other mechanisms, with per-section page budgets', onSelect: a.onNewGrant },
     { id: 'import', label: 'Load Document (.json, .docx, .md, .txt)', onSelect: a.onImport },
     ...(a.storedReport ? [{ id: 'import-report', label: 'Import report (what was kept but is not shown)', onSelect: a.onImportReport }] : []),
     ...(a.revertTarget ? [{ id: 'revert-import', label: revertLabel(a.revertTarget), hint: `Saved ${new Date(a.revertTarget.savedAt).toLocaleString()}`, onSelect: a.onRevertImport }] : []),
