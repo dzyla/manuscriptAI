@@ -2,7 +2,7 @@ import { useMemo, useRef } from 'react';
 
 export interface OutlineItem { level: number; text: string }
 
-/** Headings (H2/H3) of the manuscript HTML, in document order. Lifted unchanged from the old Sidebar outline tab. */
+/** Headings (H2/H3) of the manuscript HTML, in document order. Lifted unchanged from the old outline tab. */
 export function deriveOutline(html: string): OutlineItem[] {
   if (!html) return [];
   const re = /<h([23])[^>]*>(.*?)<\/h[23]>/gi;

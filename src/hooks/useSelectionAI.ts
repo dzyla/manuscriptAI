@@ -76,7 +76,7 @@ export function useSelectionAI({ editorRef, showToast, openTab }: AppCtx, highli
     setIsAnalyzing(true);
     const fullText = (editorRef.current?.getPlainText() || stripHtml(content));
     
-    // Switch sidebar to chat to show the reply
+    // Switch the panel to chat to show the reply
     openTab('chat');
     
     // Add to chat as user message

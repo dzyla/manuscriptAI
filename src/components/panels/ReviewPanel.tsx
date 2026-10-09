@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { BookOpen, Check, CheckCheck, ChevronDown, ChevronRight, Filter, MessageSquare, PenLine, Sparkles, Square, X, XCircle } from 'lucide-react';
+import { BookOpen, Check, CheckCheck, ChevronDown, Filter, MessageSquare, PenLine, Sparkles, Square, X, XCircle } from 'lucide-react';
 import type { AgentType, SuggestionSeverity } from '../../types';
 import type { ReviewAction, ReviewRow } from './reviewRows';
 import { SEVERITY_CONFIG } from './suggestionParts';
+import { Section } from './Section';
 
 /** Rows drawn at once. A long list stays responsive because only this many exist in the DOM; the badge and the header count the whole list. */
 export const PAGE = 100;
@@ -44,25 +45,6 @@ export interface ReviewPanelProps {
   zoom?: number;
   /** Changes when the document is replaced wholesale; the panel starts over (page, filter, open boxes) rather than point at the old text. */
   docKey?: string;
-}
-
-function Section({ id, label, icon, open, onToggle, children }: { id: string; label: string; icon: ReactNode; open: boolean; onToggle: () => void; children: ReactNode }) {
-  return (
-    <div style={{ borderTop: '1px solid var(--border)' }}>
-      <button
-        data-testid={`section-${id}`}
-        aria-expanded={open}
-        onClick={onToggle}
-        className="w-full flex items-center gap-2 px-4 py-3 text-xs font-semibold hover:bg-stone-50 transition-colors"
-        style={{ color: 'var(--text-primary)' }}
-      >
-        {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-        {icon}
-        {label}
-      </button>
-      {open && <div>{children}</div>}
-    </div>
-  );
 }
 
 export function ReviewPanel(p: ReviewPanelProps) {
@@ -248,11 +230,11 @@ export function ReviewPanel(p: ReviewPanelProps) {
       </div>
 
       {p.styleSection !== undefined && (
-        <Section id="style" label="Style comparison" icon={<PenLine size={13} />} open={styleOpen} onToggle={() => setStyleOpen(v => !v)}>
+        <Section flat keepMounted={false} id="style" label="Style comparison" icon={<PenLine size={13} />} open={styleOpen} onToggle={() => setStyleOpen(v => !v)}>
           <div className="px-4 pb-4">{p.styleSection}</div>
         </Section>
       )}
-      <Section id="chat" label="Chat" icon={<MessageSquare size={13} />} open={chatOpen} onToggle={() => setChatOpen(!chatOpen)}>
+      <Section flat keepMounted={false} id="chat" label="Chat" icon={<MessageSquare size={13} />} open={chatOpen} onToggle={() => setChatOpen(!chatOpen)}>
         {p.chat}
       </Section>
     </div>

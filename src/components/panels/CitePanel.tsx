@@ -1,5 +1,5 @@
-import { useEffect, useState, type ReactNode } from 'react';
-import { BookMarked, BookOpen, ChevronDown, ChevronRight, Search as SearchIcon } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { BookMarked, BookOpen, Search as SearchIcon } from 'lucide-react';
 import type { AISettings, ManuscriptSource, SemanticSearchResult } from '../../types';
 import { digestApiSource } from '../../services/ai';
 import { useSourceStore } from '../../stores/useSourceStore';
@@ -7,6 +7,7 @@ import { Library } from './cite/Library';
 import { Search } from './cite/Search';
 import { ReferenceManager } from './cite/ReferenceManager';
 import { useSourceUpload, type PendingPdfMatches } from './cite/useSourceUpload';
+import { Section } from './Section';
 
 export interface CitePanelProps {
   aiSettings?: AISettings;
@@ -29,29 +30,6 @@ export interface CitePanelProps {
   analyzingSourceId?: string | null;
   onCompareSource: (source: ManuscriptSource) => void;
   onChatWithSource: (source: ManuscriptSource) => void;
-}
-
-function Section({ id, label, count, icon, open, onToggle, children }: { id: string; label: string; count?: number; icon: ReactNode; open: boolean; onToggle: () => void; children: ReactNode }) {
-  return (
-    <div className="border rounded-xl overflow-hidden" style={{ borderColor: 'var(--border)' }}>
-      <button
-        data-testid={`section-${id}`}
-        aria-expanded={open}
-        onClick={onToggle}
-        className="w-full flex items-center gap-2 px-3 py-2.5 text-xs font-semibold hover:bg-stone-50 transition-colors"
-        style={{ color: 'var(--text-primary)', background: 'var(--surface-1)' }}
-      >
-        {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-        {icon}
-        {label}
-        {count !== undefined && count > 0 && (
-          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full" style={{ background: 'var(--surface-2)', color: 'var(--text-muted)' }}>{count}</span>
-        )}
-      </button>
-      {/* Kept mounted when collapsed: a query, its results and a half-typed DOI belong to the section, not to whether it is open. */}
-      <div className="p-3" style={open ? undefined : { display: 'none' }}>{children}</div>
-    </div>
-  );
 }
 
 /**

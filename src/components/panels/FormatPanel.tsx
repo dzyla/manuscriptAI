@@ -1,9 +1,10 @@
-import { memo, useState, type ReactNode } from 'react';
-import { ChevronDown, ChevronRight, FileText, Palette, Ruler } from 'lucide-react';
+import { memo, useState } from 'react';
+import { FileText, Palette, Ruler } from 'lucide-react';
 import type { DocFormat, DocumentMode } from '../../types';
 import { GrantToolbar } from '../GrantPanel';
 import { PageSection } from './format/PageSection';
 import { StylesSection } from './format/StylesSection';
+import { Section } from './Section';
 
 export interface FormatPanelProps {
   /** The document's format; null shows (and edits from) the NIH preset the editor falls back to. */
@@ -19,26 +20,6 @@ export interface FormatPanelProps {
   htmlContent?: string;
   onTrimSection?: (sectionTitle: string, budgetWords: number) => void;
   trimmingSection?: string | null;
-}
-
-function Section({ id, label, icon, open, onToggle, children }: { id: string; label: string; icon: ReactNode; open: boolean; onToggle: () => void; children: ReactNode }) {
-  return (
-    <div className="border rounded-xl overflow-hidden" style={{ borderColor: 'var(--border)' }}>
-      <button
-        data-testid={`section-${id}`}
-        aria-expanded={open}
-        onClick={onToggle}
-        className="w-full flex items-center gap-2 px-3 py-2.5 text-xs font-semibold hover:bg-stone-50 transition-colors"
-        style={{ color: 'var(--text-primary)', background: 'var(--surface-1)' }}
-      >
-        {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-        {icon}
-        {label}
-      </button>
-      {/* Kept mounted when collapsed: a half-typed value belongs to the field, not to whether its section is open. */}
-      <div className="p-3" style={open ? undefined : { display: 'none' }}>{children}</div>
-    </div>
-  );
 }
 
 /**

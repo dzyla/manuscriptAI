@@ -10,7 +10,7 @@ export interface HistoryProps {
   onItemClick?: (item: HistoryItem) => void;
 }
 
-/** The applied-suggestion history, newest first. Lifted unchanged from the old Sidebar history tab. */
+/** The applied-suggestion history, newest first. Lifted unchanged from the old history tab. */
 export function History({ history, onRevert, onItemClick }: HistoryProps) {
   const [expanded, setExpanded] = useState<string | null>(null);
   if (history.length === 0) {

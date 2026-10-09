@@ -1,6 +1,6 @@
 import type { RefObject } from 'react';
 import type { EditorRef } from '../components/Editor';
-import type { SidebarTab } from '../components/shell/shellLogic';
+import type { PanelTab } from '../components/shell/shellLogic';
 
 export type ShowToast = (message: string, type?: 'success' | 'info' | 'error', action?: { label: string; onClick: () => void }) => void;
 
@@ -8,5 +8,5 @@ export type ShowToast = (message: string, type?: 'success' | 'info' | 'error', a
 export interface AppCtx {
   editorRef: RefObject<EditorRef | null>;
   showToast: ShowToast;
-  openTab: (tab: SidebarTab) => void;
+  openTab: (tab: PanelTab) => void;
 }

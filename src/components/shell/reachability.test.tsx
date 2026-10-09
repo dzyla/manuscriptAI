@@ -611,22 +611,23 @@ const ICON_ONLY_BUTTONS: Record<string, number> = {
   // Editor 0: the mobile toolbar toggle, the bubble's marks, synonym chips and instruction send left with the toolbar (SelectionBar, aiPanels); the table menu items, the @-picker
   // sources and the figure-question send moved to their own files below.
   'src/components/Editor.tsx': 0,
-  // Sidebar 3: the inline chat suggestion cards' accept/reject, agent chips, vision X, send. (Task 7 removed the Sources/Style tab strip with the Style tab.)
+  // ChatSection/ChatMessages: the inline chat suggestion cards' accept/reject, agent chips, vision X, send. (Task 7 removed the Sources/Style tab strip with the Style tab.)
   // (Task 4 moved the severity filter and the suggestion cards' own buttons to the Review panel, which names its controls with test ids.
   // Task 5 moved clear-reference-search, trash, source tabs and PDF tabs to the Cite panel, which names every one with a test id.)
-  'src/components/Sidebar.tsx': 3,
+  'src/components/shell/TaskPanels.tsx': 0, 'src/components/panels/review/ChatSection.tsx': 3, 'src/components/panels/review/ChatMessages.tsx': 0,
   'src/components/style/StylePanel.tsx': 1, // jump to a flagged sentence
   'src/components/style/VoiceProfileManager.tsx': 0,
-  'src/components/panels/ReviewPanel.tsx': 4, // section toggles (rows: read the style comparison / open chat), severity chips, row action buttons, named-agent items
+  'src/components/panels/ReviewPanel.tsx': 3, // severity chips, row action buttons, named-agent items
   'src/components/panels/SuggestionBody.tsx': 0, 'src/components/panels/suggestionParts.tsx': 0,
-  'src/components/panels/CitePanel.tsx': 1, // section toggles (rows: every section: step)
+  'src/components/panels/Section.tsx': 1, // the one section toggle every panel shares (rows: every section: step)
+  'src/components/panels/CitePanel.tsx': 0,
   'src/components/panels/cite/ReferenceManager.tsx': 1, // clear the reference search (row: clear the reference search)
   'src/components/panels/cite/SourceCard.tsx': 1, // trash (row: remove a source)
   'src/components/panels/cite/SourceTabs.tsx': 2, // the Summary/Abstract switch on a search-result card and on a document card (rows: switch a PDF between summary and abstract)
   'src/components/panels/cite/Library.tsx': 0, 'src/components/panels/cite/PdfMatch.tsx': 0, 'src/components/panels/cite/Search.tsx': 0,
-  'src/components/panels/WritePanel.tsx': 1, // section toggles (rows: every section: step)
+  'src/components/panels/WritePanel.tsx': 0,
   'src/components/panels/write/Outline.tsx': 0, 'src/components/panels/write/History.tsx': 0, 'src/components/panels/write/Versions.tsx': 0,
-  'src/components/panels/FormatPanel.tsx': 1, // section toggles (rows: every section: step); the mode buttons carry titles
+  'src/components/panels/FormatPanel.tsx': 0, // the mode buttons carry titles
   'src/components/panels/format/PageSection.tsx': 0, 'src/components/panels/format/StylesSection.tsx': 0, 'src/components/panels/format/NumField.tsx': 0,
   // Task 8. TopBar 0: the menu triggers carry an aria-label or visible words, every menu item a title. The rest, each reached by a row:
   'src/components/shell/TopBar.tsx': 0, 'src/components/shell/useTopBarItems.tsx': 0,
@@ -701,8 +702,8 @@ const SHARED_TESTIDS: Record<string, string> = {
   'control-source-tabs': 'the Summary/Abstract switch on a search-result card and on a PDF/text/BibTeX card; one row proves the switch, both cards render it',
   'control-compare-source': 'the Compare button on a search-result card and on a PDF/text card; one row proves it, both render it',
 };
-const GUARDED = ['src/App.tsx', 'src/components/Editor.tsx', 'src/components/Sidebar.tsx', 'src/components/style/StylePanel.tsx', 'src/components/style/VoiceProfileManager.tsx',
-  'src/components/panels/ReviewPanel.tsx', 'src/components/panels/SuggestionBody.tsx', 'src/components/panels/suggestionParts.tsx',
+const GUARDED = ['src/App.tsx', 'src/components/Editor.tsx', 'src/components/shell/TaskPanels.tsx', 'src/components/panels/review/ChatSection.tsx', 'src/components/panels/review/ChatMessages.tsx', 'src/components/style/StylePanel.tsx', 'src/components/style/VoiceProfileManager.tsx',
+  'src/components/panels/ReviewPanel.tsx', 'src/components/panels/Section.tsx', 'src/components/panels/SuggestionBody.tsx', 'src/components/panels/suggestionParts.tsx',
   'src/components/panels/CitePanel.tsx', 'src/components/panels/cite/Library.tsx', 'src/components/panels/cite/SourceCard.tsx', 'src/components/panels/cite/PdfMatch.tsx',
   'src/components/panels/cite/SourceTabs.tsx', 'src/components/panels/cite/Search.tsx', 'src/components/panels/cite/ReferenceManager.tsx',
   'src/components/panels/WritePanel.tsx', 'src/components/panels/write/Outline.tsx', 'src/components/panels/write/History.tsx', 'src/components/panels/write/Versions.tsx',
@@ -721,15 +722,18 @@ describe('the list itself', () => {
     const names = ENTRY_POINTS.map(e => e.feature);
     expect(names.filter((n, i) => names.indexOf(n) !== i)).toEqual([]);
   });
+  it('no row is pending: every feature has reached its final home (third positional argument of row())', () => {
+    expect(ENTRY_POINTS.filter(e => e.pending).map(e => e.feature)).toEqual([]);
+  });
   it('a pending row names its task and its current home (or is new); a settled row has no "now"', () => {
     for (const e of ENTRY_POINTS) {
       if (e.pending) { expect(e.pending, e.feature).toBeGreaterThanOrEqual(4); expect(!!e.now || !!e.isNew, `${e.feature} needs a current home or isNew`).toBe(true); }
       else expect(e.now, `${e.feature} resolves its path now, so it needs no "now"`).toBeUndefined();
     }
   });
-  it('every sidebar tab has a row', () => {
+  it('every panel tab has a row', () => {
     const steps = ENTRY_POINTS.flatMap(stepsOf);
-    const tabs = new Set([...source('src/components/Sidebar.tsx').matchAll(/activeTab === '([a-z]+)'/g)].map(m => m[1]).filter(t => t !== 'summary'));
+    const tabs = new Set([...source('src/components/shell/TaskPanels.tsx').matchAll(/activeTab === '([a-z]+)'/g)].map(m => m[1]).filter(t => t !== 'summary'));
     expect([...tabs].sort()).toEqual(['chat', 'history', 'outline', 'sources', 'style', 'suggestions']);
     // chat and suggestions are no longer tabs: the Review panel folds them in (the chat as a collapsible section, the suggestions as rows)
     for (const t of ['chat', 'history', 'outline', 'style']) expect(steps, `tab "${t}" has no row`).toContain(`section:${t}`);
@@ -742,7 +746,7 @@ describe('the list itself', () => {
     const uncovered: string[] = [];
     for (const f of [...GUARDED, 'src/components/GrantPanel.tsx', 'src/components/VersionHistoryPopup.tsx']) {
       for (const t of titlesIn(source(f))) {
-        if (t.raw.startsWith('Editor width')) continue; // editorWidth is EXCLUDED
+        if (t.raw.startsWith('Editor width')) continue; // the width control is EXCLUDED
         if (t.exact !== null && t.exact in NOT_A_FEATURE) continue;
         if (t.prefix !== null && (t.prefix in NOT_A_FEATURE || t.raw.slice(0, 24) in TEMPLATE_TITLES || Object.keys(TEMPLATE_TITLES).some(k => t.raw.startsWith(k.slice(0, 20))))) continue;
         const ok = reachedByTestid(t.testids, allSteps) || (t.exact !== null ? titleSteps.some(v => matches(t.exact!, v)) : t.prefix !== '' && titleSteps.some(v => v.replace(/\*$/, '').startsWith(t.prefix!)));
@@ -752,14 +756,14 @@ describe('the list itself', () => {
     expect(uncovered, 'controls with a title and no row').toEqual([]);
   });
   it('every button that is only text has a row whose step reaches that button', () => {
-    // Each text-only <button> in App, Editor, Sidebar and the style panel is matched, strictly (exact, or the step's own * wildcards), against the text steps whose SCOPE
+    // Each text-only <button> in App, Editor, the task panels and the style panel is matched, strictly (exact, or the step's own * wildcards), against the text steps whose SCOPE
     // can contain it: panel files take ptext:/select:, Editor takes text:/ctext:, App takes text:/htext:/stext:/mtext:. A "Dismiss" in the Editor is therefore not
-    // satisfied by the Sidebar's `ptext:Dismiss`. Does NOT see: buttons built by a helper component (ToolbarButton is title-guarded), modal contents beyond the gate
+    // satisfied by the panels' `ptext:Dismiss`. Does NOT see: buttons built by a helper component (ToolbarButton is title-guarded), modal contents beyond the gate
     // rows (Settings, the grant pickers, Post-Drafting, import report, version history), or an icon-only button with no title (counted below).
     const KINDS: Record<string, string[]> = {
       'src/App.tsx': ['text', 'htext', 'stext', 'mtext'], 'src/components/Editor.tsx': ['text', 'ctext'],
-      'src/components/Sidebar.tsx': ['ptext', 'select'], 'src/components/style/StylePanel.tsx': ['ptext'], 'src/components/style/VoiceProfileManager.tsx': ['ptext'],
-      'src/components/panels/ReviewPanel.tsx': ['ptext'], 'src/components/panels/SuggestionBody.tsx': ['ptext'], 'src/components/panels/suggestionParts.tsx': ['ptext'],
+      'src/components/shell/TaskPanels.tsx': ['ptext', 'select'], 'src/components/panels/review/ChatSection.tsx': ['ptext', 'select'], 'src/components/panels/review/ChatMessages.tsx': ['ptext', 'select'], 'src/components/style/StylePanel.tsx': ['ptext'], 'src/components/style/VoiceProfileManager.tsx': ['ptext'],
+      'src/components/panels/ReviewPanel.tsx': ['ptext'], 'src/components/panels/Section.tsx': ['ptext'], 'src/components/panels/SuggestionBody.tsx': ['ptext'], 'src/components/panels/suggestionParts.tsx': ['ptext'],
       'src/components/panels/CitePanel.tsx': ['ptext'], 'src/components/panels/cite/Library.tsx': ['ptext'], 'src/components/panels/cite/SourceCard.tsx': ['ptext'],
       'src/components/panels/cite/PdfMatch.tsx': ['ptext'], 'src/components/panels/cite/SourceTabs.tsx': ['ptext'], 'src/components/panels/cite/Search.tsx': ['ptext'],
       'src/components/panels/cite/ReferenceManager.tsx': ['ptext', 'select'],

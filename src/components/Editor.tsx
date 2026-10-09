@@ -57,7 +57,6 @@ interface EditorProps {
   onInsertCitation?: (sourceId: string) => number;
   isDistractionFree?: boolean;
   editorZoom?: number;
-  editorWidth?: 'normal' | 'wide' | 'full';
   aiSettings?: AISettings;
   /** Tab-triggered AI autocomplete on or off (the AI menu owns the switch). */
   autocompleteEnabled?: boolean;
@@ -127,7 +126,7 @@ const HISTORY_PLUGIN_KEY = 'history$';
 const DEFAULT_CANVAS_FORMAT: DocFormat = createFormat('nih');
 
 
-const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocChange, pendingDocument, onPendingDocumentApplied, onDuplicateFragment, loadSettled = false, onDocumentReady, onContentSynced, suggestions, onSuggestionClick, sources, citationRegistry, onInsertCitation, isDistractionFree, editorZoom = 100, editorWidth = 'normal', aiSettings, autocompleteEnabled = false, onAutocompleteLoading, onAnalyzeImage, format, styleSentences, styleAuditEnabled, onStyleAudit, onEditorReady, onSelectionChange }, ref) => {
+const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocChange, pendingDocument, onPendingDocumentApplied, onDuplicateFragment, loadSettled = false, onDocumentReady, onContentSynced, suggestions, onSuggestionClick, sources, citationRegistry, onInsertCitation, isDistractionFree, editorZoom = 100, aiSettings, autocompleteEnabled = false, onAutocompleteLoading, onAnalyzeImage, format, styleSentences, styleAuditEnabled, onStyleAudit, onEditorReady, onSelectionChange }, ref) => {
   const [isMounted, setIsMounted] = useState(false);
   const canvasFormat = format ?? DEFAULT_CANVAS_FORMAT;
 
@@ -409,7 +408,6 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
 
   if (!editor) return null;
 
-  const widthClass = editorWidth === 'wide' ? 'max-w-6xl' : editorWidth === 'full' ? 'max-w-none' : 'max-w-4xl';
   const analyzeFigure = (prompt: string, withContext = true) => {
     const attrs = editor.getAttributes('resizableImage');
     if (!attrs.src || !onAnalyzeImage) return;
@@ -417,8 +415,8 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
   };
 
   return (
-    <div className={`w-full ${widthClass} mx-auto ${isDistractionFree ? 'focus-mode' : ''}`}>
-      <div className="bg-[var(--editor-bg)] min-h-[600px] shadow-[var(--editor-shadow)] rounded-sm border border-[var(--border-subtle)] transition-colors duration-300">
+    <div className={`w-full mx-auto ${isDistractionFree ? 'focus-mode' : ''}`}>
+      <div className="min-h-[600px] transition-colors duration-300">
         <input
           ref={imageInputRef}
           type="file"

@@ -9,12 +9,12 @@ import { auditMatchesDoc, type StyleAuditSnapshot } from '../style/styleSync';
 import type { RailTask } from './Rail';
 import type { DocStats } from './StatusBar';
 
-export type SidebarTab = 'chat' | 'suggestions' | 'history' | 'sources' | 'outline' | 'style';
+export type PanelTab = 'chat' | 'suggestions' | 'history' | 'sources' | 'outline' | 'style';
 
-export const TASK_TAB: Record<RailTask, SidebarTab> = {
+export const TASK_TAB: Record<RailTask, PanelTab> = {
   write: 'outline', cite: 'sources', review: 'suggestions', format: 'style',
 };
-export const TAB_TASK: Record<SidebarTab, RailTask> = {
+export const TAB_TASK: Record<PanelTab, RailTask> = {
   chat: 'review', suggestions: 'review', history: 'write', outline: 'write', sources: 'cite', style: 'format',
 };
 
@@ -50,12 +50,12 @@ export function usePageEstimate(doc: JSONContent | null, format: DocFormat | nul
  * clicking another opens it on that task's tab. The rail task is never derived from a tab change after the
  * fact: tab changes go through `revealTab`, which sets both together.
  */
-export function railSelect(current: RailTask | null, clicked: RailTask): { task: RailTask | null; tab: SidebarTab | null } {
+export function railSelect(current: RailTask | null, clicked: RailTask): { task: RailTask | null; tab: PanelTab | null } {
   return current === clicked ? { task: null, tab: null } : { task: clicked, tab: TASK_TAB[clicked] };
 }
 
 /** A legacy call site revealing a tab: the tab and its owning rail task move together. */
-export function revealTab(tab: SidebarTab): { task: RailTask; tab: SidebarTab } {
+export function revealTab(tab: PanelTab): { task: RailTask; tab: PanelTab } {
   return { task: TAB_TASK[tab], tab };
 }
 

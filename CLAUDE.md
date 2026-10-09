@@ -12,14 +12,15 @@ npm run dev          # Start Vite dev server at http://localhost:3000
 npm run build        # Web build (output: dist/)
 npm run build:electron  # Electron desktop build (output: release/ AppImage)
 
-# Type-check (no dedicated test runner)
+# Type-check and tests
 npm run lint         # tsc --noEmit
+npx vitest run       # 1858+ tests
 
 # Clean
 npm run clean        # rm -rf dist dist-electron
 ```
 
-There are no automated tests. Type-checking via `npm run lint` is the primary correctness gate.
+There are 1858+ vitest tests. The gate is three exit codes, all 0: `npx tsc --noEmit`, `npx vitest run`, `npm run build`. The exit code matters independently of the pass count: this suite once printed "passed" while exiting 1 because of an unhandled error in a pending timer. `vitest.config.ts` caps the pool at 2 forks (`maxForks: 2`) deliberately: one worker per core exhausted this machine's RAM. Never change or override it, and do not start a dev server or browser casually for the same reason. `npm run build` rewrites `dist-electron/`; revert that churn.
 
 ## Architecture Overview
 
@@ -60,9 +61,21 @@ TipTap editor with custom extensions in `src/extensions/`:
 
 The `@` key triggers a floating citation picker. Citation numbers are plain text `[N]` patterns in HTML; renumbering scans the full HTML in document order.
 
-### Sidebar (`src/components/Sidebar.tsx`)
+### The shell (`src/components/shell/`, `src/components/panels/`)
 
-Four tabs: Chat, Suggestions, Sources, History. The Sources tab contains the file uploader (PDF/DOCX via Web Workers in `src/workers/`), semantic literature search client (`src/services/manuscriptSearch.ts`), BibTeX parsing (`src/services/citations.ts`), and the Reference Manager panel.
+`App.tsx` composes `AppShell`: a top bar (`TopBar`, menus from `useTopBarItems`), a four-task rail (Write, Cite, Review, Format), one optional panel beside the page, the page canvas (`Editor`) and a `StatusBar`. `TaskPanels` hosts the panels for the active rail task and keeps the other three mounted (hidden) so their in-progress state survives; it also owns the chat composer (`useChatComposer`), which the Cite panel drives. Panels share one `Section` component (`keepMounted` defaults to true).
+
+Where each old sidebar tab went:
+- Outline and History tabs -> Write panel (`WritePanel`: Outline, History, Versions sections).
+- Sources tab (uploads, search, BibTeX, Reference Manager) -> Cite panel (`CitePanel`, `panels/cite/`).
+- Chat and Suggestions tabs, plus the style comparison -> Review panel (`ReviewPanel`: one document-ordered list of suggestions, style and grammar flags; Chat is a collapsible section, `panels/review/`).
+- Style tab and page setup -> Format panel (`FormatPanel`: page setup, named styles, grant template).
+
+Page numbers, the page limit and layout:
+- All page numbers come from `src/services/pagination.ts`. Sub-project A3 replaces `estimatePages`' body and flips `approximate` to false with no UI change.
+- The page limit is author-set (`DocFormat.pageLimitPages`). The app must never assert an NIH page limit of its own: real limits vary by activity code and funding announcement.
+- `src/components/shell/reachability.test.tsx` is the contract for feature reachability. A feature that moves updates its row; one that is lost fails the suite. Update it whenever a feature moves.
+- The page is the width (no width control); zoom is a CSS `zoom` on the page canvas, fit to the available width.
 
 ### Electron (`electron/main.ts`, `electron/preload.mjs`)
 

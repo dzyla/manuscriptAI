@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect, useMemo, useDeferredValue } from 'react';
 import type { Editor as TipEditor } from '@tiptap/core';
 import Editor, { EditorRef } from './components/Editor';
-import Sidebar from './components/Sidebar';
+import TaskPanels from './components/shell/TaskPanels';
 import { AppShell } from './components/shell/AppShell';
 import { StatusBar } from './components/shell/StatusBar';
 import { TopBar } from './components/shell/TopBar';
@@ -10,7 +10,7 @@ import { Toast, StorageBanner, ExportWarning, ShortcutsModal, type ToastState } 
 import { SelectionBar, BlockTypeSelect } from './components/editor/SelectionBar';
 import { NO_SELECTION, type SelectionInfo } from './components/editor/selectionKind';
 import type { RailTask } from './components/shell/Rail';
-import { railSelect, revealTab, type SidebarTab, documentPageLimit, usePageEstimate, docStats } from './components/shell/shellLogic';
+import { railSelect, revealTab, type PanelTab, documentPageLimit, usePageEstimate, docStats } from './components/shell/shellLogic';
 import SettingsModal from './components/SettingsModal';
 import PostDraftingView from './components/PostDraftingView';
 import VersionHistoryPopup from './components/VersionHistoryPopup';
@@ -33,14 +33,6 @@ import { useImport } from './hooks/useImport';
 import { useDocumentActions } from './hooks/useDocumentActions';
 
 const stripHtml = (html: string) => html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-
-/**
- * U Task 2: the old six-tab Sidebar is mounted unchanged as the shell's panel while Tasks 4-7 replace
- * it panel by panel. Task 9 deletes this constant along with Sidebar.tsx.
- */
-const U_SHELL_LEGACY_PANEL = true;
-/** The page is the document's width; the three-way width control is gone. Task 9 deletes this constant and the Editor prop. */
-const editorWidth = 'normal' as const;
 
 export default function App() {
   // ─── Zustand stores ────────────────────────────────────────────────────────
@@ -74,13 +66,13 @@ export default function App() {
   const [toast, setToast] = useState<ToastState | null>(null);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
-  const [sidebarTab, setSidebarTab] = useState<SidebarTab>('chat');
+  const [panelTab, setPanelTab] = useState<PanelTab>('chat');
   // Rail and tab move together, one way: the legacy call sites reveal a tab through openTab, which also
   // opens its rail task. Closing the rail never touches the tab.
   const [railTask, setRailTask] = useState<RailTask | null>(revealTab('chat').task);
   const [chatRequest, setChatRequest] = useState(0);
-  const openTab = useCallback((tab: SidebarTab) => { const r = revealTab(tab); setSidebarTab(r.tab); setRailTask(r.task); if (tab === 'chat') setChatRequest(n => n + 1); }, []);
-  const [sidebarWidth, setSidebarWidth] = useState(400);
+  const openTab = useCallback((tab: PanelTab) => { const r = revealTab(tab); setPanelTab(r.tab); setRailTask(r.task); if (tab === 'chat') setChatRequest(n => n + 1); }, []);
+  const [panelWidth, setPanelWidth] = useState(400);
   const [zoom, setZoom] = useState(100);
   const [showTemplatePicker, setShowTemplatePicker] = useState(false);
   const [showGrantInstructions, setShowGrantInstructions] = useState(false);
@@ -114,12 +106,12 @@ export default function App() {
   const handleResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     const startX = e.clientX;
-    const startWidth = sidebarWidth;
-    const move = (ev: MouseEvent) => setSidebarWidth(Math.min(Math.max(startWidth + (startX - ev.clientX), 280), 800));
+    const startWidth = panelWidth;
+    const move = (ev: MouseEvent) => setPanelWidth(Math.min(Math.max(startWidth + (startX - ev.clientX), 280), 800));
     const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); };
     document.addEventListener('mousemove', move);
     document.addEventListener('mouseup', up);
-  }, [sidebarWidth]);
+  }, [panelWidth]);
 
   // Dark mode
   useEffect(() => { document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light'); }, [darkMode]);
@@ -235,7 +227,7 @@ export default function App() {
   const handleRailSelect = useCallback((t: RailTask) => {
     const next = railSelect(railTask, t);
     setRailTask(next.task);
-    if (next.tab && U_SHELL_LEGACY_PANEL) setSidebarTab(next.tab);
+    if (next.tab) setPanelTab(next.tab);
   }, [railTask]);
 
   // ─── The top bar ───────────────────────────────────────────────────────────
@@ -274,7 +266,7 @@ export default function App() {
 
       <AppShell
         hideChrome={isDistractionFree}
-        keepPanelMounted={U_SHELL_LEGACY_PANEL}
+        keepPanelMounted
         active={railTask}
         badges={{ review: suggestions.length }}
         onSelect={handleRailSelect}
@@ -320,7 +312,6 @@ export default function App() {
               onInsertCitation={storeInsertCitation}
               isDistractionFree={isDistractionFree}
               editorZoom={zoom}
-              editorWidth={editorWidth}
               aiSettings={aiSettings}
               autocompleteEnabled={autocomplete}
               onAutocompleteLoading={setAutocompleteLoading}
@@ -345,14 +336,14 @@ export default function App() {
           />
         )}
         panel={(
-        <div className="shrink-0 relative h-full border-t md:border-t-0 md:border-l max-w-full flex flex-col" style={{ width: typeof window !== 'undefined' && window.innerWidth < 768 ? '100%' : `${sidebarWidth}px`, minWidth: '280px', borderColor: 'var(--border)' }}>
+        <div className="shrink-0 relative h-full border-t md:border-t-0 md:border-l max-w-full flex flex-col" style={{ width: typeof window !== 'undefined' && window.innerWidth < 768 ? '100%' : `${panelWidth}px`, minWidth: '280px', borderColor: 'var(--border)' }}>
           {/* Drag handle */}
           <div 
             className="absolute left-0 top-0 bottom-0 w-2 -ml-1 cursor-col-resize transition-colors opacity-0 hover:opacity-50 z-50 hidden md:block"
             onMouseDown={handleResizeStart}
             style={{ backgroundColor: 'var(--accent-blue)' }}
           />
-          <Sidebar
+          <TaskPanels
             suggestions={suggestions}
             messages={messages}
             history={history}
@@ -369,7 +360,7 @@ export default function App() {
             onStop={analysis.stopRequest}
             highlightedSuggestionId={highlightedSuggestionId}
             analysisProgress={analysisProgress}
-            activeTabOverride={sidebarTab}
+            activeTabOverride={panelTab}
             chatRequest={chatRequest}
             onTabChange={openTab}
             review={{
