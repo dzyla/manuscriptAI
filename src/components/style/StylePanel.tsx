@@ -1,8 +1,6 @@
 import { useMemo } from 'react';
 import { useAIStore } from '../../stores/useAIStore';
-import { flaggedSentences, MAX_REWRITE_WORDS } from '../../services/proseAudit/metrics';
 import { activeSummary } from '../../services/proseAudit/profile';
-import { TELL_PATTERNS } from '../../services/proseAudit/patterns';
 import type { AuditMetrics, SentenceAudit } from '../../types';
 import { VoiceProfileManager } from './VoiceProfileManager';
 import { styleRows, sectionRows } from './styleRows';
@@ -27,11 +25,8 @@ import { styleRows, sectionRows } from './styleRows';
 
 export interface StylePanelProps {
   metrics: AuditMetrics | null;
-  onJumpToSentence: (s: SentenceAudit) => void;
-  onRewrite: (s: SentenceAudit) => void;
   highlightsOn: boolean;
   onToggleHighlights: (on: boolean) => void;
-  rewritingId?: string | null;
 }
 
 const BAND_STYLES = {
@@ -55,16 +50,15 @@ const BAND_TEXT_GENERIC = {
 
 const HEADING = 'mb-1 text-[10px] font-bold uppercase tracking-widest';
 
-/** Stable id for a sentence, shared with the host's `rewritingId`. */
+/** Stable id for a sentence (the in-flight rewrite's id). Flagged sentences are listed and acted on in the Review panel's style rows, not here. */
 export const sentenceId = (s: SentenceAudit) => `${s.start}-${s.end}`;
 
-export function StylePanel({ metrics, onJumpToSentence, onRewrite, highlightsOn, onToggleHighlights, rewritingId }: StylePanelProps) {
+export function StylePanel({ metrics, highlightsOn, onToggleHighlights }: StylePanelProps) {
   const voiceProfile = useAIStore(s => s.aiSettings.voiceProfile);
   const { summary: voice, isGeneric } = activeSummary(voiceProfile);
 
   const readout = useMemo(() => (metrics ? styleRows(metrics.summary, voice) : null), [metrics, voice]);
   const sections = useMemo(() => (metrics ? sectionRows(metrics.sections, voice) : []), [metrics, voice]);
-  const worst = useMemo(() => (metrics ? flaggedSentences(metrics, 12) : []), [metrics]);
 
   if (!metrics || !readout || metrics.summary.sentences === 0) {
     return (
@@ -98,7 +92,7 @@ export function StylePanel({ metrics, onJumpToSentence, onRewrite, highlightsOn,
       <VoiceProfileManager />
 
       <label className="flex items-center gap-2 text-[11px]" style={{ color: 'var(--text-secondary)' }}>
-        <input type="checkbox" checked={highlightsOn} onChange={e => onToggleHighlights(e.target.checked)} />
+        <input type="checkbox" data-testid="control-highlight-flagged" checked={highlightsOn} onChange={e => onToggleHighlights(e.target.checked)} />
         Highlight flagged sentences in the editor
       </label>
 
@@ -164,38 +158,6 @@ export function StylePanel({ metrics, onJumpToSentence, onRewrite, highlightsOn,
           </ul>
         </div>
       )}
-
-      <div>
-        <div className={HEADING} style={muted}>Worst sentences</div>
-        <ul className="space-y-2">
-          {worst.map(s => {
-            const busy = rewritingId === sentenceId(s);
-            return (
-              <li key={sentenceId(s)} className="rounded-xl border p-2" style={{ borderColor: 'var(--border-subtle)' }}>
-                <button
-                  data-testid="worst-sentence"
-                  className="block w-full text-left text-[11px] hover:text-blue-700"
-                  style={{ color: 'var(--text-secondary)' }}
-                  onClick={() => onJumpToSentence(s)}
-                >
-                  {s.words} words · {s.tells.map(t => TELL_PATTERNS[t]?.label ?? t).join(', ') || (s.words > 35 ? 'over 35 words' : 'no specific pattern')}
-                </button>
-                {s.words > MAX_REWRITE_WORDS ? (
-                  <div className="mt-1 text-[10px]" style={muted}>Too long to rewrite in one step. Split it by hand first.</div>
-                ) : (
-                  <button
-                    className="mt-1 text-[11px] font-semibold text-blue-600 hover:underline disabled:opacity-50"
-                    disabled={busy}
-                    onClick={() => onRewrite(s)}
-                  >
-                    {busy ? 'Rewriting…' : 'Rewrite in my voice'}
-                  </button>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-      </div>
     </div>
   );
 }

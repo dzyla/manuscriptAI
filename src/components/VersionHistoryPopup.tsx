@@ -1,6 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { db } from '../db/manuscriptDb';
-import { inlineAssetImages } from '../db/assetStore';
+import { useState, useEffect, useRef } from 'react';
+import { useSnapshots, restoreOrExplain, saveSnapshot as persistSnapshot, deleteSnapshot as removeSnapshot, wordCount, formatSnapshotDate } from '../services/versionSnapshots';
 import type { VersionSnapshot } from '../types';
 import { Clock, Plus, Trash2, RotateCcw, Eye, X, History } from 'lucide-react';
 
@@ -10,24 +9,12 @@ interface VersionHistoryPopupProps {
   onRestore: (snapshot: VersionSnapshot) => void | Promise<void>;
 }
 
-function stripHtml(html: string) {
-  return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-}
-
-function wc(html: string) {
-  return stripHtml(html).split(/\s+/).filter(w => w.length > 0).length;
-}
-
-function formatDate(ts: number) {
-  return new Date(ts).toLocaleString(undefined, {
-    month: 'short', day: 'numeric',
-    hour: '2-digit', minute: '2-digit',
-  });
-}
+const wc = wordCount;
+const formatDate = formatSnapshotDate;
 
 export default function VersionHistoryPopup({ currentTitle, currentContent, onRestore }: VersionHistoryPopupProps) {
   const [open, setOpen] = useState(false);
-  const [snapshots, setSnapshots] = useState<VersionSnapshot[]>([]);
+  const snapshots = useSnapshots();
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [newName, setNewName] = useState('');
@@ -35,15 +22,6 @@ export default function VersionHistoryPopup({ currentTitle, currentContent, onRe
 
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-
-  const loadSnapshots = useCallback(async () => {
-    const all = await db.versionSnapshots.orderBy('timestamp').reverse().toArray();
-    setSnapshots(all);
-  }, []);
-
-  useEffect(() => {
-    if (open) loadSnapshots();
-  }, [open, loadSnapshots]);
 
   // Close on outside click
   useEffect(() => {
@@ -71,27 +49,15 @@ export default function VersionHistoryPopup({ currentTitle, currentContent, onRe
   }, [open]);
 
   const saveSnapshot = async () => {
-    const name = newName.trim() || `Snapshot — ${new Date().toLocaleString()}`;
     setIsSaving(true);
-    const snapshot: VersionSnapshot = {
-      id: `snap-${Date.now()}`,
-      name,
-      timestamp: Date.now(),
-      title: currentTitle,
-      // Self-contained copy: session blob: image URLs would be dead after a reload.
-      content: await inlineAssetImages(currentContent),
-      wordCount: wc(currentContent),
-    };
-    await db.versionSnapshots.put(snapshot);
-    setSnapshots(prev => [snapshot, ...prev]);
+    await persistSnapshot(currentTitle, currentContent, newName);
     setNewName('');
     setShowNameInput(false);
     setIsSaving(false);
   };
 
   const deleteSnapshot = async (id: string) => {
-    await db.versionSnapshots.delete(id);
-    setSnapshots(prev => prev.filter(s => s.id !== id));
+    await removeSnapshot(id);
     if (previewId === id) setPreviewId(null);
   };
 
@@ -187,6 +153,7 @@ export default function VersionHistoryPopup({ currentTitle, currentContent, onRe
               />
               <button
                 onClick={saveSnapshot}
+                title="Save with this name"
                 disabled={isSaving}
                 className="px-3 py-1.5 text-xs rounded-lg font-medium transition-colors shrink-0"
                 style={{ background: 'var(--accent-blue)', color: '#fff', opacity: isSaving ? 0.6 : 1 }}
@@ -241,7 +208,7 @@ export default function VersionHistoryPopup({ currentTitle, currentContent, onRe
                         <button
                           onClick={() => {
                             if (window.confirm(`Restore snapshot "${snap.name}"? Current content will be replaced.`)) {
-                              onRestore(snap);
+                              void restoreOrExplain(snap.id, onRestore);
                               setOpen(false);
                             }
                           }}
@@ -301,9 +268,10 @@ export default function VersionHistoryPopup({ currentTitle, currentContent, onRe
               </div>
               <div className="flex gap-2">
                 <button
+                  data-testid="control-popup-restore-from-preview"
                   onClick={() => {
                     if (window.confirm(`Restore snapshot "${previewSnapshot.name}"?`)) {
-                      onRestore(previewSnapshot);
+                      void restoreOrExplain(previewSnapshot.id, onRestore);
                       setPreviewId(null);
                       setOpen(false);
                     }
@@ -314,6 +282,8 @@ export default function VersionHistoryPopup({ currentTitle, currentContent, onRe
                   <RotateCcw size={11} /> Restore
                 </button>
                 <button
+                  data-testid="control-popup-close-preview"
+                  title="Close preview"
                   onClick={() => setPreviewId(null)}
                   className="p-1.5 rounded-lg transition-colors"
                   style={{ color: 'var(--text-muted)' }}

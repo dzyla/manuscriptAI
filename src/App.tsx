@@ -1,265 +1,82 @@
-import { useState, useCallback, useRef, useEffect, useMemo, createElement } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo, useDeferredValue } from 'react';
+import type { Editor as TipEditor } from '@tiptap/core';
 import Editor, { EditorRef } from './components/Editor';
-import Sidebar from './components/Sidebar';
+import TaskPanels from './components/shell/TaskPanels';
+import { AppShell } from './components/shell/AppShell';
+import { StatusBar } from './components/shell/StatusBar';
+import { TopBar } from './components/shell/TopBar';
+import { useTopBarItems } from './components/shell/useTopBarItems';
+import { Toast, StorageBanner, ExportWarning, ShortcutsModal, type ToastState } from './components/shell/AppOverlays';
+import { SelectionBar, BlockTypeSelect } from './components/editor/SelectionBar';
+import { NO_SELECTION, type SelectionInfo } from './components/editor/selectionKind';
+import type { RailTask } from './components/shell/Rail';
+import { railSelect, revealTab, type PanelTab, documentPageLimit, usePageEstimate, useOverBudget, docStats } from './components/shell/shellLogic';
 import SettingsModal from './components/SettingsModal';
 import PostDraftingView from './components/PostDraftingView';
 import VersionHistoryPopup from './components/VersionHistoryPopup';
 import ImportReportDialog, { ImportProgressDialog } from './components/ImportReportDialog';
-import { titleFromFileName } from './services/docxImport';
-import { useDocxImport } from './hooks/useDocxImport';
-import { textToHtml } from './utils/textImport';
-import { AuditMetrics, SentenceAudit, AgentType, Message, Suggestion, HistoryItem, AISettings, ManuscriptSource, AttachedImage, VersionSnapshot } from './types';
-import { searchSimilarManuscripts } from './services/manuscriptSearch';
-import { expandCitationNums, formatCitationGroup, mergeAdjacentCitations } from './services/citations';
-import { analyzeText, chatWithAgent, chatWithManuscript, resolveConflicts, runJudgeAgent, verifySuggestions, dedupeAdvisories, rebutSuggestion, manuscriptSummary, rewriteSection, transformWithInstruction, analyzeSourceAgainstManuscript, verifyClaimAgainstSources, AGENT_INFO, AGENT_ICONS, estimateTokens } from './services/ai';
-import { detectorSuggestions } from './services/detectors';
-import { buildReviewNote } from './utils/reviewNotes';
-import { findTextSpan } from './utils/textMatch';
-import { auditText } from './services/proseAudit/metrics';
-import { performStyleRewrite } from './components/style/styleRewrite';
-import { sentencesToDraw, auditMatchesDoc } from './components/style/styleSync';
-import { setDocumentContext, trimSectionToLimit, type AgentTool } from './services/ai';
-import { GrantTemplatePicker, GrantInstructionsModal, GrantToolbar } from './components/GrantPanel';
-import { loadCustomTemplates, getGrantTemplate, WORDS_PER_PAGE, type GrantTemplate } from './services/grantTemplates';
-import { Sparkles, FileText, Settings, Download, Keyboard, Eye, Moon, Sun, ChevronDown, FilePlus, Coins, BookOpen, Github, Square } from 'lucide-react';
-import { saveAs } from 'file-saver';
-import * as mammoth from 'mammoth';
-import TurndownService from 'turndown';
-import { useDocumentStore, documentRepository } from './stores/useDocumentStore';
-import type { ImportReportRow } from './types';
-import { snapshotBeforeImport, revertLabel, isBlankHtml } from './services/importSafety';
+import { GrantTemplatePicker, GrantInstructionsModal } from './components/GrantPanel';
+import { estimateTokens, setDocumentContext } from './services/ai';
+import { loadCustomTemplates } from './services/grantTemplates';
+import { isBlankHtml } from './services/importSafety';
+import { useDocumentStore } from './stores/useDocumentStore';
 import { useAIStore } from './stores/useAIStore';
 import { useSourceStore } from './stores/useSourceStore';
-import { db } from './db/manuscriptDb';
-import { inlineAssetImages, bytesToDataUrl, defaultFetchBytes } from './db/assetStore';
-import { buildWorkspaceJson } from './services/workspaceExport';
-import { migrateLegacyCitations } from './utils/migrateCitations';
-import { prefetchImages, walkNode } from './services/astExport';
-import { DocxRenderer, Packer } from './services/docxExport';
-import { LatexRenderer } from './services/latexExport';
 import * as secureStorage from './services/secureStorage';
+import { useAnalysis } from './hooks/useAnalysis';
+import { useChat } from './hooks/useChat';
+import { useSelectionAI } from './hooks/useSelectionAI';
+import { useSuggestionActions } from './hooks/useSuggestionActions';
+import { useStyleReview } from './hooks/useStyleReview';
+import { useExport } from './hooks/useExport';
+import { useImport } from './hooks/useImport';
+import { useDocumentActions } from './hooks/useDocumentActions';
 
 const stripHtml = (html: string) => html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-
-function AgentIcon({ agent, size = 12 }: { agent: AgentType; size?: number }) {
-  const info = AGENT_INFO[agent];
-  const IconComponent = AGENT_ICONS[info?.iconName];
-  if (!IconComponent) return null;
-  return createElement(IconComponent, { size });
-}
 
 export default function App() {
   // ─── Zustand stores ────────────────────────────────────────────────────────
   const {
     title, content, saveState, citationRegistry, pendingDocument,
-    setTitle, setContent, adoptLoadedHtml, clearPendingDocument, setDocJson, setSaveState,
-    insertCitation: storeInsertCitation,
-    removeCitation: storeRemoveCitation,
-    renumberCitations: storeRenumberCitations,
-    insertFigure: storeInsertFigure,
-    renumberFigures: storeRenumberFigures,
-    resetDocument, persist: persistDocument, initialize: initDocument,
-    mode, grantInstructions, grantTemplateId,
-    setMode, setGrantInstructions, setGrantTemplateId,
-    loadStatus, blockedByUnreadable, lastLoad, allowOverwrite, replaceWithHtml, importDocx, revertImport, queueFragmentClone, importId,
+    setTitle, setContent, adoptLoadedHtml, clearPendingDocument, setDocJson,
+    insertCitation: storeInsertCitation, removeCitation: storeRemoveCitation, renumberCitations: storeRenumberCitations,
+    insertFigure: storeInsertFigure, renumberFigures: storeRenumberFigures,
+    persist: persistDocument, initialize: initDocument,
+    mode, grantInstructions, grantTemplateId, format, docJson,
+    setMode, setGrantInstructions, setFormat,
+    loadStatus, blockedByUnreadable, lastLoad, queueFragmentClone, importId,
   } = useDocumentStore();
-
   const {
-    aiSettings, isAnalyzing, suggestions, messages, history, analysisProgress,
-    setAiSettings, setIsAnalyzing, setAnalysisProgress,
-    addSuggestions, setSuggestions, removeSuggestion, clearSuggestions, updateSuggestion,
-    addMessage, setMessages, updateMessageSuggestions,
-    addHistoryItem, removeHistoryItem, setHistory,
-    initialize: initAI,
-    persistSuggestions, persistMessages, persistHistory,
+    aiSettings, isAnalyzing, suggestions, messages, history, analysisProgress, setAiSettings,
+    initialize: initAI, persistSuggestions, persistMessages, persistHistory,
   } = useAIStore();
-
-  const {
-    sources, pendingApiSources,
-    setPendingApiSources, clearPendingApiSources,
-    initialize: initSources, persist: persistSources,
-    clearSources,
-  } = useSourceStore();
-
-  // ─── Refs (imperative handles, not shared state) ───────────────────────────
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const editorRef = useRef<EditorRef>(null);
-  const abortRef = useRef<AbortController | null>(null);
+  const { sources, pendingApiSources, clearPendingApiSources, initialize: initSources, persist: persistSources } = useSourceStore();
 
   // ─── UI-only state (stays local, not in stores) ────────────────────────────
+  const editorRef = useRef<EditorRef>(null);
+  const [editorInstance, setEditorInstance] = useState<TipEditor | null>(null);
+  const [selection, setSelection] = useState<SelectionInfo>(NO_SELECTION);
+  const [autocomplete, setAutocomplete] = useState(false);
+  const [autocompleteLoading, setAutocompleteLoading] = useState(false);
   const [clearSourcesTrigger, setClearSourcesTrigger] = useState(0);
   const [highlightedSuggestionId, setHighlightedSuggestionId] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isPostDraftingOpen, setIsPostDraftingOpen] = useState(false);
   const [isDistractionFree, setIsDistractionFree] = useState(false);
-  const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error'; action?: { label: string; onClick: () => void } } | null>(null);
+  const [toast, setToast] = useState<ToastState | null>(null);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
-  const [showAnalyzeMenu, setShowAnalyzeMenu] = useState(false);
-  const analyzeMenuRef = useRef<HTMLDivElement>(null);
-  const [sidebarTab, setSidebarTab] = useState<'chat' | 'suggestions' | 'history' | 'sources' | 'outline' | 'style'>('chat');
-  // Style audit (sub-project H). `text` is the exact editor text the metrics were computed from, so
-  // sentence offsets are only ever applied to a document that still matches (see styleSentences below).
-  const [styleAudit, setStyleAudit] = useState<{ metrics: AuditMetrics; text: string } | null>(null);
-  const [drawStyleHighlights, setDrawStyleHighlights] = useState(false);
-  const [rewritingId, setRewritingId] = useState<string | null>(null);
-  const rewriteAbort = useRef<AbortController | null>(null);
-  const [sidebarWidth, setSidebarWidth] = useState(400);
+  const [panelTab, setPanelTab] = useState<PanelTab>('chat');
+  // Rail and tab move together, one way: the legacy call sites reveal a tab through openTab, which also
+  // opens its rail task. Closing the rail never touches the tab.
+  const [railTask, setRailTask] = useState<RailTask | null>(revealTab('chat').task);
+  const [chatRequest, setChatRequest] = useState(0);
+  const openTab = useCallback((tab: PanelTab) => { const r = revealTab(tab); setPanelTab(r.tab); setRailTask(r.task); if (tab === 'chat') setChatRequest(n => n + 1); }, []);
+  const [panelWidth, setPanelWidth] = useState(400);
   const [zoom, setZoom] = useState(100);
-  const [editorWidth, setEditorWidth] = useState<'normal' | 'wide' | 'full'>('normal');
-  const [currentAgent, setCurrentAgent] = useState<AgentType>('manager');
-  const [pendingDownloadFormat, setPendingDownloadFormat] = useState<'md' | 'docx' | 'json' | 'tex' | null>(null);
   const [showTemplatePicker, setShowTemplatePicker] = useState(false);
   const [showGrantInstructions, setShowGrantInstructions] = useState(false);
-
-  // Keep the AI service aware of the document mode + funder instructions,
-  // so every agent/chat/rewrite prompt resolves against the right prompt set.
-  useEffect(() => {
-    setDocumentContext({ mode, grantInstructions });
-  }, [mode, grantInstructions]);
-
-  useEffect(() => { void loadCustomTemplates(); }, []);
-
-  const [trimmingSection, setTrimmingSection] = useState<string | null>(null);
-  const handleTrimSection = async (sectionTitle: string, budgetWords: number) => {
-    const sectionText = editorRef.current?.getSectionTextByTitle(sectionTitle);
-    if (!sectionText) { showToast('Section not found in document', 'error'); return; }
-    // Body only — getSectionTextByTitle prepends the title line
-    const body = sectionText.split('\n\n').slice(1).join('\n\n').trim();
-    if (!body) return;
-    setTrimmingSection(sectionTitle);
-    try {
-      const trimmed = await trimSectionToLimit(body, sectionTitle, budgetWords, aiSettings);
-      if (!trimmed || trimmed === body) { showToast('Trim produced no change', 'info'); return; }
-      const plainText = editorRef.current?.getPlainText() || stripHtml(content);
-      const span = findTextSpan(plainText, body);
-      addSuggestions([{
-        id: `suggestion-trim-${Date.now()}`,
-        originalText: span?.matchedText ?? body,
-        suggestedText: trimmed,
-        explanation: `Condensed "${sectionTitle}" to fit its ${Math.round(budgetWords / WORDS_PER_PAGE * 10) / 10}-page NIH limit (~${budgetWords} words).`,
-        agent: 'editor',
-        startIndex: span?.start ?? 0,
-        endIndex: span?.end ?? body.length,
-        severity: 'major',
-        category: 'structure',
-        section: sectionTitle,
-      }]);
-      setSidebarTab('suggestions');
-      showToast(`Trim ready for "${sectionTitle}" — review in Suggestions`, 'success');
-    } catch (e) {
-      showToast(`Trim failed: ${e instanceof Error ? e.message : 'Unknown error'}`, 'error');
-    } finally {
-      setTrimmingSection(null);
-    }
-  };
-
-  // Tools the chat agents can call mid-conversation (provider-agnostic protocol)
-  const buildAgentTools = (): AgentTool[] => [
-    {
-      name: 'search_literature',
-      description: 'Semantic search over PubMed/bioRxiv/medRxiv/arXiv. args: {"query": "..."} — returns top matching papers with abstracts.',
-      run: async (args) => {
-        const results = await searchSimilarManuscripts(String(args.query ?? ''), 5);
-        if (results.length === 0) return 'No results found.';
-        return results.map((r, i) => `[${i + 1}] ${r.title} (${r.journal ?? r.source} ${r.year ?? ''}) DOI:${r.doi}\n${(r.abstract || '').slice(0, 400)}`).join('\n\n');
-      },
-    },
-    {
-      name: 'read_section',
-      description: 'Read the full text of one document section. args: {"title": "exact H2 heading"}',
-      run: async (args) => editorRef.current?.getSectionTextByTitle(String(args.title ?? '')) || `Section "${args.title}" not found. Use one of the document's H2 headings.`,
-    },
-    {
-      name: 'check_page_budgets',
-      description: 'Get current word/page counts per section vs the grant template limits. args: {}',
-      run: async () => {
-        const template = getGrantTemplate(grantTemplateId);
-        if (!template) return 'No grant template applied to this document.';
-        const plain = editorRef.current?.getPlainText() ?? '';
-        return template.sections.map(s => {
-          const text = editorRef.current?.getSectionTextByTitle(s.title);
-          const words = text ? text.split(/\s+/).filter(Boolean).length : 0;
-          const limit = s.pageLimit ? ` / limit ${s.pageLimit} pages (~${Math.round(s.pageLimit * WORDS_PER_PAGE)} words)` : '';
-          return `${s.title}: ${words} words${limit}`;
-        }).join('\n') + `\nTotal: ${plain.split(/\s+/).filter(Boolean).length} words`;
-      },
-    },
-    {
-      name: 'verify_claim',
-      description: 'Check a claim against the uploaded reference sources. args: {"claim": "..."}',
-      run: async (args) => {
-        const digested = sources.filter(s => s.text || s.digest).map(s => ({ name: s.name, text: s.text, digest: s.digest }));
-        return verifyClaimAgainstSources(String(args.claim ?? ''), digested, aiSettings);
-      },
-    },
-  ];
-
-  const handleApplyGrantTemplate = async (template: GrantTemplate, html: string) => {
-    editorRef.current?.setContent(html);
-    setContent(html);
-    setMode('grant');
-    setGrantTemplateId(template.id);
-    setShowTemplatePicker(false);
-    allowOverwrite(); // explicit user replacement of the document
-    let saved = false;
-    try {
-      saved = await persistDocument();
-    } catch (err) {
-      console.error('Persisting the applied template failed', err);
-    }
-    if (saved) showToast(`${template.mechanism} template applied — fill in each section`, 'success');
-    else showToast('Template applied, but it could not be saved. Use "Save Workspace" to keep a copy.', 'error');
-  };
-
-  // Resize handler for Sidebar
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startWidth = sidebarWidth;
-    
-    const handleMouseMove = (moveEvent: MouseEvent) => {
-      const delta = startX - moveEvent.clientX;
-      setSidebarWidth(Math.min(Math.max(startWidth + delta, 280), 800));
-    };
-    
-    const handleMouseUp = () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-    };
-    
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-  }, [sidebarWidth]);
-
-  // Dark mode
-  useEffect(() => {
-    document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light');
-  }, [darkMode]);
-  useEffect(() => {
-    const saved = localStorage.getItem('manuscript-dark-mode');
-    if (saved === 'true') setDarkMode(true);
-  }, []);
-  useEffect(() => {
-    localStorage.setItem('manuscript-dark-mode', String(darkMode));
-  }, [darkMode]);
-
-  // Close analyze menu on outside click
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (analyzeMenuRef.current && !analyzeMenuRef.current.contains(e.target as Node)) {
-        setShowAnalyzeMenu(false);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, []);
-
-  // Token count
-  const tokenCount = useMemo(() => {
-    const plainText = stripHtml(content);
-    return estimateTokens(plainText);
-  }, [content]);
+  const [loadSettled, setLoadSettled] = useState(false);
 
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showToast = useCallback((message: string, type: 'success' | 'info' | 'error' = 'info', action?: { label: string; onClick: () => void }) => {
@@ -268,8 +85,41 @@ export default function App() {
     // A message with a button stays long enough to be used.
     toastTimer.current = setTimeout(() => setToast(null), action ? 20000 : 5000);
   }, []);
+  const ctx = { editorRef, showToast, openTab };
 
-  const [loadSettled, setLoadSettled] = useState(false);
+  // ─── What the app does ─────────────────────────────────────────────────────
+  const analysis = useAnalysis(ctx);
+  const chat = useChat(ctx, analysis.abortRef);
+  const sugg = useSuggestionActions(ctx);
+  const selectionAI = useSelectionAI(ctx, setHighlightedSuggestionId);
+  const exporter = useExport(ctx);
+  const importer = useImport(ctx, loadSettled);
+  const docActs = useDocumentActions(ctx, { clearSourcesPanel: () => setClearSourcesTrigger(n => n + 1), closeTemplatePicker: () => setShowTemplatePicker(false) });
+  const review = useStyleReview(ctx, railTask, { accept: sugg.handleAcceptSuggestion, reject: sugg.handleRejectSuggestion });
+
+  // Keep the AI service aware of the document mode + funder instructions,
+  // so every agent/chat/rewrite prompt resolves against the right prompt set.
+  useEffect(() => { setDocumentContext({ mode, grantInstructions }); }, [mode, grantInstructions]);
+  useEffect(() => { void loadCustomTemplates(); }, []);
+
+  // Resize handler for the panel
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = panelWidth;
+    const move = (ev: MouseEvent) => setPanelWidth(Math.min(Math.max(startWidth + (startX - ev.clientX), 280), 800));
+    const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  }, [panelWidth]);
+
+  // Dark mode
+  useEffect(() => { document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light'); }, [darkMode]);
+  useEffect(() => { if (localStorage.getItem('manuscript-dark-mode') === 'true') setDarkMode(true); }, []);
+  useEffect(() => { localStorage.setItem('manuscript-dark-mode', String(darkMode)); }, [darkMode]);
+
+  const tokenCount = useMemo(() => estimateTokens(stripHtml(content)), [content]);
+
   const handleDocumentReady = useCallback(() => {
     if (!editorRef.current) return;
     const orderedFigureIds = editorRef.current.getFigureOrder();
@@ -279,50 +129,6 @@ export default function App() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // ─── Style audit wiring (sub-project H) ────────────────────────────────────
-  // The editor only audits (and reports) while its style plugin is enabled, so the plugin is on whenever
-  // the Style tab is open or highlights are shown. Highlights themselves are drawn only when the user opts in.
-  const styleAuditOn = sidebarTab === 'style' || drawStyleHighlights;
-
-  // The plugin reports on edits only; run one audit when metrics are switched on so the panel is
-  // populated immediately instead of after the first keystroke.
-  useEffect(() => {
-    if (!styleAuditOn || !editorRef.current) return;
-    const text = editorRef.current.getPlainText();
-    setStyleAudit({ metrics: auditText(text), text });
-  }, [styleAuditOn]);
-
-  // Reports arrive from the editor's debounce timer immediately after it audited the document, so the
-  // editor text read here is the audited text.
-  const handleStyleAudit = useCallback((metrics: AuditMetrics) => {
-    setStyleAudit({ metrics, text: editorRef.current?.getPlainText() ?? '' });
-  }, []);
-
-  // Sentences go back into the editor as offsets into the audited text. If the document has changed since
-  // the audit, offsets would be drawn in the wrong place, so they are withheld; the editor's debounce has
-  // already queued a fresh report for that edit, which replaces them.
-  const styleSentences = useMemo(
-    () => sentencesToDraw(styleAudit, editorRef.current?.getPlainText(), drawStyleHighlights),
-    [drawStyleHighlights, styleAudit],
-  );
-
-  const handleStyleJump = useCallback((s: SentenceAudit) => {
-    if (!auditMatchesDoc(styleAudit, editorRef.current?.getPlainText()) || !editorRef.current?.selectFlatRange(s.start, s.end)) {
-      showToast('The document changed since this sentence was measured. The panel is refreshing.', 'info');
-    }
-  }, [styleAudit, showToast]);
-
-  useEffect(() => () => rewriteAbort.current?.abort(), []);
-
-  // Rewrite one flagged sentence in the author's voice; the guards and the apply step live in performStyleRewrite.
-  const handleStyleRewrite = useCallback(
-    (s: SentenceAudit) => performStyleRewrite({
-      sentence: s, audit: styleAudit, getEditor: () => editorRef.current, settings: aiSettings,
-      inFlight: rewriteAbort, setBusy: setRewritingId, toast: showToast,
-    }),
-    [aiSettings, styleAudit, showToast],
-  );
 
   // Initialize all stores on mount (loads from Dexie, migrating from localforage if needed)
   useEffect(() => {
@@ -337,9 +143,9 @@ export default function App() {
           : 'Your last save could not be read. Restored the most recent backup. The unreadable save could not be protected and may be replaced by later saves.', 'error');
       }
       // Nothing here may depend on the editor's content. The loaded document reaches the editor as JSON through the
-      // Editor's `pendingDocument` prop (the Editor owns applying it), legacy citation migration happens in the
-      // repository's legacy-row conversion before the editor sees the document, and editor-dependent post-load work (figure renumbering)
-      // runs from the Editor's onDocumentReady, which fires once after the document is in the editor.
+      // Editor's `pendingDocument` prop, legacy citation migration happens in the repository's legacy-row conversion
+      // before the editor sees the document, and editor-dependent post-load work (figure renumbering) runs from the
+      // Editor's onDocumentReady, which fires once after the document is in the editor.
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -356,7 +162,7 @@ export default function App() {
         await persistMessages();
         await persistHistory();
         await persistSources();
-        if (docSaved && saveState === 'Draft') setSaveState('Auto-saved');
+        if (docSaved && saveState === 'Draft') useDocumentStore.getState().setSaveState('Auto-saved');
       } catch (e) {
         showToast('Auto-save failed. Use "Save Workspace" to download a backup file.', 'error');
       }
@@ -365,365 +171,35 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [saveState]);
 
-  // Keyboard shortcuts
+  const saveWorkspace = () => exporter.handleDownload('json').then(ok => ok).catch(err => { console.error(err); showToast('Save Workspace failed', 'error'); return false; });
+
+  // Keyboard shortcuts. The listener is installed once and calls through a ref, so it always runs the current handlers
+  // (a handler captured at mount would export, and analyze with, the settings and suggestions of the first render).
+  const shortcutRef = useRef({ save: () => {}, analyze: () => {} });
+  shortcutRef.current = {
+    save: () => { void saveWorkspace().then(ok => { if (ok) showToast('Workspace saved', 'success'); }); },
+    analyze: () => { void analysis.handleAnalyze(); },
+  };
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
-        e.preventDefault();
-        handleDownload('json')
-          .then(ok => { if (ok) showToast('Workspace saved', 'success'); })
-          .catch(err => { console.error(err); showToast('Save Workspace failed', 'error'); });
-      }
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'A') {
-        e.preventDefault();
-        handleAnalyze();
-      }
-      if (e.key === '?' && (e.ctrlKey || e.metaKey)) {
-        e.preventDefault();
-        setShowShortcuts(prev => !prev);
-      }
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); shortcutRef.current.save(); }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'A') { e.preventDefault(); shortcutRef.current.analyze(); }
+      if (e.key === '?' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); setShowShortcuts(prev => !prev); }
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const handleNewManuscript = async () => {
-    if (content.replace(/<[^>]*>/g, '').trim().length > 20) {
-      if (!window.confirm('Start a new manuscript? Any unsaved changes will be lost.')) return;
-    }
-    const newContent = '<h2>Abstract</h2><p></p><h2>Introduction</h2><p></p><h2>Methods</h2><p></p><h2>Results</h2><p></p><h2>Discussion</h2><p></p><h2>Conclusion</h2><p></p>';
-
-    // Reset all stores
-    resetDocument();
-    useAIStore.getState().setSuggestions([]);
-    useAIStore.getState().setHistory([]);
-    useAIStore.getState().setMessages([
-      { id: Date.now().toString(), role: 'assistant', content: 'New manuscript started with IMRAD template! Begin writing in each section, then click "Analyze All" for AI feedback.', agent: 'manager' }
-    ]);
-    clearPendingApiSources();
-    clearSources();
-    setClearSourcesTrigger(n => n + 1);
-
-    // Clear Dexie tables. The document row is not deleted directly: it is replaced through the
-    // repository below, so the previous document lands in the backup ring instead of vanishing.
-    await db.sources.clear();
-    await db.suggestions.clear();
-    await db.chatHistory.clear();
-    await db.historyItems.clear();
-
-    // Set new content after reset
-    setContent(newContent);
-    editorRef.current?.setContent(newContent);
-    await persistDocument().catch(err => console.error('Saving the new manuscript failed', err));
-
-    showToast('New manuscript created', 'success');
-  };
-
-  const stopRequest = () => {
-    abortRef.current?.abort();
-    abortRef.current = null;
-    setIsAnalyzing(false);
-    setAnalysisProgress(null);
-    showToast('Request stopped.', 'info');
-  };
-
-  const handleAnalyze = async (specificAgent?: AgentType) => {
-    abortRef.current = new AbortController();
-    const signal = abortRef.current.signal;
-    setIsAnalyzing(true);
-    setShowAnalyzeMenu(false);
-    try {
-      // Get the latest text directly from the editor.
-      // getPlainText is the canonical representation (same one used for anchoring).
-      const htmlContent = editorRef.current?.getHTML() || content;
-      const plainText = editorRef.current?.getPlainText() || stripHtml(htmlContent);
-
-      if (plainText.length < 20) {
-        showToast('Write some text first before analyzing.', 'info');
-        setIsAnalyzing(false);
-        return;
-      }
-
-      if (specificAgent) {
-        setAnalysisProgress({ agent: AGENT_INFO[specificAgent].label, total: 1, done: 0 });
-        const result = await analyzeText(plainText, specificAgent, aiSettings, suggestions, (msg) => {
-          const prev = useAIStore.getState().analysisProgress;
-          setAnalysisProgress(prev ? { ...prev, agent: `${AGENT_INFO[specificAgent].label} — ${msg}` } : null);
-        }, htmlContent, signal);
-
-        if (result.status === 'server_error') {
-          showToast(`✕ ${AGENT_INFO[specificAgent].label}: ${result.errorMessage ?? 'Server error'}`, 'error');
-        } else if (result.status === 'parsing_failed') {
-          showToast(`⚠ ${AGENT_INFO[specificAgent].label}: Response wasn't valid JSON. Try a larger model or cloud API.`, 'error');
-        } else if (result.status === 'no_suggestions') {
-          showToast(`${AGENT_INFO[specificAgent].label} found no issues — nice work!`, 'info');
-        }
-
-        if (result.suggestions.length > 0) {
-          const resolved = await resolveConflicts(result.suggestions, aiSettings);
-          addSuggestions(resolved);
-          const salvageNote = result.salvaged ? ` · ${result.salvaged} recovered by fuzzy match` : '';
-          showToast(`${resolved.length} suggestions from ${AGENT_INFO[specificAgent].label}${salvageNote}`, 'success');
-        }
-      } else {
-        // Run all agents in parallel. The crew is mode-aware: manuscripts get
-        // statistics + internal-consistency review; grants get statistics but
-        // skip cross-section consistency (aims pages read differently).
-        const agentsToRun: AgentType[] = mode === 'grant'
-          ? ['editor', 'reviewer-2', 'researcher', 'statistician']
-          : ['editor', 'reviewer-2', 'researcher', 'statistician', 'consistency'];
-        setAnalysisProgress({ agent: 'Running all agents in parallel...', total: agentsToRun.length, done: 0 });
-
-        const results = await Promise.all(
-          agentsToRun.map(agent => analyzeText(plainText, agent, aiSettings, suggestions, undefined, htmlContent, signal))
-        );
-        
-        let totalNew = 0;
-        let combinedSuggestions: Suggestion[] = [];
-        let parseFailures: string[] = [];
-        let serverErrors: { label: string; msg: string }[] = [];
-        let zeroes: string[] = [];
-
-        results.forEach((res, idx) => {
-          const label = AGENT_INFO[agentsToRun[idx]].label;
-          if (res.status === 'server_error') serverErrors.push({ label, msg: res.errorMessage ?? 'Server error' });
-          else if (res.status === 'parsing_failed') parseFailures.push(label);
-          else if (res.status === 'no_suggestions') zeroes.push(label);
-          combinedSuggestions = [...combinedSuggestions, ...res.suggestions];
-        });
-
-        // Deterministic detectors run regardless of provider — they never miss
-        // and never fabricate, so they set a recall floor under the LLM agents.
-        const detectorAdvisories = detectorSuggestions(plainText);
-
-        // Advisory suggestions (flag-only) bypass the Judge/verifier, which are
-        // built around edit ORIGINAL→REPLACE reasoning. Detector advisories go
-        // first so they win any span collision with an LLM advisory.
-        const advisories = dedupeAdvisories([
-          ...detectorAdvisories,
-          ...combinedSuggestions.filter(s => s.kind === 'advisory'),
-        ]);
-        const edits = combinedSuggestions.filter(s => s.kind !== 'advisory');
-
-        if (edits.length > 0 || advisories.length > 0) {
-          let judged: Suggestion[] = [];
-          let verifiedDropped = 0;
-          if (edits.length > 0) {
-            const resolved = await resolveConflicts(edits, aiSettings);
-            // Run the Judge BEFORE displaying, so overlapping cards are removed
-            // up front instead of visibly vanishing a few seconds after they appear.
-            judged = resolved;
-            try {
-              setAnalysisProgress({ agent: 'Judge selecting best suggestions…', total: agentsToRun.length, done: agentsToRun.length });
-              judged = await runJudgeAgent(resolved, aiSettings, signal);
-            } catch (e) {
-              if ((e as any)?.name === 'AbortError') throw e;
-              judged = resolved; // Judge failure is non-fatal; show everything
-            }
-            // Quality gate: drop edits that don't preserve meaning or don't improve.
-            try {
-              setAnalysisProgress({ agent: 'Verifying suggestion quality…', total: agentsToRun.length, done: agentsToRun.length });
-              const v = await verifySuggestions(judged, aiSettings, signal);
-              judged = v.kept;
-              verifiedDropped = v.dropped;
-            } catch (e) {
-              if ((e as any)?.name === 'AbortError') throw e;
-            }
-          }
-          const finalSuggestions = [...judged, ...advisories];
-          addSuggestions(finalSuggestions);
-          totalNew = finalSuggestions.length;
-          const removed = (edits.length - judged.length);
-          if (removed > 0) {
-            const verifyNote = verifiedDropped > 0 ? `, ${verifiedDropped} failed quality check` : '';
-            showToast(`Kept ${finalSuggestions.length} suggestions (${removed} filtered${verifyNote})`, 'info');
-          }
-        }
-
-        // Surface failures with specific diagnostics
-        if (serverErrors.length > 0) {
-          // All server errors share the same root cause — show it once with agent list
-          const agentList = serverErrors.map(e => e.label).join(', ');
-          const diagnosis = serverErrors[0].msg; // root cause is the same for all
-          const prefix = totalNew > 0 ? `${totalNew} suggestions found · ` : '';
-          showToast(`${prefix}✕ ${agentList}: ${diagnosis}`, 'error');
-        } else if (parseFailures.length > 0) {
-          const prefix = totalNew > 0 ? `${totalNew} suggestions found · ` : '';
-          showToast(`${prefix}⚠ JSON parse failed: ${parseFailures.join(', ')}. Try a larger model or cloud API.`, 'error');
-        } else if (totalNew > 0) {
-          const zeroNote = zeroes.length > 0 ? ` · No issues from: ${zeroes.join(', ')}` : '';
-          const totalSalvaged = results.reduce((n, r) => n + (r.salvaged ?? 0), 0);
-          const salvageNote = totalSalvaged > 0 ? ` · ${totalSalvaged} recovered by fuzzy match` : '';
-          showToast(`${totalNew} suggestions found${zeroNote}${salvageNote}`, 'success');
-        } else {
-          showToast('No suggestions from any agent. Your text looks good!', 'info');
-        }
-      }
-    } catch (error: any) {
-      if (error?.name === 'AbortError') return; // stopped by user — already handled by stopRequest
-      console.error("Analysis failed", error);
-      showToast(`Analysis error: ${error instanceof Error ? error.message : 'Unknown error'}`, 'error');
-    } finally {
-      abortRef.current = null;
-      setIsAnalyzing(false);
-      setAnalysisProgress(null);
-    }
-  };
-
-  const handleSendMessage = async (text: string, agent: AgentType, attachedSources?: Array<{ name: string; text: string }>, images?: AttachedImage[]) => {
-    const userMsg: Message = { id: Date.now().toString(), role: 'user', content: text, images };
-    addMessage(userMsg);
-
-    // Resolve manuscript scope: __full__ sends full text, __section__ sends current section only
-    const fullText = (editorRef.current?.getPlainText() || stripHtml(content));
-    const extraSources = (attachedSources || []).filter(s => s.name !== '__full__' && s.name !== '__section__');
-
-    const hasFullScope   = attachedSources?.some(s => s.name === '__full__');
-    const hasSectionScope = attachedSources?.some(s => s.name === '__section__');
-    const sectionText = hasSectionScope ? editorRef.current?.getCurrentSectionText() : null;
-    const sectionTitle = hasSectionScope ? editorRef.current?.getCurrentSection() : null;
-
-    // Build the manuscript context to pass as the primary text argument
-    let manuscriptArg = fullText; // default: always send full (for agent context)
-    const sourcesWithContext: Array<{ name: string; text: string }> = [...extraSources];
-
-    if (hasSectionScope && sectionText) {
-      sourcesWithContext.unshift({ name: `Section: ${sectionTitle ?? 'Current'}`, text: sectionText });
-    } else if (hasFullScope || (!hasFullScope && !hasSectionScope)) {
-      sourcesWithContext.unshift({ name: 'Full Manuscript', text: fullText });
-    }
-
-    abortRef.current = new AbortController();
-    const signal = abortRef.current.signal;
-    setIsAnalyzing(true);
-    try {
-      const result = agent === 'manuscript-ai'
-        ? await chatWithManuscript(text, manuscriptArg, aiSettings, sourcesWithContext.length > 0 ? sourcesWithContext : undefined, images, signal)
-        : await chatWithAgent(text, manuscriptArg, agent, aiSettings, sourcesWithContext.length > 0 ? sourcesWithContext : undefined, images, signal,
-            buildAgentTools(), (toolName) => {
-              const prev = useAIStore.getState().analysisProgress;
-              setAnalysisProgress({ agent: `Using tool: ${toolName}…`, total: prev?.total ?? 1, done: prev?.done ?? 0 });
-            });
-      const suggestions: Suggestion[] | undefined = 'suggestions' in result ? (result as any).suggestions : undefined;
-      const newSugs: Suggestion[] | undefined = 'suggestions' in result ? (result as any).suggestions : undefined;
-      const assistantMsg: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: result.text || "I couldn't process that request. Check your LLM connection.",
-        agent,
-        suggestions: newSugs,
-      };
-      addMessage(assistantMsg);
-      if (newSugs && newSugs.length > 0) {
-        const resolved = await resolveConflicts(newSugs, aiSettings);
-        addSuggestions(resolved);
-      }
-    } catch (error: any) {
-      if (error?.name === 'AbortError') return; // stopped by user
-      console.error("Chat failed", error);
-      addMessage({
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: `Error: ${error instanceof Error ? error.message : 'Failed to reach LLM'}`,
-        agent
-      });
-    } finally {
-      abortRef.current = null;
-      setIsAnalyzing(false);
-    }
-  };
-
-  const handleAnalyzeImage = async (src: string, prompt: string, contextText?: string) => {
-    // Images loaded from storage are session blob: URLs; the LLM needs inline base64.
-    let dataUrl = src;
-    if (src.startsWith('blob:')) {
-      try {
-        const { mime, data } = await defaultFetchBytes(src);
-        dataUrl = bytesToDataUrl(mime, data);
-      } catch (err) {
-        console.error('Could not read image for analysis', err);
-        showToast('Could not read this image for analysis', 'error');
-        return;
-      }
-    }
-    const match = dataUrl.match(/^data:(image\/[a-z+.-]+);base64,(.+)$/);
-    if (!match) return;
-    const rawMime = match[1];
-    if (rawMime === 'image/svg+xml') {
-      showToast('Convert the figure to PNG or JPEG to analyse it', 'error');
-      return;
-    }
-    const allowed: AttachedImage['mimeType'][] = ['image/jpeg', 'image/png', 'image/webp'];
-    const mimeType: AttachedImage['mimeType'] = allowed.includes(rawMime as AttachedImage['mimeType'])
-      ? (rawMime as AttachedImage['mimeType'])
-      : 'image/png';
-    const base64 = match[2];
-    const img: AttachedImage = { id: Date.now().toString(), name: 'figure', base64, mimeType, dataUrl };
-    const fullPrompt = contextText?.trim()
-      ? `${prompt}\n\nContext from the manuscript around this figure:\n"""\n${contextText.trim()}\n"""`
-      : prompt;
-    handleSendMessage(fullPrompt, 'manuscript-ai', undefined, [img]);
-    setSidebarTab('chat');
-  };
-
-  const handleAnalyzeSection = async (sectionText: string, sectionTitle: string) => {
-    // Special sentinel: bibliography insertion from the Sources tab
-    if (sectionTitle === '__bibliography__') {
-      const currentHtml = editorRef.current?.getHTML() || content;
-      editorRef.current?.setContent(currentHtml + sectionText);
-      setContent(currentHtml + sectionText);
-      showToast('Bibliography appended to manuscript', 'success');
-      return;
-    }
-    setSidebarTab('chat');
-    // If called from the Outline tab (no text), extract text from the editor
-    const textToAnalyze = sectionText || (() => {
-      const html = editorRef.current?.getHTML() || content;
-      const h2Re = /<h2[^>]*>(.*?)<\/h2>/gi;
-      const matches = [...html.matchAll(h2Re)];
-      const idx = matches.findIndex(m => m[1].replace(/<[^>]*>/g, '').trim() === sectionTitle);
-      if (idx === -1) return stripHtml(html);
-      const start = (matches[idx].index ?? 0) + matches[idx][0].length;
-      const end = idx + 1 < matches.length ? (matches[idx + 1].index ?? html.length) : html.length;
-      return html.slice(start, end).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-    })();
-
-    const userMsg: Message = {
-      id: Date.now().toString(), role: 'user',
-      content: `Analyze the "${sectionTitle}" section for clarity, scientific rigor, and flow.`,
-    };
-    addMessage(userMsg);
-    setIsAnalyzing(true);
-    try {
-      const result = await chatWithManuscript(
-        `Analyze the "${sectionTitle}" section in detail. Focus on: clarity, scientific rigor, logical flow, and any specific weaknesses. Be concrete and actionable.`,
-        `[Section: ${sectionTitle}]\n\n${textToAnalyze}`,
-        aiSettings,
-      );
-      addMessage({ id: (Date.now() + 1).toString(), role: 'assistant', content: result.text, agent: 'manuscript-ai' as AgentType });
-    } catch (err) {
-      console.error('Section analysis failed', err);
-    } finally {
-      setIsAnalyzing(false);
-    }
-  };
-
-  const handleInsertCitation = (sourceId: string): number => {
-    return storeInsertCitation(sourceId);
-  };
-
+  // ─── Citations and figures ─────────────────────────────────────────────────
   const renumberCitations = useCallback(() => {
     if (!editorRef.current) return;
-    const orderedIds = editorRef.current.getCitationOrder();
-    const newRegistry = storeRenumberCitations(orderedIds);
+    const newRegistry = storeRenumberCitations(editorRef.current.getCitationOrder());
     editorRef.current.updateCitations(newRegistry);
   }, [storeRenumberCitations]);
 
   const removeCitation = useCallback((sourceId: string) => {
     if (!editorRef.current) return;
-    const orderedIds = editorRef.current.getCitationOrder();
-    const newRegistry = storeRemoveCitation(sourceId, orderedIds);
+    const newRegistry = storeRemoveCitation(sourceId, editorRef.current.getCitationOrder());
     editorRef.current.updateCitations(newRegistry);
   }, [storeRemoveCitation]);
 
@@ -741,912 +217,194 @@ export default function App() {
     }, 50);
   }, [storeInsertFigure, storeRenumberFigures, setContent]);
 
-  const handleScrollToCitation = useCallback((num: number) => {
-    editorRef.current?.scrollToCitation(num);
-  }, []);
-
-  const handleSearchSimilar = (text: string) => {
-    const query = text.trim();
-    if (query.length < 3) {
-      showToast('Select at least a few words to search for similar manuscripts.', 'info');
-      return;
-    }
-    setSidebarTab('sources');
-    showToast('Searching for similar manuscripts…', 'info');
-    searchSimilarManuscripts(query, 5)
-      .then(results => {
-        if (results.length === 0) {
-          showToast('No similar manuscripts found for this selection.', 'info');
-          return;
-        }
-        const sources: ManuscriptSource[] = results.map(r => ({
-          id: `api-${Date.now()}-${Math.random()}`,
-          name: r.title,
-          type: 'api' as const,
-          text: r.abstract,
-          digest: r.abstract,
-          apiMeta: r,
-          queryText: query,
-        }));
-        setPendingApiSources(sources);
-        showToast(`Found ${results.length} similar manuscripts`, 'success');
-      })
-      .catch(err => showToast(
-        `Search failed: ${err instanceof Error ? err.message : 'unknown error'}`,
-        'error'
-      ));
-  };
-
-  const handleVerifyClaim = async (selectedText: string) => {
-    const digestedSources = sources.filter(
-      s => (s.type === 'pdf' && s.digest) || s.type === 'api'
-    );
-    if (digestedSources.length === 0) {
-      showToast('Upload and digest PDF sources first to verify claims against literature.', 'info');
-      setSidebarTab('sources');
-      return;
-    }
-    setSidebarTab('chat');
-    const userMsg: Message = { id: Date.now().toString(), role: 'user', content: `Verify this claim against uploaded sources:\n"${selectedText}"` };
-    addMessage(userMsg);
-    setIsAnalyzing(true);
-    try {
-      const result = await verifyClaimAgainstSources(selectedText, digestedSources, aiSettings);
-      addMessage({ id: (Date.now() + 1).toString(), role: 'assistant', content: result, agent: 'literature-reviewer' as AgentType });
-    } catch (err) {
-      showToast(`Verification failed: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error');
-    } finally {
-      setIsAnalyzing(false);
-    }
-  };
-
-  const handleAcceptSuggestion = (suggestion: Suggestion) => {
-    // Advisory suggestions never replace text. Acting on one inserts a visible
-    // inline reminder next to the flagged span so the note travels with the text
-    // while the author fixes it by hand — no fabricated data ever enters the doc.
-    const isAdvisory = suggestion.kind === 'advisory';
-    const replacement = isAdvisory
-      ? suggestion.originalText + buildReviewNote(suggestion.recommendation || suggestion.explanation || 'review this')
-      : suggestion.suggestedText;
-
-    const syncedOldContent = editorRef.current?.getHTML() || content;
-    const handledByEditor = editorRef.current?.applySuggestion(suggestion.originalText, replacement);
-
-    if (!handledByEditor) {
-      // Fallback: try raw HTML replacement
-      const newContent = content.replace(suggestion.originalText, replacement);
-      if (newContent !== content) {
-        setContent(newContent);
-      } else {
-        showToast('Could not find the text to annotate. It may have been edited.', 'info');
-      }
-    }
-
-    const newContent = editorRef.current?.getHTML() || content;
-    addHistoryItem({
-      id: Date.now().toString(),
-      timestamp: Date.now(),
-      oldContent: syncedOldContent,
-      newContent,
-      originalText: suggestion.originalText,
-      suggestedText: replacement,
-      suggestionId: suggestion.id,
-      agent: suggestion.agent,
-    });
-
-    removeSuggestion(suggestion.id);
-  };
-
-  const handleAcceptAll = () => {
-    // Apply bottom-up so earlier text is untouched while later suggestions
-    // are located — keeps remaining anchors valid as the document changes.
-    // Advisory suggestions are flag-only and are left untouched by "Accept All".
-    const currentSuggestions = [...suggestions]
-      .filter(s => s.kind !== 'advisory')
-      .sort((a, b) => b.startIndex - a.startIndex);
-    for (const s of currentSuggestions) {
-      handleAcceptSuggestion(s);
-    }
-    showToast(`${currentSuggestions.length} suggestions accepted`, 'success');
-  };
-
-  const handleRejectAll = () => {
-    clearSuggestions();
-    showToast('All suggestions cleared', 'info');
-  };
-
-  const handleRejectSuggestion = (suggestion: Suggestion) => {
-    removeSuggestion(suggestion.id);
-  };
-
-  const handleRebuttal = async (suggestionId: string, feedback: string) => {
-    const suggestion = suggestions.find(s => s.id === suggestionId);
-    if (!suggestion) return;
-    setIsAnalyzing(true);
-    try {
-      const plainText = (editorRef.current?.getPlainText() || stripHtml(content));
-      const newSugs = await rebutSuggestion(suggestion, feedback, plainText, aiSettings);
-      if (newSugs?.length) {
-        updateSuggestion(suggestionId, newSugs[0]);
-        showToast('Suggestion refined', 'success');
-      }
-    } catch (e) {
-      console.error("Rebuttal failed", e);
-    } finally {
-      setIsAnalyzing(false);
-    }
-  };
-
-  const handleRevertHistory = (historyId: string) => {
-    const item = history.find(h => h.id === historyId);
-    if (item) {
-      const handledByEditor = editorRef.current?.revertSuggestion(item.originalText, item.suggestedText);
-      if (!handledByEditor) {
-        // Inline asset images first: an item from an earlier session may reference dead blob: URLs.
-        inlineAssetImages(item.oldContent).then(html => {
-          setContent(html);
-          editorRef.current?.setContent(html);
-        }).catch(err => {
-          console.error('Could not restore history content', err);
-          showToast('Could not restore the earlier content', 'error');
-        });
-      }
-      removeHistoryItem(historyId);
-      showToast('Change reverted', 'info');
-    }
-  };
-
-  // Handle selection-based agent query from the editor BubbleMenu
-  const handleSelectionQuery = async (selectedText: string, instruction: string, agent: AgentType) => {
-    setIsAnalyzing(true);
-    const fullText = (editorRef.current?.getPlainText() || stripHtml(content));
-    
-    // Switch sidebar to chat to show the reply
-    setSidebarTab('chat');
-    
-    // Add to chat as user message
-    const userMsg: Message = {
-      id: Date.now().toString(),
-      role: 'user',
-      content: `[Selected text]: "${selectedText.substring(0, 200)}${selectedText.length > 200 ? '...' : ''}"\n\n${instruction}`
-    };
-    addMessage(userMsg);
-
-    try {
-      const chatResult = await chatWithAgent(
-        `${instruction}\n\nFocus on this specific text:\n"${selectedText}"`,
-        fullText, agent, aiSettings
-      );
-
-      const assistantMsg: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: chatResult.text || 'No response generated.',
-        agent,
-        suggestions: chatResult.suggestions || []
-      };
-      addMessage(assistantMsg);
-
-      if (chatResult.suggestions && chatResult.suggestions.length > 0) {
-        const resolved = await resolveConflicts(chatResult.suggestions, aiSettings);
-        addSuggestions(resolved);
-        showToast(`${resolved.length} suggestions from ${AGENT_INFO[agent].label}`, 'success');
-      }
-    } catch (error) {
-      console.error('Selection query failed:', error);
-      addMessage({
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: `Error: ${error instanceof Error ? error.message : 'Unknown'}`,
-        agent
-      });
-      showToast(`Error: ${error instanceof Error ? error.message : 'Unknown'}`, 'error');
-    } finally {
-      setIsAnalyzing(false);
-      setAnalysisProgress(null);
-    }
-  };
-
-  const handleTransformSelection = async (selectedText: string, instruction: string, agent: AgentType) => {
-    setIsAnalyzing(true);
-    const plainText = (editorRef.current?.getPlainText() || stripHtml(content));
-    try {
-      const transformed = await transformWithInstruction(selectedText, instruction, plainText, aiSettings);
-      const span = findTextSpan(plainText, selectedText);
-      const suggestion: Suggestion = {
-        id: `suggestion-transform-${Date.now()}`,
-        originalText: span?.matchedText ?? selectedText,
-        suggestedText: transformed,
-        explanation: instruction,
-        agent,
-        startIndex: span?.start ?? 0,
-        endIndex: span?.end ?? selectedText.length,
-        severity: 'major',
-        category: 'clarity',
-        section: 'Transform',
-      };
-      addSuggestions([suggestion]);
-      setSidebarTab('suggestions');
-      showToast('Suggestion ready — review in Suggestions tab', 'success');
-    } catch (error) {
-      showToast(`Error: ${error instanceof Error ? error.message : 'Unknown'}`, 'error');
-    } finally {
-      setIsAnalyzing(false);
-    }
-  };
-
-  const handleRewriteSection = async (selectedText: string) => {
-    setIsAnalyzing(true);
-    const plainText = (editorRef.current?.getPlainText() || stripHtml(content));
-    try {
-      const rewritten = await rewriteSection(selectedText, plainText, aiSettings);
-      const span = findTextSpan(plainText, selectedText);
-      const suggestion: Suggestion = {
-        id: `suggestion-rewrite-${Date.now()}`,
-        originalText: span?.matchedText ?? selectedText,
-        suggestedText: rewritten,
-        explanation: 'AI rewrite — improved clarity, flow, and scientific impact while preserving meaning.',
-        agent: 'editor',
-        startIndex: span?.start ?? 0,
-        endIndex: span?.end ?? selectedText.length,
-        severity: 'major',
-        category: 'clarity',
-        section: 'Rewrite',
-      };
-      addSuggestions([suggestion]);
-      setSidebarTab('suggestions');
-      setHighlightedSuggestionId(suggestion.id);
-      setTimeout(() => setHighlightedSuggestionId(null), 2000);
-      showToast('Rewrite suggestion ready — accept or reject in Review tab', 'success');
-    } catch (error) {
-      showToast(`Rewrite failed: ${error instanceof Error ? error.message : 'Unknown error'}`, 'error');
-    } finally {
-      setIsAnalyzing(false);
-    }
-  };
-
-  const handleAnalyzeSource = async (analysisText: string, sourceName: string) => {
-    const userMsg: Message = {
-      id: Date.now().toString(),
-      role: 'user',
-      content: `Compare reference paper "${sourceName}" against my manuscript`,
-    };
-    const assistantMsg: Message = {
-      id: (Date.now() + 1).toString(),
-      role: 'assistant',
-      content: analysisText,
-      agent: 'literature-reviewer',
-    };
-    addMessage(userMsg);
-    addMessage(assistantMsg);
-    setSidebarTab('chat');
-    showToast(`Literature analysis of "${sourceName}" ready`, 'success');
-  };
-
-  // Manuscript Summary & Big Gaps — high-level review
-  const handleManuscriptSummary = async () => {
-    setIsAnalyzing(true);
-    setSidebarTab('chat');
-    setAnalysisProgress({ agent: 'Generating manuscript summary...', total: 1, done: 0 });
-    
-    const userMsg: Message = {
-      id: Date.now().toString(),
-      role: 'user',
-      content: 'Please provide a comprehensive manuscript summary and identify the biggest gaps.'
-    };
-    addMessage(userMsg);
-
-    try {
-      const plainText = (editorRef.current?.getPlainText() || stripHtml(content));
-
-      if (plainText.length < 50) {
-        showToast('Write more text first for a meaningful summary.', 'info');
-        setIsAnalyzing(false);
-        setAnalysisProgress(null);
-        return;
-      }
-
-      const summary = await manuscriptSummary(plainText, aiSettings);
-      addMessage({ id: (Date.now() + 1).toString(), role: 'assistant', content: summary, agent: 'manager' });
-      showToast('Manuscript summary generated', 'success');
-    } catch (error) {
-      console.error('Summary failed:', error);
-      addMessage({
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: `Failed to generate summary: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        agent: 'manager'
-      });
-      showToast('Summary generation failed', 'error');
-    } finally {
-      setIsAnalyzing(false);
-      setAnalysisProgress(null);
-    }
-  };
-
-  const doDownload = async (format: 'md' | 'docx' | 'json' | 'tex'): Promise<boolean> => {
-    const currentContent = editorRef.current?.getHTML() || content;
-    if (format === 'md') {
-      const turndownService = new TurndownService();
-      // Session blob: image URLs would be dead links in the exported file: inline the bytes.
-      const markdown = turndownService.turndown(await inlineAssetImages(currentContent));
-      saveAs(new Blob([markdown], { type: 'text/markdown;charset=utf-8' }), `${title.replace(/\s+/g, '_')}.md`);
-    } else if (format === 'docx') {
-      showToast('Exporting Word document...', 'info');
-      try {
-        const json = editorRef.current?.getJSON() ?? { type: 'doc', content: [] };
-        const images = await prefetchImages(json as any);
-        const renderer = new DocxRenderer({ title, images });
-        const doc = walkNode(json as any, renderer, images) as ReturnType<DocxRenderer['doc']>;
-        const blob = await Packer.toBlob(doc);
-        saveAs(blob, `${title.replace(/\s+/g, '_')}.docx`);
-        showToast('Word document exported', 'success');
-      } catch (err) {
-        showToast('Word export failed', 'error');
-        console.error(err);
-      }
-    } else if (format === 'tex') {
-      showToast('Building LaTeX package...', 'info');
-      try {
-        const json = editorRef.current?.getJSON() ?? { type: 'doc', content: [] };
-        const images = await prefetchImages(json as any);
-        const renderer = new LatexRenderer({ title, images });
-        const zip = walkNode(json as any, renderer, images) as ReturnType<LatexRenderer['doc']>;
-        const blob = await zip.generateAsync({ type: 'blob' });
-        saveAs(blob, `${title.replace(/\s+/g, '_')}.zip`);
-        showToast('LaTeX package exported', 'success');
-      } catch (err) {
-        showToast('LaTeX export failed', 'error');
-        console.error(err);
-      }
-    } else {
-      // Read directly from memory state — always current, no race with the Dexie write interval
-      const exportedSources = useSourceStore.getState().sources;
-      // Strip API keys before export — never serialize credentials into a shareable file
-      const { geminiApiKey: _g, openaiApiKey: _o, anthropicApiKey: _a, localApiKey: _l, ...safeSettings } = aiSettings;
-      // The file must be self-contained: inline asset-backed images (session blob: URLs die with the tab).
-      try {
-        const exportedContent = await inlineAssetImages(currentContent);
-        // Sequential and size-capped: history items each hold two full document copies.
-        const json = await buildWorkspaceJson(
-          { title, content: exportedContent, suggestions, messages, aiSettings: safeSettings, sources: exportedSources },
-          history,
-          inlineAssetImages,
-        );
-        saveAs(new Blob([json], { type: 'application/json' }), 'workspace.json');
-        setSaveState('Saved');
-        return true;
-      } catch (err) {
-        console.error('Workspace export failed', err);
-        showToast(`Save Workspace failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
-        return false;
-      }
-    }
-    return true;
-  };
-
-  const handleDownload = async (format: 'md' | 'docx' | 'json' | 'tex'): Promise<boolean> => {
-    if (format !== 'json') {
-      setPendingDownloadFormat(format);
-      return true;
-    }
-    return doDownload(format);
-  };
-
-  // ─── .docx import ──────────────────────────────────────────────────────────
-  // The file is read in a Worker (the page stays responsive); NOTHING is written until the author confirms the report.
-  // The document "Restore previous document" would bring back (the newest an import replaced), or null. Named on the button.
-  const [revertTarget, setRevertTarget] = useState<{ title: string; savedAt: number } | null>(null);
-  const revertTargetRef = useRef<{ title: string; savedAt: number } | null>(null);
-  // What the open document's import said it kept but does not show; shown again from the File menu (null when it is not an import).
-  const [storedReport, setStoredReport] = useState<ImportReportRow | null>(null);
-  const [showStoredReport, setShowStoredReport] = useState(false);
-  const refreshRevertAvailable = useCallback(async () => {
-    let target: { title: string; savedAt: number } | null = null;
-    try {
-      target = await documentRepository.peekRevert();
-    } catch {
-      target = null;
-    }
-    revertTargetRef.current = target; // read straight away by the message that follows an import, before the next render
-    setRevertTarget(target);
-    try {
-      setStoredReport(await documentRepository.getImportReport() ?? null);
-    } catch {
-      setStoredReport(null);
-    }
-  }, []);
-  // also when the document's tie to an import changes (an import, a restore, New Manuscript, a workspace file ...)
-  useEffect(() => { if (loadSettled) void refreshRevertAvailable(); }, [loadSettled, importId, refreshRevertAvailable]);
-
-  const handleRevertImport = async () => {
-    try {
-      const doc = await revertImport();
-      editorRef.current?.setDocument(doc);
-      useAIStore.getState().setSuggestions([]);
-      useAIStore.getState().setHistory([]); // its entries hold text of the document that was just replaced
-      await refreshRevertAvailable();
-      showToast('Restored the document the import replaced. "Restore previous document" again brings the import back.', 'success');
-    } catch (err) {
-      console.error('Restoring the replaced document failed', err);
-      showToast(`Could not restore the previous document: ${err instanceof Error ? err.message : String(err)}`, 'error');
-    }
-  };
-
-  const docxImport = useDocxImport({
-    commit: async (result, decisions) => {
-      // A Version History snapshot of what is open now (the repository's own backup is the other way back).
-      await snapshotBeforeImport(db, { title, content: useDocumentStore.getState().content, importing: result.fileName ?? 'a Word document' });
-      const doc = await importDocx(result, decisions);
-      await refreshRevertAvailable();
-      return doc;
-    },
-    // setDocument records no undo history: Ctrl+Z cannot bring the replaced document back (the dialog says so).
-    showInEditor: doc => editorRef.current?.setDocument(doc),
-    onImported: () => {
-      // Their text offsets, and the apply-history's old/new text, belong to the replaced document (reverting one would put that
-      // document's text over the import).
-      useAIStore.getState().setSuggestions([]);
-      useAIStore.getState().setHistory([]);
-    },
-    notify: (message, type, action) => showToast(message, type, action),
-    afterImportAction: () => (revertTargetRef.current ? { label: revertLabel(revertTargetRef.current), onClick: () => { void handleRevertImport(); } } : undefined),
-  });
-
-  const handleImportText = async (file: File) => {
-    // Text typed into or after the placeholder is work; only no text, or exactly the placeholder, is an empty document.
-    if (!isBlankHtml(content) && !window.confirm(`Replace the open document with ${file.name}? Any unsaved changes will be lost.`)) return;
-    try {
-      const html = textToHtml(await file.text(), file.name.toLowerCase().endsWith('.md'));
-      setTitle(titleFromFileName(file.name));
-      setContent(html);
-      editorRef.current?.setContent(html);
-      allowOverwrite(); // explicit user replacement of the document
-      if (await persistDocument()) showToast(`Imported ${file.name}`, 'success');
-      else showToast('Imported, but it could not be saved to local storage. Use "Save Workspace" to keep a copy.', 'error');
-    } catch (err) {
-      console.error('Text import failed', err);
-      showToast(`Could not import ${file.name}`, 'error');
-    }
-  };
-
-  const handleLoadWorkspace = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    // Choosing the same file again must fire onChange again.
-    if (fileInputRef.current) fileInputRef.current.value = '';
-    const lowerName = file.name.toLowerCase();
-    // .docm / .dotm go to the reader too, which refuses them with the reason; the old binary .doc cannot be read at all.
-    if (/\.(docx|docm|dotx|dotm)$/.test(lowerName)) { void docxImport.start(file); return; }
-    if (lowerName.endsWith('.doc')) { showToast('The old Word format (.doc) cannot be imported. In Word, use Save As and choose .docx, then import that.', 'error'); return; }
-    if (lowerName.endsWith('.md') || lowerName.endsWith('.txt')) { void handleImportText(file); return; }
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      try {
-        const data = JSON.parse(e.target?.result as string);
-        if (data.content !== undefined) {
-          const reg: Record<string, number> = data.citationRegistry || {};
-          // Apply citation migration if the content has legacy [N] patterns
-          let loadedContent = data.content;
-          if (Object.keys(reg).length > 0 && !loadedContent.includes('data-citation-node')) {
-            loadedContent = migrateLegacyCitations(loadedContent, reg);
-          }
-          setTitle(data.title || 'Untitled Manuscript');
-          setContent(loadedContent);
-          setSuggestions(data.suggestions || []);
-          setHistory(data.history || []);
-          setMessages(data.messages && data.messages.length > 0 ? data.messages : useAIStore.getState().messages);
-          if (data.aiSettings) setAiSettings(data.aiSettings);
-          if (data.sources?.length) {
-            useSourceStore.getState().setSources(data.sources);
-            await useSourceStore.getState().persist();
-          }
-          setSaveState('Saved');
-          editorRef.current?.setContent(loadedContent);
-          // Persist to Dexie (loading a workspace is an explicit replacement of the document)
-          allowOverwrite();
-          if (await persistDocument()) showToast('Workspace loaded', 'success');
-          else showToast('Workspace loaded, but it could not be saved to local storage. Use "Save Workspace" to keep a copy.', 'error');
-        }
-      } catch (err) {
-        console.error("Invalid workspace file", err);
-        showToast('Failed to load workspace file', 'error');
-      }
-    };
-    reader.readAsText(file);
-    if (fileInputRef.current) fileInputRef.current.value = '';
-  };
-
   const handleSuggestionClick = (suggestionId: string) => {
     setHighlightedSuggestionId(suggestionId);
     setTimeout(() => setHighlightedSuggestionId(null), 1500);
   };
+  // A DOCX import (or revert) replaces the document wholesale: whatever row was selected pointed into the old text.
+  useEffect(() => { setHighlightedSuggestionId(null); }, [importId]);
 
-  const handleRestoreSnapshot = async (snapshot: VersionSnapshot) => {
-    // Snapshots are stored self-contained; older ones may still reference asset ids / blob: URLs.
-    try {
-      const html = await inlineAssetImages(snapshot.content);
-      // Not the open document's own text: ends its tie to a .docx import (and so its package), see replaceWithHtml.
-      replaceWithHtml(snapshot.title, html);
-      editorRef.current?.setContent(html);
-      showToast(`Restored snapshot: "${snapshot.name}"`, 'success');
-      setSidebarTab('chat');
-    } catch (err) {
-      console.error('Snapshot restore failed', err);
-      showToast('Could not restore this snapshot', 'error');
-    }
-  };
+  const handleRailSelect = useCallback((t: RailTask) => {
+    const next = railSelect(railTask, t);
+    setRailTask(next.task);
+    if (next.tab) setPanelTab(next.tab);
+  }, [railTask]);
 
+  // ─── The top bar ───────────────────────────────────────────────────────────
+  // A word-selection's synonym answer belongs to that selection: it goes when the selection does.
+  useEffect(() => { if (selection.kind !== 'text') selectionAI.clearThesaurus(); }, [selection.kind]); // eslint-disable-line react-hooks/exhaustive-deps
+  const textOf = () => selectionAI.selected();
+  const withText = (run: (text: string) => void) => () => { const t = textOf(); if (t.trim()) run(t); };
+  const menus = useTopBarItems({
+    selection, busy: isAnalyzing, autocomplete, autocompleteLoading, darkMode, focusMode: isDistractionFree, zoom, thesaurus: selectionAI.thesaurus,
+    agents: review.reviewAgents, storedReport: !!importer.storedReport, revertTarget: importer.revertTarget,
+    onNew: docActs.handleNewManuscript, onImport: () => importer.fileInputRef.current?.click(), onImportReport: () => importer.setShowStoredReport(true),
+    onRevertImport: () => { void importer.handleRevertImport(); }, onSaveWorkspace: () => { void saveWorkspace(); }, onExport: f => { void exporter.handleDownload(f); },
+    onUndo: () => editorRef.current?.undo(), onRedo: () => editorRef.current?.redo(),
+    onInsertCitation: () => editorRef.current?.openCitationPicker(), onInsertImage: () => editorRef.current?.openImagePicker(),
+    onInsertFigureLabel: handleInsertFigure, onInsertTable: anchor => editorRef.current?.openTablePicker(anchor),
+    onAnalyze: () => { void analysis.handleAnalyze(); }, onAnalyzeAgent: a => { void analysis.handleAnalyze(a); }, onSummary: () => { void analysis.handleManuscriptSummary(); },
+    onStop: analysis.stopRequest, onToggleAutocomplete: () => setAutocomplete(v => !v),
+    onAnalyzeSection: () => { if (selection.section) void chat.handleAnalyzeSection(editorRef.current?.getSectionTextByTitle(selection.section) ?? '', selection.section); },
+    onPreset: p => withText(t => { void (p.mode === 'transform' ? selectionAI.handleTransformSelection(t, p.instruction, p.agent) : selectionAI.handleSelectionQuery(t, p.instruction, p.agent)); })(),
+    onRewrite: withText(t => { void selectionAI.handleRewriteSection(t); }), onInstruct: (text, agent) => withText(t => { void selectionAI.handleSelectionQuery(t, text, agent); })(),
+    onSynonyms: () => { void selectionAI.handleSynonyms(); }, onPickSynonym: selectionAI.replaceWithSynonym,
+    onVerify: withText(t => { void selectionAI.handleVerifyClaim(t); }), onSimilar: withText(t => selectionAI.handleSearchSimilar(t)),
+    onSettings: () => setIsSettingsOpen(true), onPostDrafting: () => setIsPostDraftingOpen(true), onShortcuts: () => setShowShortcuts(s => !s),
+    onToggleDark: () => setDarkMode(d => !d), onToggleFocus: () => setIsDistractionFree(f => !f),
+    onZoomOut: () => setZoom(z => Math.max(50, z - 10)), onZoomIn: () => setZoom(z => Math.min(200, z + 10)),
+  });
+
+  // ─── Status bar ────────────────────────────────────────────────────────────
+  const pageEstimate = usePageEstimate(docJson, format);
+  const overBudget = useOverBudget(content, grantTemplateId, mode === 'grant');
   const wordCount = stripHtml(content).split(/\s+/).filter(w => w.length > 0).length;
+  const stats = docStats(useDeferredValue(docJson), wordCount);
 
   return (
     <div className="flex h-screen w-screen overflow-hidden font-sans" style={{ background: 'var(--surface-0)', color: 'var(--text-primary)' }}>
-      {/* Left Rail */}
-      {!isDistractionFree && (
-        <div className="w-14 flex flex-col items-center py-5 space-y-5 shrink-0" style={{ borderRight: '1px solid var(--border)', background: 'var(--surface-1)' }}>
-          <div className="relative group">
-            <div className="w-9 h-9 bg-stone-900 rounded-xl flex items-center justify-center text-white shadow-sm cursor-pointer" title="Manuscript AI Editor">
-              <FileText size={16} />
-            </div>
-            <div className="absolute left-full ml-2 top-0 border rounded-xl shadow-xl hidden group-hover:block z-50 p-3" style={{ borderColor: 'var(--border)', background: 'var(--surface-1)', width: '260px' }}>
-              <div className="space-y-2">
-                <div>
-                  <p className="text-[11px] font-bold" style={{ color: 'var(--text-primary)' }}>Manuscript AI Editor</p>
-                  <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>VC by Dawid Zyla · github.com/dzyla/manuscriptAI</p>
-                </div>
-                <div className="border-t pt-2" style={{ borderColor: 'var(--border-subtle)' }}>
-                  <p className="text-[10px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
-                    <span className="font-semibold">AI tools assist, not decide.</span> All AI suggestions may contain errors, hallucinations, or scientifically incorrect statements. The researcher is solely responsible for verifying correctness, ensuring scientific accuracy, and maintaining the integrity of the manuscript. Use these tools to brainstorm and improve — always apply your expert judgment.
-                  </p>
-                </div>
+      <input type="file" ref={importer.fileInputRef} onChange={importer.handleLoadWorkspace} accept=".json,.docx,.md,.txt" className="hidden" />
+
+      <AppShell
+        hideChrome={isDistractionFree}
+        keepPanelMounted
+        active={railTask}
+        badges={{ review: suggestions.length }}
+        onSelect={handleRailSelect}
+        topBar={(
+          <TopBar
+            title={title}
+            onTitleChange={setTitle}
+            onTitleBlur={() => persistDocument()}
+            selection={selection.kind}
+            items={menus}
+            busy={isAnalyzing}
+            onStop={analysis.stopRequest}
+            bodyStyle={<BlockTypeSelect editor={editorInstance} format={format} testId="topbar-body-style" />}
+            trailing={<VersionHistoryPopup currentTitle={title} currentContent={content} onRestore={docActs.handleRestoreSnapshot} />}
+            overflowFooter={(
+              <div className="mt-1 pt-2 px-3 pb-1 border-t text-[10px] leading-snug" style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-muted)' }}>
+                <p>AI may make mistakes. The researcher is responsible for scientific correctness.</p>
+                <a href="https://github.com/dzyla/manuscriptAI" target="_blank" rel="noopener noreferrer" className="underline">Manuscript AI Editor · VC by Dawid Zyla</a>
               </div>
-            </div>
-          </div>
-
-          <div className="flex-1 flex flex-col items-center space-y-3">
-            <button onClick={handleNewManuscript} className="p-2 rounded-lg transition-colors hover:bg-stone-100" title="New Manuscript" style={{ color: 'var(--text-muted)' }}>
-              <FilePlus size={18} />
-            </button>
-
-            <div className="relative group">
-              <button className="p-2 rounded-lg transition-colors hover:bg-stone-100" style={{ color: 'var(--text-muted)' }}>
-                <Download size={18} />
-              </button>
-              <div className="absolute left-full ml-2 top-0 border rounded-xl shadow-xl hidden group-hover:block z-50 p-1.5 min-w-[200px]" style={{ borderColor: 'var(--border)', background: 'var(--surface-1)' }}>
-                <button onClick={() => fileInputRef.current?.click()} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg font-bold" style={{ color: 'var(--text-primary)', borderBottom: '1px solid var(--border-subtle)', marginBottom: '4px', paddingBottom: '8px' }}>
-                  Load Document (.json, .docx, .md, .txt)
-                </button>
-                {storedReport && (
-                  <button onClick={() => setShowStoredReport(true)} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>
-                    Import report (what was kept but is not shown)
-                  </button>
-                )}
-                {revertTarget && (
-                  <button onClick={() => { void handleRevertImport(); }} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }} title={`Saved ${new Date(revertTarget.savedAt).toLocaleString()}`}>
-                    {revertLabel(revertTarget)}
-                  </button>
-                )}
-                <button onClick={() => handleDownload('md')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>Export Markdown</button>
-                <button onClick={() => handleDownload('docx')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>Export Word</button>
-                <button onClick={() => handleDownload('tex')} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg" style={{ color: 'var(--text-secondary)' }}>Export to LaTeX (.zip)</button>
-                <button onClick={() => { handleDownload('json').catch(err => { console.error(err); showToast('Save Workspace failed', 'error'); }); }} className="w-full text-left px-3 py-2 text-xs hover:bg-stone-50 rounded-lg font-medium" style={{ color: 'var(--text-primary)' }}>Save Workspace</button>
-              </div>
-              <input type="file" ref={fileInputRef} onChange={handleLoadWorkspace} accept=".json,.docx,.md,.txt" className="hidden" />
-            </div>
-
-            <button onClick={() => setIsPostDraftingOpen(true)} className="p-2 rounded-lg transition-colors hover:bg-stone-100" title="Post-Drafting: Rebuttal & Cover Letter" style={{ color: 'var(--text-muted)' }}>
-              <BookOpen size={18} />
-            </button>
-
-            <button onClick={() => setShowShortcuts(!showShortcuts)} className="p-2 rounded-lg transition-colors hover:bg-stone-100" title="Keyboard Shortcuts" style={{ color: 'var(--text-muted)' }}>
-              <Keyboard size={18} />
-            </button>
-
-            <button onClick={() => setDarkMode(!darkMode)} className="p-2 rounded-lg transition-colors hover:bg-stone-100" title={darkMode ? 'Light Mode' : 'Dark Mode'} style={{ color: 'var(--text-muted)' }}>
-              {darkMode ? <Sun size={18} /> : <Moon size={18} />}
-            </button>
-
-          </div>
-          
-          <div className="flex flex-col items-center space-y-3 pb-2">
-            <a href="https://github.com/dzyla/manuscriptAI" target="_blank" rel="noopener noreferrer" className="p-2 rounded-lg transition-colors hover:bg-stone-100 flex flex-col items-center gap-0.5 opacity-70 hover:opacity-100" style={{ color: 'var(--text-muted)' }} title="VC by Dawid Zyla — github.com/dzyla/manuscriptAI">
-              <Github size={18} />
-              <span className="text-[8px] font-semibold leading-[1]" style={{ color: 'var(--text-muted)' }}>VC by</span>
-              <span className="text-[8px] font-semibold leading-[1]" style={{ color: 'var(--text-muted)' }}>D. Zyla</span>
-            </a>
-            <div className="w-9 flex flex-col items-center gap-0.5 text-center opacity-60 hover:opacity-100 cursor-default" title="AI may make mistakes. Researcher is responsible for scientific correctness.">
-              <span className="text-[6px] font-bold uppercase tracking-wider leading-tight text-center" style={{ color: 'var(--text-muted)', writingMode: 'vertical-rl', transform: 'rotate(180deg)', height: '60px' }}>AI · Verify All</span>
-            </div>
-            <button onClick={() => setIsSettingsOpen(true)} className="p-2 rounded-lg transition-colors hover:bg-stone-100" style={{ color: 'var(--text-muted)' }}>
-              <Settings size={18} />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Main Content */}
-      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
-        {/* Header */}
-        <header className="h-14 flex items-center justify-between px-4 sm:px-6 shrink-0 gap-2" style={{ borderBottom: '1px solid var(--border)', background: 'var(--surface-1)' }}>
-          <div className="flex items-center gap-2 sm:gap-3 flex-1 min-w-0">
-            <input
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              onBlur={() => persistDocument()}
-              className="text-sm font-semibold tracking-tight bg-transparent focus:outline-none focus:ring-1 rounded px-1.5 -mx-1.5 py-0.5 min-w-0 flex-shrink"
-              style={{ color: 'var(--text-primary)', maxWidth: '200px' }}
-              placeholder="Untitled Manuscript"
+            )}
+          >
+            <SelectionBar kind={selection.kind} editor={editorInstance} format={format} />
+          </TopBar>
+        )}
+        canvas={(
+          <div className="h-full overflow-y-auto p-4 sm:p-6 md:p-8" style={{ background: 'var(--surface-0)' }}>
+            <Editor
+              ref={editorRef}
+              content={content}
+              format={format}
+              onChange={(html) => setContent(html)}
+              onDocChange={setDocJson}
+              pendingDocument={pendingDocument}
+              onDuplicateFragment={queueFragmentClone}
+              onPendingDocumentApplied={clearPendingDocument}
+              loadSettled={loadSettled}
+              onDocumentReady={handleDocumentReady}
+              onContentSynced={adoptLoadedHtml}
+              suggestions={suggestions}
+              onSuggestionClick={handleSuggestionClick}
+              sources={sources}
+              citationRegistry={citationRegistry}
+              onInsertCitation={storeInsertCitation}
+              isDistractionFree={isDistractionFree}
+              editorZoom={zoom}
+              aiSettings={aiSettings}
+              autocompleteEnabled={autocomplete}
+              onAutocompleteLoading={setAutocompleteLoading}
+              onEditorReady={setEditorInstance}
+              onSelectionChange={setSelection}
+              onAnalyzeImage={chat.handleAnalyzeImage}
+              styleSentences={review.styleSentences}
+              styleAuditEnabled={review.styleAuditOn}
+              onStyleAudit={review.handleStyleAudit}
             />
-            <span className={`text-[9px] px-2 py-0.5 rounded-md uppercase font-bold tracking-widest transition-colors shrink-0 ${
-              saveState === 'Saved' ? 'bg-emerald-50 text-emerald-600 border border-emerald-200' :
-              saveState === 'Auto-saved' ? 'bg-blue-50 text-blue-500 border border-blue-200' :
-              'text-stone-400 border'
-            }`}
-            style={saveState === 'Draft' ? { background: 'var(--surface-2)', borderColor: 'var(--border)' } : {}}
-            >
-              {saveState}
-            </span>
-            <VersionHistoryPopup
-              currentTitle={title}
-              currentContent={content}
-              onRestore={handleRestoreSnapshot}
-            />
-            <span className="text-[11px] font-medium shrink-0 hidden sm:inline" style={{ color: 'var(--text-muted)' }}>
-              {wordCount} words
-            </span>
-
-            {/* Document mode toggle: manuscript / grant */}
-            <div className="flex items-center rounded-lg p-0.5 shrink-0" style={{ border: '1px solid var(--border)', background: 'var(--surface-2)' }}>
-              <button
-                onClick={() => setMode('manuscript')}
-                className={`px-2 py-0.5 text-[10px] font-bold rounded-md transition-colors ${mode === 'manuscript' ? 'bg-white shadow text-stone-800' : ''}`}
-                style={mode === 'manuscript' ? {} : { color: 'var(--text-muted)' }}
-                title="Manuscript mode — journal-style agents"
-              >
-                Manuscript
-              </button>
-              <button
-                onClick={() => setMode('grant')}
-                className={`px-2 py-0.5 text-[10px] font-bold rounded-md transition-colors ${mode === 'grant' ? 'bg-emerald-700 text-white shadow' : ''}`}
-                style={mode === 'grant' ? {} : { color: 'var(--text-muted)' }}
-                title="Grant mode — NIH-style agents, templates, and page budgets"
-              >
-                Grant
-              </button>
-            </div>
-
-            <div className="flex-1" />
           </div>
-          <div className="flex items-center gap-2 shrink-0">
-                        {/* Zoom Controls */}
-            <div className="hidden lg:flex items-center gap-1 rounded-lg p-1 mr-2" style={{ border: '1px solid var(--border)', background: 'var(--surface-2)' }}>
-              <button
-                onClick={() => setZoom(z => Math.max(50, z - 10))}
-                className="px-1.5 rounded text-xs font-medium transition-colors"
-                style={{ color: 'var(--text-secondary)' }}
-                onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface-1)')}
-                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-                title="Zoom Out"
-              >−</button>
-              <span className="text-[10px] font-bold px-1 w-10 text-center" style={{ color: 'var(--text-primary)' }} title="Text Zoom">{zoom}%</span>
-              <button
-                onClick={() => setZoom(z => Math.min(200, z + 10))}
-                className="px-1.5 rounded text-xs font-medium transition-colors"
-                style={{ color: 'var(--text-secondary)' }}
-                onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface-1)')}
-                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-                title="Zoom In"
-              >+</button>
-            </div>
-            {/* Editor width toggle */}
-            <div className="hidden lg:flex items-center gap-0.5 rounded-lg p-1 mr-1" style={{ border: '1px solid var(--border)', background: 'var(--surface-2)' }}>
-              {(['normal', 'wide', 'full'] as const).map(w => (
-                <button
-                  key={w}
-                  onClick={() => setEditorWidth(w)}
-                  className="px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors"
-                  style={{
-                    background: editorWidth === w ? 'var(--text-primary)' : 'transparent',
-                    color: editorWidth === w ? 'var(--surface-1)' : 'var(--text-secondary)',
-                  }}
-                  title={`Editor width: ${w}`}
-                >
-                  {w === 'normal' ? '◫' : w === 'wide' ? '⬛' : '⬜'}
-                </button>
-              ))}
-            </div>
-
-            <button
-              onClick={() => setIsDistractionFree(!isDistractionFree)}
-              className={`p-2 rounded-lg transition-all ${isDistractionFree ? 'bg-stone-800 text-white' : 'hover:bg-stone-50'}`}
-              title="Focus Mode"
-              style={!isDistractionFree ? { color: 'var(--text-muted)' } : {}}
-            >
-              <Eye size={15} />
-            </button>
-            <div className="w-px h-6 hidden sm:block" style={{ background: 'var(--border)' }} />
-
-            {/* Analyze button with dropdown */}
-            <div className="relative" ref={analyzeMenuRef}>
-              <div className="flex">
-                {isAnalyzing ? (
-                  <button
-                    onClick={stopRequest}
-                    className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-rose-600 text-white rounded-lg text-xs font-semibold hover:bg-rose-700 transition-all shadow-sm"
-                  >
-                    <Square size={12} className="fill-white" />
-                    <span>Stop</span>
-                  </button>
-                ) : (
-                  <>
-                <button
-                  onClick={() => handleAnalyze()}
-                  disabled={isAnalyzing}
-                  className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-stone-900 text-white rounded-l-lg text-xs font-semibold hover:bg-stone-800 transition-all disabled:opacity-40 shadow-sm"
-                >
-                  <Sparkles size={14} className={isAnalyzing ? 'animate-spin' : ''} />
-                  <span className="hidden sm:inline">Analyze All</span>
-                  <span className="sm:hidden">Analyze</span>
-                </button>
-                <button
-                  onClick={() => setShowAnalyzeMenu(!showAnalyzeMenu)}
-                  disabled={isAnalyzing}
-                  className="px-2 py-2 bg-stone-900 text-white rounded-r-lg text-xs hover:bg-stone-800 transition-all disabled:opacity-40 shadow-sm border-l border-stone-700"
-                >
-                  <ChevronDown size={12} />
-                </button>
-                  </>
-                )}
-              </div>
-
-              {showAnalyzeMenu && (
-                <div className="absolute right-0 top-full mt-1 border rounded-xl shadow-xl z-50 p-1.5 min-w-[220px]" style={{ background: 'var(--surface-1)', borderColor: 'var(--border)' }}>
-                  <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
-                    Run Single Agent
-                  </div>
-                  {(Object.entries(AGENT_INFO) as [AgentType, typeof AGENT_INFO[AgentType]][])
-                    .filter(([agentId]) => agentId !== 'literature-reviewer' && agentId !== 'manuscript-ai' && agentId !== 'citation-checker')
-                    .map(([agentId, info]) => (
-                      <button
-                        key={agentId}
-                        onClick={() => handleAnalyze(agentId)}
-                        className="w-full text-left px-3 py-2 text-xs rounded-lg flex items-center gap-2 transition-colors hover:bg-stone-50"
-                        style={{ color: 'var(--text-secondary)' }}
-                      >
-                        <AgentIcon agent={agentId} size={14} />
-                        <span className="font-medium">{info.label}</span>
-                      </button>
-                    ))}
-                </div>
-              )}
-            </div>
-
-            {/* Summary & Gaps button */}
-            <button
-              onClick={handleManuscriptSummary}
-              disabled={isAnalyzing}
-              className="flex items-center gap-1.5 px-3 py-2 border rounded-lg text-xs font-semibold transition-all disabled:opacity-40 hover:bg-stone-50"
-              style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
-              title="Generate a high-level manuscript review with strengths, weaknesses, and recommendations"
-            >
-              <BookOpen size={14} />
-              <span className="hidden sm:inline">Summary & Gaps</span>
-            </button>
-          </div>
-        </header>
-
-        {/* Grant toolbar: templates, funder instructions, page budgets */}
-        {mode === 'grant' && (
-          <GrantToolbar
-            htmlContent={content}
-            templateId={grantTemplateId}
-            hasInstructions={grantInstructions.trim().length > 0}
-            onOpenTemplates={() => setShowTemplatePicker(true)}
-            onOpenInstructions={() => setShowGrantInstructions(true)}
-            onTrimSection={handleTrimSection}
-            trimmingSection={trimmingSection}
+        )}
+        statusBar={(
+          <StatusBar
+            estimate={pageEstimate}
+            limitPages={documentPageLimit(format)}
+            overBudget={overBudget}
+            words={wordCount}
+            voiceDistance={review.voiceDistance}
+            saveState={saveState}
+            stats={stats}
+            ai={{ tokens: tokenCount, suggestions: suggestions.length, provider: aiSettings.provider, localModel: aiSettings.localModel }}
           />
         )}
-
-        {/* Editor Area */}
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6 md:p-8" style={{ background: 'var(--surface-0)' }}>
-          <Editor
-            ref={editorRef}
-            content={content}
-            showPageGuides={mode === 'grant'}
-            onChange={(html) => setContent(html)}
-            onDocChange={setDocJson}
-            pendingDocument={pendingDocument}
-            onDuplicateFragment={queueFragmentClone}
-            onPendingDocumentApplied={clearPendingDocument}
-            loadSettled={loadSettled}
-            onDocumentReady={handleDocumentReady}
-            onContentSynced={adoptLoadedHtml}
-            suggestions={suggestions}
-            onSuggestionClick={handleSuggestionClick}
-            onSelectionQuery={handleSelectionQuery}
-            onRewriteSection={handleRewriteSection}
-            onTransformSelection={handleTransformSelection}
-            onAnalyzeSection={handleAnalyzeSection}
-            onVerifyClaim={handleVerifyClaim}
-            onSearchSimilar={handleSearchSimilar}
-            sources={sources}
-            citationRegistry={citationRegistry}
-            onInsertCitation={handleInsertCitation}
-            isDistractionFree={isDistractionFree}
-            editorZoom={zoom}
-            editorWidth={editorWidth}
-            currentAgent={currentAgent}
-            aiSettings={aiSettings}
-            onAnalyzeImage={handleAnalyzeImage}
-            onInsertFigure={handleInsertFigure}
-            styleSentences={styleSentences}
-            styleAuditEnabled={styleAuditOn}
-            onStyleAudit={handleStyleAudit}
-          />
-        </main>
-
-        {/* Bottom status bar */}
-        <div className="h-7 flex items-center justify-between px-4 text-[10px] font-medium shrink-0" style={{ borderTop: '1px solid var(--border)', background: 'var(--surface-1)', color: 'var(--text-muted)' }}>
-          <div className="flex items-center gap-4">
-            <span>{wordCount} words</span>
-            <span>~{tokenCount.toLocaleString()} tokens</span>
-            <span>{suggestions.length} suggestions</span>
-          </div>
-          <div className="flex items-center gap-3">
-            <span className="flex items-center gap-1">
-              <Coins size={10} />
-              {aiSettings.provider === 'local' ? 'Local' : aiSettings.provider === 'anthropic' ? 'Claude' : aiSettings.provider === 'openai' ? 'OpenAI' : 'Gemini'}
-            </span>
-            {aiSettings.provider === 'local' && <span className="truncate max-w-[120px]">{aiSettings.localModel}</span>}
-          </div>
-        </div>
-      </div>
-
-      {/* Sidebar — responsive width */}
-      {!isDistractionFree && (
-        <div className="shrink-0 relative h-full border-t md:border-t-0 md:border-l max-w-full flex flex-col" style={{ width: typeof window !== 'undefined' && window.innerWidth < 768 ? '100%' : `${sidebarWidth}px`, minWidth: '280px', borderColor: 'var(--border)' }}>
+        panel={(
+        <div className="shrink-0 relative h-full border-t md:border-t-0 md:border-l max-w-full flex flex-col" style={{ width: typeof window !== 'undefined' && window.innerWidth < 768 ? '100%' : `${panelWidth}px`, minWidth: '280px', borderColor: 'var(--border)' }}>
           {/* Drag handle */}
           <div 
             className="absolute left-0 top-0 bottom-0 w-2 -ml-1 cursor-col-resize transition-colors opacity-0 hover:opacity-50 z-50 hidden md:block"
-            onMouseDown={handleMouseDown}
+            onMouseDown={handleResizeStart}
             style={{ backgroundColor: 'var(--accent-blue)' }}
           />
-          <Sidebar
+          <TaskPanels
             suggestions={suggestions}
             messages={messages}
             history={history}
-            onSendMessage={handleSendMessage}
-            onAcceptSuggestion={handleAcceptSuggestion}
-            onRejectSuggestion={handleRejectSuggestion}
-            onRevertHistory={handleRevertHistory}
-            onRebuttal={handleRebuttal}
+            onSendMessage={chat.handleSendMessage}
+            onAcceptSuggestion={sugg.handleAcceptSuggestion}
+            onRejectSuggestion={sugg.handleRejectSuggestion}
+            onRevertHistory={sugg.handleRevertHistory}
+            onRebuttal={analysis.handleRebuttal}
             onSuggestionCardClick={(s) => editorRef.current?.scrollToSuggestion(s.originalText, s.id)}
             onHistoryItemClick={(item) => editorRef.current?.scrollToSuggestion(item.suggestedText || item.originalText, item.id)}
-            onAcceptAll={handleAcceptAll}
-            onRejectAll={handleRejectAll}
+            onAcceptAll={sugg.handleAcceptAll}
+            onRejectAll={sugg.handleRejectAll}
             isAnalyzing={isAnalyzing}
-            onStop={stopRequest}
+            onStop={analysis.stopRequest}
             highlightedSuggestionId={highlightedSuggestionId}
             analysisProgress={analysisProgress}
-            activeTabOverride={sidebarTab}
-            onTabChange={setSidebarTab}
-            stylePanel={{
-              metrics: styleAudit?.metrics ?? null,
-              onJumpToSentence: handleStyleJump,
-              onRewrite: handleStyleRewrite,
-              highlightsOn: drawStyleHighlights,
-              onToggleHighlights: setDrawStyleHighlights,
-              rewritingId,
+            activeTabOverride={panelTab}
+            chatRequest={chatRequest}
+            onTabChange={openTab}
+            review={{
+              rows: review.rows,
+              docKey: importId ?? 'none',
+              onAct: review.handleReviewAct,
+              onGoTo: (start, end) => { editorRef.current?.selectFlatRange(start, end); },
+              onLocate: review.handleReviewLocate,
+              onAnalyze: (agent) => analysis.handleAnalyze(agent),
+              onStop: analysis.stopRequest,
+              onSummary: analysis.handleManuscriptSummary,
+              agents: review.reviewAgents,
+              onAcceptAll: sugg.handleAcceptAll,
+              onRejectAll: sugg.handleRejectAll,
             }}
-            onAgentChange={setCurrentAgent}
+            formatPanel={{
+              format,
+              onFormatChange: setFormat,
+              templateId: grantTemplateId,
+              onPickTemplate: () => setShowTemplatePicker(true),
+              onEditInstructions: () => setShowGrantInstructions(true),
+              mode,
+              onModeChange: setMode,
+              hasInstructions: grantInstructions.trim().length > 0,
+              htmlContent: content,
+              onTrimSection: analysis.handleTrimSection,
+              trimmingSection: analysis.trimmingSection,
+            }}
+            stylePanel={{
+              metrics: review.styleAudit?.metrics ?? null,
+              highlightsOn: review.drawStyleHighlights,
+              onToggleHighlights: review.setDrawStyleHighlights,
+            }}
             manuscriptContent={stripHtml(content)}
             manuscriptHtml={content}
+            documentTitle={title}
+            onRestoreSnapshot={docActs.handleRestoreSnapshot}
             onScrollToSection={(heading) => editorRef.current?.scrollToHeading(heading)}
-            onAnalyzeSection={handleAnalyzeSection}
+            onAnalyzeSection={chat.handleAnalyzeSection}
             onSourcesChange={() => {}} // sources managed by useSourceStore
             aiSettings={aiSettings}
-            onAnalyzeSource={handleAnalyzeSource}
+            onAnalyzeSource={chat.handleAnalyzeSource}
             contentZoom={zoom}
             externalApiSources={pendingApiSources.length ? pendingApiSources : undefined}
             onExternalSourcesMerged={clearPendingApiSources}
@@ -1654,11 +412,12 @@ export default function App() {
             citationRegistry={citationRegistry}
             onRenumberCitations={renumberCitations}
             onRemoveCitation={removeCitation}
-            onScrollToCitation={handleScrollToCitation}
+            onScrollToCitation={(num) => editorRef.current?.scrollToCitation(num)}
             documentHTML={content}
           />
         </div>
-      )}
+        )}
+      />
 
       <SettingsModal
         isOpen={isSettingsOpen}
@@ -1670,7 +429,7 @@ export default function App() {
         <GrantTemplatePicker
           documentHasContent={!isBlankHtml(content)}
           aiSettings={aiSettings}
-          onApply={handleApplyGrantTemplate}
+          onApply={docActs.handleApplyGrantTemplate}
           onClose={() => setShowTemplatePicker(false)}
         />
       )}
@@ -1686,132 +445,39 @@ export default function App() {
           onClose={() => setShowGrantInstructions(false)}
         />
       )}
-      <PostDraftingView
-        isOpen={isPostDraftingOpen}
-        onClose={() => setIsPostDraftingOpen(false)}
-        manuscriptText={stripHtml(content)}
-        aiSettings={aiSettings}
-      />
+      <PostDraftingView isOpen={isPostDraftingOpen} onClose={() => setIsPostDraftingOpen(false)} manuscriptText={stripHtml(content)} aiSettings={aiSettings} />
 
-      {showStoredReport && storedReport && (
+      {importer.showStoredReport && importer.storedReport && (
         <ImportReportDialog
           mode="view"
-          result={{ report: storedReport.report, headingCandidates: storedReport.headingCandidates, ...(storedReport.fileName ? { fileName: storedReport.fileName } : {}) }}
-          acceptedIndexes={storedReport.acceptedHeadingIndexes}
+          result={{ report: importer.storedReport.report, headingCandidates: importer.storedReport.headingCandidates, ...(importer.storedReport.fileName ? { fileName: importer.storedReport.fileName } : {}) }}
+          acceptedIndexes={importer.storedReport.acceptedHeadingIndexes}
           onConfirm={() => {}}
-          onCancel={() => setShowStoredReport(false)}
+          onCancel={() => importer.setShowStoredReport(false)}
         />
       )}
-      {docxImport.state?.phase === 'reading' && (
-        <ImportProgressDialog fileName={docxImport.state.fileName} size={docxImport.state.size} stage={docxImport.state.stage} onCancel={docxImport.cancelRead} />
+      {importer.docxImport.state?.phase === 'reading' && (
+        <ImportProgressDialog fileName={importer.docxImport.state.fileName} size={importer.docxImport.state.size} stage={importer.docxImport.state.stage} onCancel={importer.docxImport.cancelRead} />
       )}
-      {docxImport.state?.phase === 'review' && (
+      {importer.docxImport.state?.phase === 'review' && (
         <ImportReportDialog
-          result={docxImport.state.result}
-          busy={docxImport.state.committing}
-          onCancel={docxImport.cancelReview}
-          onConfirm={({ acceptedHeadings }) => { void docxImport.confirm(acceptedHeadings); }}
+          result={importer.docxImport.state.result}
+          busy={importer.docxImport.state.committing}
+          onCancel={importer.docxImport.cancelReview}
+          onConfirm={({ acceptedHeadings }) => { void importer.docxImport.confirm(acceptedHeadings); }}
         />
       )}
 
-      {/* Persistent storage warnings (never auto-dismissed) */}
-      {(loadStatus === 'failed' || blockedByUnreadable) && (
-        <div role="alert" className="fixed top-3 left-1/2 -translate-x-1/2 z-[210] px-4 py-2.5 rounded-xl text-xs font-medium shadow-lg border bg-rose-50 text-rose-700 border-rose-200 max-w-lg">
-          ✕ {loadStatus === 'failed'
-            ? 'Your document could not be loaded. Changes will not be saved until you reload.'
-            : `Your saved document could not be opened (it may come from a newer version of the app). ${lastLoad.quarantined ? 'A protected copy was kept.' : 'A protected copy could NOT be made; the original is left untouched.'} You are seeing a blank document; changes will not be saved until you start a New Manuscript, apply a template or load a workspace file.`}
-        </div>
+      {(loadStatus === 'failed' || blockedByUnreadable) && <StorageBanner failed={loadStatus === 'failed'} quarantined={!!lastLoad.quarantined} />}
+      {toast && <Toast toast={toast} onDismiss={() => setToast(null)} />}
+      {exporter.pendingDownloadFormat && (
+        <ExportWarning
+          format={exporter.pendingDownloadFormat}
+          onCancel={() => exporter.setPendingDownloadFormat(null)}
+          onConfirm={async (fmt) => { exporter.setPendingDownloadFormat(null); await exporter.doDownload(fmt); }}
+        />
       )}
-
-      {/* Toast */}
-      {toast && (
-        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[200]">
-          <div className={`toast-enter px-4 py-2.5 rounded-xl text-xs font-medium shadow-lg border flex items-center gap-2 max-w-md ${
-            toast.type === 'success' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-            toast.type === 'error' ? 'bg-rose-50 text-rose-700 border-rose-200' :
-            'border-stone-200'
-          }`}
-          style={toast.type === 'info' ? { background: 'var(--surface-1)', color: 'var(--text-secondary)' } : {}}
-          >
-            {toast.type === 'success' ? '✓' : toast.type === 'error' ? '✕' : 'ℹ'} {toast.message}
-            {toast.action && (
-              <button
-                type="button"
-                className="ml-2 px-2 py-0.5 rounded-md border font-semibold shrink-0"
-                style={{ borderColor: 'currentColor' }}
-                onClick={() => { const run = toast.action!.onClick; setToast(null); run(); }}
-              >
-                {toast.action.label}
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Export disclaimer modal */}
-      {pendingDownloadFormat && (
-        <div className="fixed inset-0 z-[160] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-stone-900/40 backdrop-blur-sm" />
-          <div className="relative rounded-2xl shadow-2xl p-6 max-w-sm w-full border" style={{ background: 'var(--surface-1)', borderColor: 'var(--border)' }}>
-            <h3 className="text-sm font-bold mb-3" style={{ color: 'var(--text-primary)' }}>Before You Export</h3>
-            <p className="text-xs leading-relaxed mb-4" style={{ color: 'var(--text-secondary)' }}>
-              AI tools assist in drafting and editing, but they can produce errors, hallucinations, or scientifically incorrect statements. By downloading this manuscript you confirm that:
-            </p>
-            <ul className="text-xs space-y-1.5 mb-5 list-none">
-              {[
-                'You have reviewed all AI-generated content for accuracy.',
-                'You take sole responsibility for the scientific correctness and integrity of this work.',
-                'AI suggestions are a starting point — not a substitute for expert judgment.',
-              ].map(item => (
-                <li key={item} className="flex items-start gap-2" style={{ color: 'var(--text-primary)' }}>
-                  <span className="text-emerald-600 font-bold shrink-0">✓</span>{item}
-                </li>
-              ))}
-            </ul>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setPendingDownloadFormat(null)}
-                className="flex-1 py-2 border rounded-xl text-xs font-semibold transition-colors hover:bg-stone-50"
-                style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={async () => { const fmt = pendingDownloadFormat; if (!fmt) return; setPendingDownloadFormat(null); await doDownload(fmt); }}
-                className="flex-1 py-2 bg-stone-900 text-white rounded-xl text-xs font-semibold hover:bg-stone-800 transition-colors"
-              >
-                I Acknowledge — Download
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Keyboard shortcuts modal */}
-      {showShortcuts && (
-        <div className="fixed inset-0 z-[150] flex items-center justify-center p-4" onClick={() => setShowShortcuts(false)}>
-          <div className="absolute inset-0 bg-stone-900/30 backdrop-blur-sm" />
-          <div className="relative rounded-2xl shadow-2xl p-6 max-w-sm w-full border" style={{ background: 'var(--surface-1)', borderColor: 'var(--border)' }}>
-            <h3 className="text-sm font-bold mb-4" style={{ color: 'var(--text-primary)' }}>Keyboard Shortcuts</h3>
-            <div className="space-y-2 text-xs">
-              {[
-                ['Ctrl+S', 'Save workspace'],
-                ['Ctrl+Shift+A', 'Analyze with all agents'],
-                ['Ctrl+?', 'Toggle shortcuts'],
-                ['Ctrl+B', 'Bold'],
-                ['Ctrl+I', 'Italic'],
-                ['Ctrl+U', 'Underline'],
-              ].map(([key, desc]) => (
-                <div key={key} className="flex justify-between items-center py-1.5" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                  <span style={{ color: 'var(--text-secondary)' }}>{desc}</span>
-                  <kbd className="px-2 py-0.5 rounded-md text-[10px] font-mono font-bold border" style={{ background: 'var(--surface-2)', borderColor: 'var(--border)', color: 'var(--text-primary)' }}>{key}</kbd>
-                </div>
-              ))}
-            </div>
-            <button onClick={() => setShowShortcuts(false)} className="mt-4 w-full py-2 bg-stone-800 text-white rounded-xl text-xs font-semibold hover:bg-stone-700 transition-colors">Close</button>
-          </div>
-        </div>
-      )}
+      {showShortcuts && <ShortcutsModal onClose={() => setShowShortcuts(false)} />}
     </div>
   );
 }

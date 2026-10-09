@@ -41,7 +41,7 @@ describe('styleRows', () => {
 });
 
 describe('StylePanel rows', () => {
-  const props = { metrics, onJumpToSentence: vi.fn(), onRewrite: vi.fn(), highlightsOn: false, onToggleHighlights: vi.fn() };
+  const props = { metrics, highlightsOn: false, onToggleHighlights: vi.fn() };
 
   it('renders both contrastive rows distinguishably and the unscored CV row separately', () => {
     render(<StylePanel {...props} />);

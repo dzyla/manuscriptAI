@@ -44,8 +44,9 @@ export function VoiceProfileManager({ onBuilt }: { onBuilt?: (name: string) => v
             </div>
           </div>
           <div className="flex gap-2">
-            <button className="text-[10px] font-semibold text-blue-600 hover:underline" onClick={() => setOpen(true)}>Rebuild</button>
+            <button data-testid="control-voice-rebuild" className="text-[10px] font-semibold text-blue-600 hover:underline" onClick={() => setOpen(true)}>Rebuild</button>
             <button
+              data-testid="control-voice-remove"
               className="text-[10px] font-semibold hover:underline"
               style={{ color: 'var(--text-tertiary)' }}
               onClick={() => setAiSettings({ ...aiSettings, voiceProfile: undefined })}
@@ -60,6 +61,7 @@ export function VoiceProfileManager({ onBuilt }: { onBuilt?: (name: string) => v
             Comparing against a typical-writing baseline. Add your own writing for a profile that matches your voice.
           </div>
           <button
+            data-testid="control-voice-samples"
             className="shrink-0 rounded-lg bg-stone-800 px-2.5 py-1 text-[11px] font-semibold text-white"
             onClick={() => setOpen(true)}
           >
@@ -103,10 +105,10 @@ export function VoiceProfileManager({ onBuilt }: { onBuilt?: (name: string) => v
           )}
           {error && <div className="text-[10px] text-rose-600">{error}</div>}
           <div className="flex items-center gap-2">
-            <button className="rounded-lg bg-stone-800 px-2.5 py-1 text-[11px] font-semibold text-white" onClick={create}>
+            <button data-testid="control-voice-measure" className="rounded-lg bg-stone-800 px-2.5 py-1 text-[11px] font-semibold text-white" onClick={create}>
               Measure my voice
             </button>
-            <button className="text-[11px]" style={{ color: 'var(--text-tertiary)' }} onClick={() => setOpen(false)}>Cancel</button>
+            <button data-testid="control-voice-cancel" className="text-[11px]" style={{ color: 'var(--text-tertiary)' }} onClick={() => setOpen(false)}>Cancel</button>
           </div>
         </div>
       )}

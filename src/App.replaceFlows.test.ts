@@ -4,11 +4,12 @@ import { readFileSync } from 'node:fs';
 /**
  * Every place the app replaces the open document with something that is NOT the imported .docx must end the document's tie to the
  * import (the store's `resetDocument` / `allowOverwrite` clear `importId`; the next save then detaches the package). The handlers
- * live in the 1,700-line App component, which is not mounted in a test, so this reads its source: if a new replace-document flow is
+ * live in App.tsx and the hooks it calls (useDocumentActions, useImport, useChat, useSuggestionActions), which are not mounted in a test, so this reads their source: if a new replace-document flow is
  * added without one of the two calls, or one of these loses it, this fails. The store half of the guarantee is tested for real in
  * useDocumentStore.test.ts.
  */
-const src = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
+const FILES = ['./App.tsx', './hooks/useDocumentActions.ts', './hooks/useImport.ts', './hooks/useChat.ts', './hooks/useSuggestionActions.ts', './hooks/useAnalysis.ts', './hooks/useSelectionAI.ts'];
+const src = FILES.map(f => readFileSync(new URL(f, import.meta.url), 'utf8')).join('\n');
 
 /** The text of `const NAME = ... => {` up to the next top-level `  const ` declaration. */
 function handler(name: string): string {

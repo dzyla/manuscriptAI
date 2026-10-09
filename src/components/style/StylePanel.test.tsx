@@ -14,8 +14,6 @@ const metrics = auditText(
 
 const props = {
   metrics,
-  onJumpToSentence: vi.fn(),
-  onRewrite: vi.fn(),
   highlightsOn: true,
   onToggleHighlights: vi.fn(),
 };
@@ -38,18 +36,9 @@ describe('StylePanel', () => {
     expect(screen.getByTestId('style-table').textContent).toMatch(/semicolon/i);
   });
 
-  it('lists sections and worst sentences, and jumps on click', () => {
+  it('lists the sections', () => {
     render(<StylePanel {...props} />);
     expect(screen.getByText('Significance')).toBeTruthy();
-    const first = screen.getAllByTestId('worst-sentence')[0];
-    fireEvent.click(first);
-    expect(props.onJumpToSentence).toHaveBeenCalled();
-  });
-
-  it('asks for a rewrite', () => {
-    render(<StylePanel {...props} />);
-    fireEvent.click(screen.getAllByRole('button', { name: /rewrite/i })[0]);
-    expect(props.onRewrite).toHaveBeenCalled();
   });
 
   it('shows an empty state with no metrics', () => {
@@ -97,25 +86,10 @@ describe('StylePanel: honesty about what is measured (final review)', () => {
     expect(screen.getByTestId('style-sections').textContent).toMatch(/Methods.*\d+ · 6 sentences/);
   });
 
-  it('lists no worst sentences for a clean draft', () => {
-    const clean = auditText('We purified the complex by gel filtration. Binding fell at low pH in every replicate. The structure was solved at three angstrom resolution.');
-    render(<StylePanel {...props} metrics={clean} />);
+  it('does not list flagged sentences: the Review panel owns them', () => {
+    render(<StylePanel {...props} />);
     expect(screen.queryAllByTestId('worst-sentence')).toHaveLength(0);
-  });
-
-  it('labels a tell-free long sentence by its length, never as the word "long"', () => {
-    const longClean = 'We purified the complex by gel filtration and then ' + Array.from({ length: 40 }, (_, i) => `step${i}`).join(' ') + ' in the end.';
-    render(<StylePanel {...props} metrics={auditText(longClean)} />);
-    const label = screen.getAllByTestId('worst-sentence')[0].textContent ?? '';
-    expect(label).toMatch(/\d+ words · over 35 words/);
-    expect(label).not.toMatch(/long sentence/);
-  });
-
-  it('offers no rewrite for a sentence over the cap, with a reason', () => {
-    const blob = 'The blob ' + Array.from({ length: 120 }, (_, i) => `entry${i}`).join(' ') + ' ends here.';
-    const { container } = render(<StylePanel {...props} metrics={auditText(blob)} />);
     expect(screen.queryAllByRole('button', { name: /rewrite/i })).toHaveLength(0);
-    expect(container.textContent).toMatch(/Too long to rewrite/);
   });
 
   it('shows tricolon as information and does not list it among the scored rows', () => {

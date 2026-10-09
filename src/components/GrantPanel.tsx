@@ -279,6 +279,32 @@ export function GrantInstructionsModal({ value, onSave, onClose }: InstructionsM
 
 // ─── Grant toolbar: template/instructions buttons + per-section page budgets ──
 
+export interface SectionBudget { ts: GrantTemplateSection; words: number; budgetWords: number; pages: number; ratio: number; over: boolean }
+
+/** Each page-budgeted template section that exists in the document, with its body words against its allowance. */
+export function sectionBudgets(htmlContent: string, templateId: string | null | undefined): SectionBudget[] {
+  const template = getGrantTemplate(templateId);
+  if (!template) return [];
+  const docSections = detectH2Sections(htmlContent);
+  const out: SectionBudget[] = [];
+  for (const ts of template.sections.filter(s => s.pageLimit)) {
+    const match = docSections.find(ds => ds.section.toLowerCase() === ts.title.toLowerCase());
+    if (!match) continue;
+    // Section text includes the title line; subtract it for the body word count
+    const words = Math.max(0, match.text.split(/\s+/).filter(Boolean).length - ts.title.split(/\s+/).length);
+    const budgetWords = Math.round((ts.pageLimit as number) * WORDS_PER_PAGE);
+    const ratio = words / budgetWords;
+    out.push({ ts, words, budgetWords, pages: wordsToPages(words), ratio, over: ratio > 1 });
+  }
+  return out;
+}
+
+/** The section furthest over its page budget, or null when none is: the one live compliance signal the status bar carries. */
+export function worstOverBudget(htmlContent: string, templateId: string | null | undefined): { title: string; pages: number; limit: number } | null {
+  const over = sectionBudgets(htmlContent, templateId).filter(b => b.over).sort((a, b) => b.ratio - a.ratio)[0];
+  return over ? { title: over.ts.title, pages: over.pages, limit: over.ts.pageLimit as number } : null;
+}
+
 interface GrantToolbarProps {
   htmlContent: string;
   templateId: string | null;
@@ -288,22 +314,15 @@ interface GrantToolbarProps {
   /** requested when a section exceeds its page budget */
   onTrimSection?: (sectionTitle: string, budgetWords: number) => void;
   trimmingSection?: string | null;
+  /** Inside a side panel: wraps instead of scrolling sideways, and drops the bar's own padding and rule. */
+  compact?: boolean;
 }
 
-export function GrantToolbar({ htmlContent, templateId, hasInstructions, onOpenTemplates, onOpenInstructions, onTrimSection, trimmingSection }: GrantToolbarProps) {
-  const template = getGrantTemplate(templateId);
-  const docSections = template ? detectH2Sections(htmlContent) : [];
-  const budgeted = template ? template.sections.filter(s => s.pageLimit) : [];
+export function GrantToolbar({ compact, htmlContent, templateId, hasInstructions, onOpenTemplates, onOpenInstructions, onTrimSection, trimmingSection }: GrantToolbarProps) {
+  const budgets = sectionBudgets(htmlContent, templateId);
 
-  const chips = budgeted.map(ts => {
-    const match = docSections.find(ds => ds.section.toLowerCase() === ts.title.toLowerCase());
-    if (!match) return null;
-    // Section text includes the title line; subtract it for the body word count
-    const words = Math.max(0, match.text.split(/\s+/).filter(Boolean).length - ts.title.split(/\s+/).length);
-    const budgetWords = Math.round((ts.pageLimit as number) * WORDS_PER_PAGE);
-    const pages = wordsToPages(words);
-    const ratio = words / budgetWords;
-    const over = ratio > 1;
+  const chips = budgets.map(b => {
+    const { ts, words, budgetWords, pages, ratio, over } = b;
     const tone = over ? 'text-rose-600' : ratio > 0.85 ? 'text-amber-600' : 'text-emerald-700';
     return (
       <span key={ts.title} className="flex items-center gap-1 shrink-0" title={`${ts.title}: ${words} words ≈ ${pages} pages of ${ts.pageLimit} allowed (~${budgetWords} words)`}>
@@ -311,6 +330,7 @@ export function GrantToolbar({ htmlContent, templateId, hasInstructions, onOpenT
         <span className={`font-bold ${tone}`}>{pages}/{ts.pageLimit} pg</span>
         {over && onTrimSection && (
           <button
+            data-testid="control-trim"
             onClick={() => onTrimSection(ts.title, budgetWords)}
             disabled={trimmingSection !== null && trimmingSection !== undefined}
             className="flex items-center gap-0.5 px-1 py-0.5 rounded border border-rose-300 text-rose-600 bg-rose-50 hover:bg-rose-100 font-semibold disabled:opacity-50"
@@ -321,14 +341,15 @@ export function GrantToolbar({ htmlContent, templateId, hasInstructions, onOpenT
         )}
       </span>
     );
-  }).filter(Boolean);
+  });
 
   return (
     <div
-      className="flex items-center gap-2 px-4 sm:px-6 py-1.5 text-[10px] overflow-x-auto shrink-0"
-      style={{ borderBottom: '1px solid var(--border-subtle)', background: 'var(--surface-2)' }}
+      className={compact ? 'flex flex-wrap items-center gap-2 text-[10px]' : 'flex items-center gap-2 px-4 sm:px-6 py-1.5 text-[10px] overflow-x-auto shrink-0'}
+      style={compact ? undefined : { borderBottom: '1px solid var(--border-subtle)', background: 'var(--surface-2)' }}
     >
       <button
+        data-testid="control-template"
         onClick={onOpenTemplates}
         className="px-2 py-1 font-semibold rounded-lg border shrink-0 hover:bg-stone-50 transition-colors"
         style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)', background: 'var(--surface-1)' }}
@@ -337,6 +358,7 @@ export function GrantToolbar({ htmlContent, templateId, hasInstructions, onOpenT
         <span className="flex items-center gap-1"><FileText size={11} /> Template</span>
       </button>
       <button
+        data-testid="control-instructions"
         onClick={onOpenInstructions}
         className={`px-2 py-1 font-semibold rounded-lg border shrink-0 transition-colors ${hasInstructions ? 'text-emerald-700 border-emerald-300 bg-emerald-50 hover:bg-emerald-100' : 'hover:bg-stone-50'}`}
         style={hasInstructions ? {} : { borderColor: 'var(--border)', color: 'var(--text-secondary)', background: 'var(--surface-1)' }}
@@ -346,8 +368,8 @@ export function GrantToolbar({ htmlContent, templateId, hasInstructions, onOpenT
       </button>
       {chips.length > 0 && (
         <>
-          <span className="uppercase tracking-wider font-bold shrink-0 ml-2" style={{ color: 'var(--text-muted)' }}>Page budget</span>
-          <div className="flex items-center gap-4">{chips}</div>
+          <span className={`uppercase tracking-wider font-bold shrink-0 ${compact ? 'w-full' : 'ml-2'}`} style={{ color: 'var(--text-muted)' }}>Section page budgets</span>
+          <div data-testid="control-budgets" className={compact ? 'flex flex-wrap items-center gap-x-4 gap-y-1' : 'flex items-center gap-4'}>{chips}</div>
         </>
       )}
     </div>

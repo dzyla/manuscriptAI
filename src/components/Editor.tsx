@@ -1,29 +1,28 @@
 import { useEditor, EditorContent } from '@tiptap/react';
-import type { JSONContent } from '@tiptap/core';
+import type { Editor as TipEditor, JSONContent } from '@tiptap/core';
 import { BubbleMenu } from '@tiptap/react/menus';
 import Placeholder from '@tiptap/extension-placeholder';
-import { forwardRef, useImperativeHandle, useEffect, useState, useRef, useCallback, useMemo } from 'react';
-import { createPortal } from 'react-dom';
-import { AgentType, Suggestion, ManuscriptSource, SentenceAudit, AuditMetrics } from '../types';
+import { forwardRef, useEffect, useState, useRef, useCallback } from 'react';
+import { Suggestion, ManuscriptSource, SentenceAudit, AuditMetrics } from '../types';
 import { GrammarChecker } from '../extensions/GrammarChecker';
 import { getSchemaExtensions } from '../extensions/schema';
 import { OpaqueFragmentGuard } from '../extensions/preserve/OpaqueNodes';
 import { SuggestionHighlights, setSuggestionHighlights, type SuggestionRange } from '../extensions/SuggestionHighlights';
-import {
-  Bold, Italic, Underline as UnderlineIcon, List, ListOrdered,
-  AlignLeft, AlignCenter, AlignRight, AlignJustify, Quote, Heading2,
-  Heading3, Undo, Redo, Clock, Sparkles, PenLine, FlaskConical, Beaker, Send, MessageSquare, BookOpen, RefreshCw, FileSearch, Search,
-  Table as TableIcon, ImagePlus, Menu, X, ScanEye, Trash2, ShieldCheck, Eye as EyeIcon, Wand2, Loader2, ArrowRight, Hash
-} from 'lucide-react';
-import { getThesaurus, generateCompletion } from '../services/ai';
-import { AISettings } from '../types';
+import { generateCompletion } from '../services/ai';
+import { AISettings, DocFormat } from '../types';
+import { PAGE_SIZES_IN, createFormat } from '../services/formatPresets';
 import { AutoComplete } from '../extensions/AutoComplete';
-import { StyleHighlights, replaceRangeWithText, resolveFlatSentence, replaceFlatSentence, type FlatSentenceTarget } from '../extensions/StyleHighlights';
-import { NodeSelection } from 'prosemirror-state';
-import { expandCitationNums, fetchCrossrefDoi, looksLikeDoi, normalizeDoi } from '../services/citations';
-import { useSourceStore } from '../stores/useSourceStore';
-import { findTextPositionRobust, flattenDoc } from '../utils/textMatch';
-import { flatRangeToPm } from './style/styleSync';
+import { StyleHighlights, type FlatSentenceTarget } from '../extensions/StyleHighlights';
+import { findTextPositionRobust } from '../utils/textMatch';
+import { FigureControls } from './editor/FigureControls';
+import { FIGURE_PROMPTS } from './editor/figurePrompts';
+import { getImageContext } from './editor/figureContext';
+import { TablePicker, TableContextMenu } from './editor/TableMenus';
+import { CitationPicker } from './editor/CitationPicker';
+import { useCitationPicker } from './editor/useCitationPicker';
+import { usePageCanvas } from './editor/usePageCanvas';
+import { useEditorHandle } from './editor/useEditorHandle';
+import { NO_SELECTION, sameSelection, selectionInfo, type SelectionInfo } from './editor/selectionKind';
 
 interface EditorProps {
   content: string;
@@ -53,24 +52,22 @@ interface EditorProps {
   onContentSynced?: (content: string) => void;
   suggestions: Suggestion[];
   onSuggestionClick: (suggestionId: string) => void;
-  onSelectionQuery?: (selectedText: string, instruction: string, agent: AgentType) => void;
-  onRewriteSection?: (selectedText: string) => void;
-  onTransformSelection?: (selectedText: string, instruction: string, agent: AgentType) => void;
-  onAnalyzeSection?: (sectionText: string, sectionTitle: string) => void;
-  onVerifyClaim?: (selectedText: string) => void;
-  onSearchSimilar?: (selectedText: string) => void;
   sources?: ManuscriptSource[];
   citationRegistry?: Record<string, number>;
   onInsertCitation?: (sourceId: string) => number;
   isDistractionFree?: boolean;
   editorZoom?: number;
-  editorWidth?: 'normal' | 'wide' | 'full';
-  currentAgent?: AgentType;
   aiSettings?: AISettings;
+  /** Tab-triggered AI autocomplete on or off (the AI menu owns the switch). */
+  autocompleteEnabled?: boolean;
+  onAutocompleteLoading?: (loading: boolean) => void;
+  /** The TipTap instance once it exists (null when it goes away): the top bar's selection controls act on it. */
+  onEditorReady?: (editor: TipEditor | null) => void;
+  /** What is selected, reported whenever the kind, the selected word count or the section changes. */
+  onSelectionChange?: (info: SelectionInfo) => void;
   onAnalyzeImage?: (dataUrl: string, prompt: string, contextText?: string) => void;
-  onInsertFigure?: () => void;
-  /** render dashed page-break guides at NIH-format intervals (grant mode) */
-  showPageGuides?: boolean;
+  /** the document's page format; null/undefined falls back to the NIH preset */
+  format?: DocFormat | null;
   /** flagged sentences to tint (sub-project H); empty disables highlighting */
   styleSentences?: SentenceAudit[];
   styleAuditEnabled?: boolean;
@@ -107,97 +104,34 @@ export interface EditorRef {
   resolveFlatSentence: (start: number, end: number, expected: string) => FlatSentenceTarget;
   /** Replace exactly that sentence in one undoable transaction; the block and its attrs (incl. ooxml) are kept. */
   replaceFlatSentence: (start: number, end: number, expected: string, text: string) => FlatSentenceTarget;
+  undo: () => void;
+  redo: () => void;
+  /** Type an `@` at the caret and open the citation picker, as typing it would. */
+  openCitationPicker: () => void;
+  /** Open (or close) the table-size grid under `anchor` (a menu button's rectangle). */
+  openTablePicker: (anchor?: { left: number; bottom: number }) => void;
+  /** Open the system file chooser for an image to insert as a figure. */
+  openImagePicker: () => void;
+  /** Replace the selected text, keeping the rest; reports the change like a user edit. False with nothing selected. */
+  replaceSelection: (text: string) => boolean;
 }
 
 // Tiered matcher (exact → normalized → fuzzy) with citation-aware position
 // mapping. Tolerates LLM misquotes that the old exact-only search rejected.
 const findTextPosition = (doc: any, searchText: string): { from: number; to: number } | null =>
   findTextPositionRobust(doc, searchText);
-
-// Bubble actions: transform = produces accept/reject suggestion; analyze = produces chat reply only
-const BUBBLE_ACTIONS: { label: string; instruction: string; agent: AgentType; icon: any; mode: 'transform' | 'analyze' }[] = [
-  {
-    label: 'Polish',
-    instruction: 'Fix grammar, convert passive voice to active, tighten wordy phrases, and improve sentence flow. Keep all scientific content intact.',
-    agent: 'editor',
-    icon: PenLine,
-    mode: 'transform'
-  },
-  {
-    label: 'Shorten',
-    instruction: 'Condense this text for a scientific manuscript: cut redundant words, remove unnecessary hedging, combine short sentences. Preserve all key scientific information and claims.',
-    agent: 'editor',
-    icon: PenLine,
-    mode: 'transform'
-  },
-  {
-    label: 'Sharpen',
-    instruction: 'Strengthen the topic sentence to clearly state the paragraph\'s conclusion, reduce excessive hedging language ("may possibly" → "suggests"), and improve the opening for maximum impact.',
-    agent: 'researcher',
-    icon: Beaker,
-    mode: 'transform'
-  },
-  {
-    label: 'Strengthen',
-    instruction: 'Revise this text to be more scientifically rigorous: make vague claims specific, add appropriate qualifications to overclaimed statements, and make the argument more concrete and evidenced.',
-    agent: 'reviewer-2',
-    icon: FlaskConical,
-    mode: 'transform'
-  },
-  {
-    label: 'Critique',
-    instruction: 'Identify the specific scientific weaknesses in this text: unsupported claims, logical gaps, missing methodology details, conclusions that exceed the data. Be direct and concise.',
-    agent: 'reviewer-2',
-    icon: FlaskConical,
-    mode: 'analyze'
-  },
-  {
-    label: 'Explain',
-    instruction: 'Explain the key scientific concept, finding, or argument in this passage clearly. What is the author trying to say? What assumptions are being made? What would make this clearer for the reader?',
-    agent: 'researcher',
-    icon: Beaker,
-    mode: 'analyze'
-  },
-];
-
 /** prosemirror-history's plugin key (it does not export it); the same string addresses the plugin and its transaction metadata. */
 const HISTORY_PLUGIN_KEY = 'history$';
 
-const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocChange, pendingDocument, onPendingDocumentApplied, onDuplicateFragment, loadSettled = false, onDocumentReady, onContentSynced, suggestions, onSuggestionClick, onSelectionQuery, onTransformSelection, onRewriteSection, onAnalyzeSection, onVerifyClaim, onSearchSimilar, sources, citationRegistry, onInsertCitation, isDistractionFree, editorZoom = 100, editorWidth = 'normal', aiSettings, onAnalyzeImage, onInsertFigure, showPageGuides = false, styleSentences, styleAuditEnabled, onStyleAudit }, ref) => {
-  const [isMounted, setIsMounted] = useState(false);
+const DEFAULT_CANVAS_FORMAT: DocFormat = createFormat('nih');
 
-  // ── Page guides: dashed page-break lines at NIH-format intervals ──────────
-  // Page height scales with rendered content width (7.5in usable width → 10in
-  // usable height per page), so zoom and editor width are handled implicitly.
+
+const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocChange, pendingDocument, onPendingDocumentApplied, onDuplicateFragment, loadSettled = false, onDocumentReady, onContentSynced, suggestions, onSuggestionClick, sources, citationRegistry, onInsertCitation, isDistractionFree, editorZoom = 100, aiSettings, autocompleteEnabled = false, onAutocompleteLoading, onAnalyzeImage, format, styleSentences, styleAuditEnabled, onStyleAudit, onEditorReady, onSelectionChange }, ref) => {
+  const [isMounted, setIsMounted] = useState(false);
+  const canvasFormat = format ?? DEFAULT_CANVAS_FORMAT;
+
   const pageGuideContainerRef = useRef<HTMLDivElement>(null);
-  const [pageGuideOffsets, setPageGuideOffsets] = useState<number[]>([]);
-  useEffect(() => {
-    if (!showPageGuides) { setPageGuideOffsets([]); return; }
-    const el = pageGuideContainerRef.current;
-    if (!el) return;
-    const compute = () => {
-      const prose = el.querySelector('.ProseMirror') as HTMLElement | null;
-      if (!prose) return;
-      const pageHeight = (prose.clientWidth / 7.5) * 10;
-      if (pageHeight < 100) return;
-      const contentTop = prose.offsetTop;
-      const n = Math.floor(prose.scrollHeight / pageHeight);
-      setPageGuideOffsets(Array.from({ length: Math.min(n, 200) }, (_, i) => contentTop + (i + 1) * pageHeight));
-    };
-    compute();
-    const ro = new ResizeObserver(compute);
-    const prose = el.querySelector('.ProseMirror');
-    if (prose) ro.observe(prose);
-    return () => ro.disconnect();
-  }, [showPageGuides, content, editorZoom, editorWidth]);
-  const [showSelectionBar, setShowSelectionBar] = useState(false);
-  const [selectionInstruction, setSelectionInstruction] = useState('');
-  const [selectionAgent, setSelectionAgent] = useState<AgentType>('editor');
-  const [thesaurusWord, setThesaurusWord] = useState<string | null>(null);
-  const [thesaurusSynonyms, setThesaurusSynonyms] = useState<string[]>([]);
-  const [thesaurusLoading, setThesaurusLoading] = useState(false);
-  const [currentSectionTitle, setCurrentSectionTitle] = useState<string | null>(null);
-  const [selectionWordCount, setSelectionWordCount] = useState(0);
+  const fitRef = useRef<HTMLDivElement>(null);
   const onDocChangeRef = useRef(onDocChange);
   useEffect(() => { onDocChangeRef.current = onDocChange; }, [onDocChange]);
   const onChangeRef = useRef(onChange);
@@ -214,40 +148,36 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
     setTimeout(() => { externalUpdateHolds.current--; }, 0);
   };
   const lastExternalContent = useRef(content);
-  const instructionInputRef = useRef<HTMLInputElement>(null);
-  const [citationPicker, setCitationPicker] = useState<{ x: number; y: number } | null>(null);
-  const [citationFilter, setCitationFilter] = useState('');
-  const citationFilterRef = useRef('');
-  const atInsertPos = useRef(-1);
-  const showCitationPickerRef = useRef(false);
-  showCitationPickerRef.current = !!citationPicker;
   const [showTablePicker, setShowTablePicker] = useState(false);
   const [tablePickerPos, setTablePickerPos] = useState<{ x: number; y: number } | null>(null);
   const [tableHover, setTableHover] = useState<{ rows: number; cols: number }>({ rows: 0, cols: 0 });
-  const tableButtonRef = useRef<HTMLButtonElement>(null);
   const [tableContextMenu, setTableContextMenu] = useState<{ x: number; y: number } | null>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
-  const [showToolbar, setShowToolbar] = useState(false);
-  const selectedTextRef = useRef('');
-  const [showAskInput, setShowAskInput] = useState(false);
-  const [askInputValue, setAskInputValue] = useState('');
-  const askInputRef = useRef<HTMLInputElement>(null);
-  const [autocompleteEnabled, setAutocompleteEnabled] = useState(false);
-  const { sources: allSources, addSources } = useSourceStore();
-  const [doiPickerState, setDoiPickerState] = useState<'idle' | 'loading' | 'error'>('idle');
-  const [doiPickerError, setDoiPickerError] = useState<string | null>(null);
-  const handleInsertDoiRef = useRef<(doi: string) => void>(() => {});
-  const handleInsertMultipleDoiRef = useRef<(dois: string[]) => void>(() => {});
-  const [autocompleteLoading, setAutocompleteLoading] = useState(false);
   const autocompleteEnabledRef = useRef(false);
+  const onAutocompleteLoadingRef = useRef(onAutocompleteLoading);
+  onAutocompleteLoadingRef.current = onAutocompleteLoading;
   const aiSettingsRef = useRef<AISettings | undefined>(aiSettings);
   const onDuplicateFragmentRef = useRef(onDuplicateFragment);
   onDuplicateFragmentRef.current = onDuplicateFragment;
+  // What is selected, reported upward only when it changes. The position of a selected figure keys its controls, so another figure starts them afresh.
+  const onSelectionChangeRef = useRef(onSelectionChange);
+  onSelectionChangeRef.current = onSelectionChange;
+  const lastSelection = useRef<SelectionInfo>(NO_SELECTION);
+  const [figure, setFigure] = useState<{ at: number; align: string | null } | null>(null);
+  const reportSelection = (e: TipEditor) => {
+    const info = selectionInfo(e);
+    const next = info.kind === 'figure' ? { at: e.state.selection.from, align: e.getAttributes('resizableImage').align ?? null } : null;
+    setFigure(prev => (prev?.at === next?.at && prev?.align === next?.align ? prev : next));
+    if (sameSelection(info, lastSelection.current)) return;
+    lastSelection.current = info;
+    onSelectionChangeRef.current?.(info);
+  };
 
   useEffect(() => { setIsMounted(true); }, []);
 
   useEffect(() => { aiSettingsRef.current = aiSettings; }, [aiSettings]);
   useEffect(() => { autocompleteEnabledRef.current = autocompleteEnabled; }, [autocompleteEnabled]);
+
 
   const styleSentencesRef = useRef<SentenceAudit[]>(styleSentences ?? []);
   const styleAuditEnabledRef = useRef(!!styleAuditEnabled);
@@ -266,7 +196,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
           if (!aiSettingsRef.current) return Promise.resolve('');
           return generateCompletion(contextText, aiSettingsRef.current, signal, meta?.heading);
         },
-        onLoadingChange: setAutocompleteLoading,
+        onLoadingChange: (loading) => onAutocompleteLoadingRef.current?.(loading),
       }),
       StyleHighlights.configure({
         getEnabled: () => styleAuditEnabledRef.current,
@@ -283,29 +213,8 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
       lastExternalContent.current = html;
       onChangeRef.current(html);
     },
-    onSelectionUpdate: ({ editor }) => {
-      const { from, to } = editor.state.selection;
-      const hasSelection = from !== to;
-      setShowSelectionBar(hasSelection);
-      const selectedText = hasSelection ? editor.state.doc.textBetween(from, to, ' ') : '';
-      selectedTextRef.current = selectedText;
-      setSelectionWordCount(
-        hasSelection ? selectedText.trim().split(/\s+/).filter(Boolean).length : 0
-      );
-      if (!hasSelection) {
-        setThesaurusWord(null);
-        setThesaurusSynonyms([]);
-      }
-      // Track which H2 section the cursor is in
-      let section: string | null = null;
-      editor.state.doc.nodesBetween(0, from, (node) => {
-        if (node.type.name === 'heading' && node.attrs.level === 2) {
-          section = node.textContent;
-        }
-        return true;
-      });
-      setCurrentSectionTitle(section);
-    },
+    onTransaction: ({ editor }) => reportSelection(editor),
+
     editorProps: {
       attributes: { class: 'prose max-w-none focus:outline-none min-h-[500px]' },
     },
@@ -314,6 +223,8 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
   useEffect(() => { styleSentencesRef.current = styleSentences ?? []; editor?.commands.refreshStyleAudit(); }, [styleSentences, editor]);
   useEffect(() => { styleAuditEnabledRef.current = !!styleAuditEnabled; editor?.commands.refreshStyleAudit(); }, [styleAuditEnabled, editor]);
   useEffect(() => { onStyleAuditRef.current = onStyleAudit; }, [onStyleAudit]);
+
+  const { effectiveZoom, pageGuideOffsets } = usePageCanvas({ editor, fitRef, pageGuideContainerRef, editorZoom, format, content });
 
   // Handle clicks on highlight marks: find suggestion by ProseMirror position (TipTap Highlight
   // doesn't render custom attributes to DOM, so we can't use data-suggestion-id on the element)
@@ -340,81 +251,20 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
     return () => editorEl.removeEventListener('click', handleDomClick);
   }, [editor, suggestions, onSuggestionClick]);
 
-  // @ citation trigger
-  useEffect(() => {
-    if (!editor) return;
-    const editorEl = editor.view.dom;
-
-    const handleAtKey = (e: KeyboardEvent) => {
-      if (showCitationPickerRef.current) {
-        if (e.key === 'Escape') {
-          setCitationPicker(null);
-          setCitationFilter('');
-          citationFilterRef.current = '';
-          setDoiPickerState('idle');
-          setDoiPickerError(null);
-        }
-        if (e.key === ' ') {
-          const filter = citationFilterRef.current;
-          const parts = [...new Set(
-            filter.split(',').map(p => normalizeDoi(p.trim())).filter(p => looksLikeDoi(p))
-          )];
-          if (parts.length > 0) {
-            e.preventDefault();
-            if (parts.length === 1) {
-              handleInsertDoiRef.current(parts[0]);
-            } else {
-              handleInsertMultipleDoiRef.current(parts);
-            }
-          }
-        }
-        return;
-      }
-      if (e.key === '@') {
-        const pos = editor.state.selection.from;
-        // Delay so the '@' character is inserted first, then we know its position
-        setTimeout(() => {
-          atInsertPos.current = pos; // '@' lands at this doc position
-          try {
-            const coords = editor.view.coordsAtPos(pos + 1);
-            setCitationFilter('');
-            setCitationPicker({ x: coords.left, y: coords.bottom + 6 });
-          } catch (_) {}
-        }, 0);
-      }
-    };
-
-    editorEl.addEventListener('keydown', handleAtKey);
-    return () => editorEl.removeEventListener('keydown', handleAtKey);
-  }, [editor]);
-
-  // While citation picker is open, track filter text from what was typed after '@'
-  useEffect(() => {
-    if (!citationPicker || !editor) return;
-    const curPos = editor.state.selection.from;
-    const from = atInsertPos.current; // position before '@'
-    if (curPos > from) {
-      const typed = editor.state.doc.textBetween(from, Math.min(curPos, from + 40), '');
-      const filter = typed.replace(/^@/, '').toLowerCase();
-      setCitationFilter(filter);
-      citationFilterRef.current = filter;
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editor?.state.selection.from, citationPicker]);
+  const citation = useCitationPicker({ editor, sources, onInsertCitation });
+  useEffect(() => { onEditorReady?.(editor); return () => onEditorReady?.(null); }, [editor, onEditorReady]);
 
   // Close table picker on click outside
   useEffect(() => {
     if (!showTablePicker) return;
     const handler = (e: MouseEvent) => {
       const picker = document.getElementById('table-picker-portal');
-      if (picker && !picker.contains(e.target as Node) &&
-          tableButtonRef.current && !tableButtonRef.current.contains(e.target as Node)) {
-        setShowTablePicker(false);
-      }
+      if (picker && !picker.contains(e.target as Node)) setShowTablePicker(false);
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [showTablePicker]);
+
 
   // Right-click context menu for table editing
   useEffect(() => {
@@ -439,12 +289,9 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
     };
   }, [editor, tableContextMenu]);
 
-  const openTablePicker = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
+  const openTablePicker = (anchor?: { left: number; bottom: number }) => {
     if (showTablePicker) { setShowTablePicker(false); return; }
-    const rect = tableButtonRef.current?.getBoundingClientRect();
-    if (rect) setTablePickerPos({ x: rect.left, y: rect.bottom + 4 });
+    setTablePickerPos({ x: anchor?.left ?? 24, y: (anchor?.bottom ?? 48) + 4 });
     setShowTablePicker(true);
   };
 
@@ -454,6 +301,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
     setTableHover({ rows: 0, cols: 0 });
     // Delay to let picker close and allow editor to be ready
     setTimeout(() => {
+      if (editor.isDestroyed) return;
       editor.commands.focus();
       editor.commands.insertTable({ rows, cols, withHeaderRow: true });
     }, 50);
@@ -468,65 +316,6 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
     const base64 = btoa(binary);
     const dataUrl = `data:${file.type};base64,${base64}`;
     (editor.chain().focus() as any).insertResizableImage({ src: dataUrl, alt: file.name, width: '100%', align: 'center' }).run();
-  };
-
-  const getImageContext = (): string => {
-    if (!editor) return '';
-    const sel = editor.state.selection;
-
-    // When the user clicks an image, TipTap creates a NodeSelection.
-    if (sel instanceof NodeSelection) {
-      const doc = editor.state.doc;
-      const imagePos = sel.from;
-      const clickedNode = doc.nodeAt(imagePos);
-      if (!clickedNode || clickedNode.type.name !== 'resizableImage') return '';
-
-      // Pass 1 (caption-aware): look for adjacent "Figure X…" paragraphs.
-      let captionBefore = '';
-      let captionAfter = '';
-      doc.descendants((node, pos) => {
-        if (node.type.name !== 'paragraph') return true;
-        const text = node.textContent.trim();
-        if (!/^figure/i.test(text)) return true;
-        const nodeEnd = pos + node.nodeSize;
-        if (nodeEnd <= imagePos) {
-          captionBefore = text; // keep overwriting — last before image wins (nearest)
-        } else if (pos > imagePos && !captionAfter) {
-          captionAfter = text; // first after image wins (nearest)
-        }
-        return true;
-      });
-      const caption = captionAfter || captionBefore;
-      if (caption) return caption;
-
-      // Pass 2 (surrounding paragraphs): nearest preceding + following paragraph.
-      let preceding = '';
-      let following = '';
-      doc.descendants((node, pos) => {
-        if (node.type.name !== 'paragraph') return true;
-        const text = node.textContent.trim();
-        if (!text) return true;
-        const nodeEnd = pos + node.nodeSize;
-        if (nodeEnd <= imagePos) {
-          preceding = text;
-        } else if (pos > imagePos && !following) {
-          following = text; // first one after image
-        }
-        return true;
-      });
-      return [preceding, following].filter(Boolean).join('\n').trim();
-    }
-
-    // Text selection path — user dragged over image + surrounding text.
-    const { from, to } = sel;
-    if (from === to) return '';
-    const parts: string[] = [];
-    editor.state.doc.nodesBetween(from, to, node => {
-      if (node.type.name === 'resizableImage') return false;
-      if (node.isText && node.text) parts.push(node.text);
-      return true;
-    });
-    return parts.join(' ').replace(/\s+/g, ' ').trim();
   };
 
   /**
@@ -612,521 +401,51 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
     setSuggestionHighlights(editor.view, ranges);
   }, [suggestions, editor]);
 
-  const getSelectedText = () => {
-    if (!editor) return '';
-    const { from, to } = editor.state.selection;
-    return editor.state.doc.textBetween(from, to, ' ');
-  };
-
-  const handleSelectionSend = (instruction: string, agent: AgentType) => {
-    const text = getSelectedText();
-    if (!text.trim() || !onSelectionQuery) return;
-    onSelectionQuery(text, instruction, agent);
-    setSelectionInstruction('');
-    setShowSelectionBar(false);
-  };
-
-  const handleInsertCitation = (source: ManuscriptSource) => {
-    if (!editor || !onInsertCitation) return;
-    const num = onInsertCitation(source.id);
-    const atPos = atInsertPos.current;
-    const curPos = editor.state.selection.from;
-
-    // Delete the '@filter' typed text, leaving cursor at atPos
-    editor.chain().focus().deleteRange({ from: atPos, to: curPos }).run();
-
-    // Check for an adjacent CitationNode immediately before the cursor that already contains this num.
-    const nodeBefore = editor.state.doc.resolve(atPos).nodeBefore;
-    if (nodeBefore?.type.name === 'citation') {
-      const existingNums: number[] = nodeBefore.attrs.nums ?? [];
-      if (existingNums.includes(num)) {
-        setCitationPicker(null);
-        setCitationFilter('');
-        setDoiPickerState('idle');
-        setDoiPickerError(null);
-        return;
-      }
-    }
-
-    // Also check legacy [N] text groups for backward compat
-    const textBefore = editor.state.doc.textBetween(Math.max(0, atPos - 50), atPos, '\n');
-    const adjacentMatch = textBefore.match(/\[([\d,\-]+)\]\s*$/);
-    if (adjacentMatch && expandCitationNums(adjacentMatch[1]).includes(num)) {
-      setCitationPicker(null);
-      setCitationFilter('');
-      setDoiPickerState('idle');
-      setDoiPickerError(null);
-      return;
-    }
-
-    (editor.chain().focus() as any).insertCitation(source.id, num).run();
-    setCitationPicker(null);
-    setCitationFilter('');
-    setDoiPickerState('idle');
-    setDoiPickerError(null);
-  };
-
-  const handleInsertDoi = async (doi: string) => {
-    const bareDoi = normalizeDoi(doi);
-    setDoiPickerState('loading');
-    setDoiPickerError(null);
-    try {
-      let source = allSources.find(s => s.apiMeta?.doi?.toLowerCase() === bareDoi.toLowerCase());
-      if (!source) {
-        source = await fetchCrossrefDoi(bareDoi);
-        addSources([source]);
-      }
-      handleInsertCitation(source);
-    } catch (err) {
-      setDoiPickerState('error');
-      setDoiPickerError(err instanceof Error ? err.message : 'DOI lookup failed.');
-    }
-  };
-
-  const handleInsertMultipleDoi = async (dois: string[]) => {
-    if (!editor || !onInsertCitation) return;
-    setDoiPickerState('loading');
-    setDoiPickerError(null);
-
-    // Snapshot positions before any awaits — editor state may change during fetch
-    const atPos = atInsertPos.current;
-    const curPos = editor.state.selection.from;
-
-    const results = await Promise.allSettled(
-      dois.map(async (doi) => {
-        let source = allSources.find(s => s.apiMeta?.doi?.toLowerCase() === doi.toLowerCase());
-        if (!source) {
-          source = await fetchCrossrefDoi(doi);
-          addSources([source]);
-        }
-        return source;
-      })
-    );
-
-    const succeeded = results
-      .filter((r): r is PromiseFulfilledResult<ManuscriptSource> => r.status === 'fulfilled')
-      .map(r => r.value);
-    const failedDois = dois.filter((_, i) => results[i].status === 'rejected');
-
-    if (succeeded.length === 0) {
-      setDoiPickerState('error');
-      setDoiPickerError(`Could not fetch: ${failedDois.join(', ')}`);
-      return;
-    }
-
-    const nums = succeeded.map(s => onInsertCitation(s.id));
-    const sourceIds = succeeded.map(s => s.id);
-
-    editor.chain().focus().deleteRange({ from: atPos, to: curPos }).run();
-    (editor.chain().focus() as any).insertCitationBatch(sourceIds, nums).run();
-
-    setCitationPicker(null);
-    setCitationFilter('');
-    citationFilterRef.current = '';
-    setDoiPickerState('idle');
-    setDoiPickerError(null);
-
-    if (failedDois.length > 0) {
-      console.warn('DOI batch: failed to fetch', failedDois.join(', '));
-      setDoiPickerError(`Inserted ${succeeded.length}; could not fetch: ${failedDois.join(', ')}`);
-      setDoiPickerState('error');
-    }
-  };
-
-  // No dep array — intentionally runs after every render to keep refs pointing at latest closures
-  useEffect(() => {
-    handleInsertDoiRef.current = handleInsertDoi;
-    handleInsertMultipleDoiRef.current = handleInsertMultipleDoi;
+  useEditorHandle(ref, editor, {
+    applyDocument, holdExternalUpdate, lastExternalContent, onChange, onDocChangeRef,
+    openCitationPicker: citation.open, openTablePicker, openImagePicker: () => imageInputRef.current?.click(),
   });
-
-  const filteredCitationSources = useMemo(() => {
-    if (!sources) return [];
-    const f = citationFilter.trim();
-    return sources.filter(s => s.type !== 'bib' && (
-      !f || s.name.toLowerCase().includes(f) || s.apiMeta?.authors?.toLowerCase().includes(f) || s.apiMeta?.title?.toLowerCase().includes(f)
-    ));
-  }, [sources, citationFilter]);
-
-  const handleThesaurus = useCallback(async () => {
-    const text = getSelectedText().trim();
-    const wordCount = text ? text.split(/\s+/).filter(Boolean).length : 0;
-    if (!text || wordCount < 1 || wordCount > 2) return;
-    setThesaurusWord(text);
-    setThesaurusSynonyms([]);
-    setThesaurusLoading(true);
-    try {
-      const synonyms = await getThesaurus(text, aiSettings || { provider: 'local', localBaseUrl: 'http://localhost:1234/v1/chat/completions', localApiKey: '', localModel: 'local-model', geminiApiKey: '', openaiApiKey: '', anthropicApiKey: '', geminiModel: '', openaiModel: '', anthropicModel: '' });
-      setThesaurusSynonyms(synonyms);
-    } finally {
-      setThesaurusLoading(false);
-    }
-  }, [aiSettings]);
-
-  const replaceWithSynonym = (synonym: string) => {
-    if (!editor || !thesaurusWord) return;
-    const { from, to } = editor.state.selection;
-    editor.chain().focus().setTextSelection({ from, to }).insertContent(synonym).run();
-    setThesaurusWord(null);
-    setThesaurusSynonyms([]);
-    onChange(editor.getHTML());
-  };
-
-  // Extract plain text for the H2 section that contains `sectionTitle`
-  const getSectionText = (sectionTitle: string): string => {
-    if (!editor) return sectionTitle;
-    let inSection = false;
-    let stopped = false;
-    const parts: string[] = [sectionTitle];
-    editor.state.doc.descendants((node) => {
-      if (stopped) return false;
-      if (node.type.name === 'heading' && node.attrs.level === 2) {
-        if (inSection) { stopped = true; return false; }
-        if (node.textContent === sectionTitle) inSection = true;
-      } else if (inSection && node.isBlock && node.textContent.trim()) {
-        parts.push(node.textContent);
-      }
-      return true;
-    });
-    return parts.join('\n\n');
-  };
-
-  useImperativeHandle(ref, () => ({
-    replaceRange: (from: number, to: number, text: string) => (editor ? replaceRangeWithText(editor, from, to, text) : false),
-    resolveFlatSentence: (start, end, expected) => (editor ? resolveFlatSentence(editor, start, end, expected) : { ok: false, reason: 'unmappable' }),
-    replaceFlatSentence: (start, end, expected, text) => (editor ? replaceFlatSentence(editor, start, end, expected, text) : { ok: false, reason: 'unmappable' }),
-    selectFlatRange: (start: number, end: number) => {
-      if (!editor) return false;
-      const span = flatRangeToPm(editor.state.doc, start, end);
-      if (!span) return false;
-      editor.chain().focus().setTextSelection({ from: span.from, to: span.to }).scrollIntoView().run();
-      return true;
-    },
-    applySuggestion: (originalText, suggestedText) => {
-      if (!editor) return false;
-      const posMatch = findTextPosition(editor.state.doc, originalText);
-      if (!posMatch) return false;
-
-      // Apply synchronously so callers reading getHTML() right after see the
-      // new content (history recording and accept-all depend on this).
-      editor.chain().focus()
-        .setTextSelection({ from: posMatch.from, to: posMatch.to })
-        .insertContent(suggestedText)
-        .scrollIntoView()
-        .run();
-
-      const newHtml = editor.getHTML();
-      lastExternalContent.current = newHtml;
-      onChange(newHtml);
-
-      // Flash animation on the new text (purely cosmetic, async is fine)
-      setTimeout(() => {
-        const sel = window.getSelection();
-        if (sel && sel.rangeCount > 0) {
-          const range = sel.getRangeAt(0);
-          const span = document.createElement('span');
-          span.className = 'accept-flash';
-          try {
-            range.surroundContents(span);
-            setTimeout(() => {
-              // Unwrap the flash span after animation
-              if (span.parentNode) {
-                const parent = span.parentNode;
-                while (span.firstChild) parent.insertBefore(span.firstChild, span);
-                parent.removeChild(span);
-              }
-            }, 1200);
-          } catch (_) {
-            // Can fail if selection spans multiple elements — that's fine
-          }
-        }
-      }, 50);
-
-      return true;
-    },
-    revertSuggestion: (originalText, suggestedText) => {
-      if (!editor) return false;
-      const posMatch = findTextPosition(editor.state.doc, suggestedText);
-      if (posMatch) {
-        editor.chain().focus()
-          .setTextSelection({ from: posMatch.from, to: posMatch.to })
-          .insertContent(originalText)
-          .run();
-        const newHtml = editor.getHTML();
-        lastExternalContent.current = newHtml;
-        onChange(newHtml);
-        return true;
-      }
-      return false;
-    },
-    scrollToSuggestion: (text) => {
-      if (!editor) return;
-      const posMatch = findTextPosition(editor.state.doc, text);
-      if (posMatch) {
-        // Set selection and scroll into view
-        editor.chain().focus()
-          .setTextSelection({ from: posMatch.from, to: posMatch.to })
-          .scrollIntoView()
-          .run();
-
-        // The editor's scrollIntoView uses the built-in ProseMirror scroll.
-        // Also do a manual scroll of the parent container for reliable centering.
-        setTimeout(() => {
-          const coords = editor.view.coordsAtPos(posMatch.from);
-          if (coords) {
-            const editorDom = editor.view.dom;
-            const scrollParent = editorDom.closest('.overflow-y-auto') || editorDom.parentElement?.closest('.overflow-y-auto');
-            if (scrollParent) {
-              const scrollRect = scrollParent.getBoundingClientRect();
-              const targetY = coords.top - scrollRect.top + scrollParent.scrollTop - scrollParent.clientHeight / 3;
-              scrollParent.scrollTo({ top: Math.max(0, targetY), behavior: 'smooth' });
-            }
-          }
-        }, 50);
-      }
-    },
-    getHTML: () => editor?.getHTML() || '',
-    getPlainText: () => editor ? flattenDoc(editor.state.doc).text : '',
-    getJSON: () => editor?.getJSON() ?? { type: 'doc', content: [] },
-    setContent: (html: string) => {
-      if (!editor) return;
-      holdExternalUpdate();
-      editor.commands.setContent(html);
-      onDocChangeRef.current?.(editor.getJSON());
-      lastExternalContent.current = html;
-    },
-    setDocument: (doc: JSONContent) => applyDocument(doc),
-    getSelectedText,
-    getCurrentSection: () => currentSectionTitle,
-    getCurrentSectionText: () => currentSectionTitle ? getSectionText(currentSectionTitle) : null,
-    getSectionTextByTitle: (title: string) => title ? getSectionText(title) : null,
-    scrollToHeading: (headingText: string) => {
-      if (!editor) return;
-      let targetPos: number | null = null;
-      editor.state.doc.descendants((node, pos) => {
-        if (targetPos !== null) return false;
-        if (node.type.name === 'heading' && node.textContent === headingText) {
-          targetPos = pos;
-          return false;
-        }
-        return true;
-      });
-      if (targetPos !== null) {
-        editor.chain().focus().setTextSelection(targetPos + 1).scrollIntoView().run();
-        setTimeout(() => {
-          const coords = editor.view.coordsAtPos(targetPos! + 1);
-          if (coords) {
-            const scrollParent = editor.view.dom.closest('.overflow-y-auto') || editor.view.dom.parentElement?.closest('.overflow-y-auto');
-            if (scrollParent) {
-              const rect = scrollParent.getBoundingClientRect();
-              const targetY = coords.top - rect.top + scrollParent.scrollTop - 80;
-              scrollParent.scrollTo({ top: Math.max(0, targetY), behavior: 'smooth' });
-            }
-          }
-        }, 50);
-      }
-    },
-    scrollToCitation: (num: number) => {
-      if (!editor) return;
-      let targetPos: number | null = null;
-      editor.state.doc.descendants((node, pos) => {
-        if (targetPos !== null) return false;
-        // CitationNode atom: check nums attribute
-        if (node.type.name === 'citation') {
-          const nums: number[] = node.attrs.nums ?? [];
-          if (nums.includes(num)) { targetPos = pos; return false; }
-        }
-        // Legacy plain-text citations: [1], [1-3], [1,2]
-        if (node.isText && node.text) {
-          const pat = /\[([\d,\-]+)\]/g;
-          let m;
-          while ((m = pat.exec(node.text)) !== null) {
-            if (expandCitationNums(m[1]).includes(num)) {
-              targetPos = pos + m.index;
-              return false;
-            }
-          }
-        }
-        return true;
-      });
-      if (targetPos !== null) {
-        editor.chain().focus().setTextSelection(targetPos).scrollIntoView().run();
-        setTimeout(() => {
-          const coords = editor.view.coordsAtPos(targetPos!);
-          if (coords) {
-            const scrollParent = editor.view.dom.closest('.overflow-y-auto') || editor.view.dom.parentElement?.closest('.overflow-y-auto');
-            if (scrollParent) {
-              const rect = scrollParent.getBoundingClientRect();
-              const targetY = coords.top - rect.top + scrollParent.scrollTop - scrollParent.clientHeight / 3;
-              scrollParent.scrollTo({ top: Math.max(0, targetY), behavior: 'smooth' });
-            }
-          }
-        }, 50);
-      }
-    },
-    getCitationOrder: () => {
-      if (!editor) return [];
-      const seen = new Set<string>();
-      const order: string[] = [];
-      editor.state.doc.descendants((node) => {
-        if (node.type.name !== 'citation') return true;
-        const sourceIds: string[] = node.attrs.sourceIds ?? [];
-        for (const id of sourceIds) {
-          if (!seen.has(id)) { seen.add(id); order.push(id); }
-        }
-        return true;
-      });
-      return order;
-    },
-    updateCitations: (registry: Record<string, number>) => {
-      if (!editor) return;
-      editor.commands.updateAllCitationNums(registry);
-    },
-    getFigureOrder: () => {
-      if (!editor) return [];
-      const seen = new Set<string>();
-      const order: string[] = [];
-      editor.state.doc.descendants((node) => {
-        if (node.type.name !== 'figureLabel') return true;
-        const figureId: string = node.attrs.figureId ?? '';
-        if (figureId && !seen.has(figureId)) { seen.add(figureId); order.push(figureId); }
-        return true;
-      });
-      return order;
-    },
-    updateFigures: (registry: Record<string, number>) => {
-      if (!editor) return;
-      editor.commands.updateAllFigureNums(registry);
-    },
-    insertFigureLabelNode: (figureId: string, num: number) => {
-      if (!editor) return;
-      editor.chain().focus().insertFigureLabel(figureId, num).run();
-    },
-  }));
 
   if (!editor) return null;
 
-  const wordCount = editor.state.doc.textContent.split(/\s+/).filter(w => w.length > 0).length;
-  const charCount = editor.state.doc.textContent.length;
-  const stats = {
-    words: wordCount,
-    characters: charCount,
-    paragraphs: editor.state.doc.childCount,
-    readingTime: Math.ceil(wordCount / 200),
+  const analyzeFigure = (prompt: string, withContext = true) => {
+    const attrs = editor.getAttributes('resizableImage');
+    if (!attrs.src || !onAnalyzeImage) return;
+    onAnalyzeImage(attrs.src, prompt, withContext ? getImageContext(editor) : undefined);
   };
 
-  const ToolbarButton = ({ onClick, onMouseDown, isActive = false, children, title }: any) => (
-    <button
-      onClick={onClick}
-      onMouseDown={onMouseDown}
-      title={title}
-      className="p-1.5 rounded transition-colors shrink-0"
-      style={{
-        background: isActive ? 'var(--surface-3, var(--surface-2))' : 'transparent',
-        color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
-        outline: isActive ? '1px solid var(--border)' : 'none',
-      }}
-      onMouseEnter={e => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = 'var(--surface-2)'; }}
-      onMouseLeave={e => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; }}
-    >{children}</button>
-  );
-
-  const widthClass = editorWidth === 'wide' ? 'max-w-6xl' : editorWidth === 'full' ? 'max-w-none' : 'max-w-4xl';
-
   return (
-    <div className={`w-full ${widthClass} mx-auto ${isDistractionFree ? 'focus-mode' : ''}`}>
-      <div className="bg-[var(--editor-bg)] min-h-[600px] shadow-[var(--editor-shadow)] rounded-sm border border-[var(--border-subtle)] transition-colors duration-300">
-        
-        {/* Sticky Toolbar */}
-        <div className="sticky top-0 z-20 flex flex-col" style={{ background: 'var(--surface-1)', borderBottom: '1px solid var(--border)' }}>
-          {/* Mobile toggle row */}
-          <div className="flex sm:hidden items-center justify-between px-2 py-1">
-            <span className="text-[10px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>Toolbar</span>
-            <button
-              onMouseDown={e => e.preventDefault()}
-              onClick={() => setShowToolbar(p => !p)}
-              className="p-1.5 rounded hover:bg-stone-100 transition-colors"
-              style={{ color: 'var(--text-secondary)' }}
-            >
-              {showToolbar ? <X size={14} /> : <Menu size={14} />}
-            </button>
-          </div>
-          {/* Toolbar buttons — always visible on sm+, toggled on mobile */}
-          <div className={`${showToolbar ? 'flex' : 'hidden'} sm:flex items-center gap-0.5 px-2 py-1 overflow-x-auto`} style={{ scrollbarWidth: 'none' }}>
-            <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().toggleBold().run(); }} isActive={editor.isActive('bold')} title="Bold"><Bold size={14} /></ToolbarButton>
-            <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().toggleItalic().run(); }} isActive={editor.isActive('italic')} title="Italic"><Italic size={14} /></ToolbarButton>
-            <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().toggleUnderline().run(); }} isActive={editor.isActive('underline')} title="Underline"><UnderlineIcon size={14} /></ToolbarButton>
-            <div className="w-px h-4 mx-0.5 shrink-0" style={{ background: 'var(--border)' }} />
-            <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().toggleHeading({ level: 2 }).run(); }} isActive={editor.isActive('heading', { level: 2 })} title="Heading 2"><Heading2 size={14} /></ToolbarButton>
-            <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().toggleHeading({ level: 3 }).run(); }} isActive={editor.isActive('heading', { level: 3 })} title="Heading 3"><Heading3 size={14} /></ToolbarButton>
-            <div className="w-px h-4 mx-0.5 shrink-0" style={{ background: 'var(--border)' }} />
-            <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().toggleBulletList().run(); }} isActive={editor.isActive('bulletList')} title="Bullet list"><List size={14} /></ToolbarButton>
-            <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().toggleOrderedList().run(); }} isActive={editor.isActive('orderedList')} title="Numbered list"><ListOrdered size={14} /></ToolbarButton>
-            <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().toggleBlockquote().run(); }} isActive={editor.isActive('blockquote')} title="Blockquote"><Quote size={14} /></ToolbarButton>
-            <div className="w-px h-4 mx-0.5 shrink-0" style={{ background: 'var(--border)' }} />
-            <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().setTextAlign('left').run(); }} isActive={editor.isActive({ textAlign: 'left' })} title="Align left"><AlignLeft size={14} /></ToolbarButton>
-            <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().setTextAlign('center').run(); }} isActive={editor.isActive({ textAlign: 'center' })} title="Center"><AlignCenter size={14} /></ToolbarButton>
-            <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().setTextAlign('justify').run(); }} isActive={editor.isActive({ textAlign: 'justify' })} title="Justify"><AlignJustify size={14} /></ToolbarButton>
-            <div className="w-px h-4 mx-0.5 shrink-0" style={{ background: 'var(--border)' }} />
-            {/* Table picker button */}
-            <button
-              ref={tableButtonRef}
-              onMouseDown={openTablePicker}
-              title="Insert table"
-              className="p-1.5 rounded transition-colors shrink-0"
-              style={{
-                background: showTablePicker ? 'var(--surface-2)' : 'transparent',
-                color: showTablePicker ? 'var(--text-primary)' : 'var(--text-secondary)',
-                outline: showTablePicker ? '1px solid var(--border)' : 'none',
-              }}
-            >
-              <TableIcon size={14} />
-            </button>
-            {/* Image insert */}
-            <div className="shrink-0">
-              <input
-                ref={imageInputRef}
-                type="file"
-                accept="image/jpeg,image/png,image/webp,image/gif"
-                className="hidden"
-                onChange={e => {
-                  const file = e.target.files?.[0];
-                  if (file) { insertImageFromFile(file); e.target.value = ''; }
-                }}
-              />
-              <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); imageInputRef.current?.click(); }} title="Insert figure / image"><ImagePlus size={14} /></ToolbarButton>
-            </div>
-            <div className="w-px h-4 mx-0.5 shrink-0" style={{ background: 'var(--border)' }} />
-            <ToolbarButton
-              onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); if (onInsertFigure) onInsertFigure(); }}
-              title="Insert figure label (auto-numbered)"
-            >
-              <Hash size={14} />
-            </ToolbarButton>
-            <div className="w-px h-4 mx-0.5 shrink-0" style={{ background: 'var(--border)' }} />
-            <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().undo().run(); }} title="Undo"><Undo size={14} /></ToolbarButton>
-            <ToolbarButton onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); editor.chain().focus().redo().run(); }} title="Redo"><Redo size={14} /></ToolbarButton>
-            <div className="w-px h-4 mx-0.5 shrink-0" style={{ background: 'var(--border)' }} />
-            <ToolbarButton
-              onMouseDown={(e: React.MouseEvent) => { e.preventDefault(); setAutocompleteEnabled(v => !v); }}
-              title={autocompleteEnabled ? 'Autocomplete on (Tab to accept)' : 'Autocomplete off'}
-              isActive={autocompleteEnabled}
-            >
-              {autocompleteLoading
-                ? <Loader2 size={14} className="animate-spin" />
-                : <Wand2 size={14} />}
-            </ToolbarButton>
-          </div>
-        </div>
-
+    <div className={`w-full mx-auto ${isDistractionFree ? 'focus-mode' : ''}`}>
+      <div className="min-h-[600px] transition-colors duration-300">
+        <input
+          ref={imageInputRef}
+          type="file"
+          accept="image/jpeg,image/png,image/webp,image/gif"
+          className="hidden"
+          onChange={e => {
+            const file = e.target.files?.[0];
+            if (file) { insertImageFromFile(file); e.target.value = ''; }
+          }}
+        />
+        <div ref={fitRef}>
         <div
           ref={pageGuideContainerRef}
-          className="px-8 sm:px-12 md:px-16 py-12 md:py-20 relative"
+          data-testid="page-canvas"
+          className="page-canvas relative mx-auto"
           style={{
-            fontSize: `${editorZoom}%`,
-
+            width: `${PAGE_SIZES_IN[canvasFormat.page.size].width}in`,
+            minHeight: `${PAGE_SIZES_IN[canvasFormat.page.size].height}in`,
+            paddingTop: `${canvasFormat.page.marginsIn.top}in`,
+            paddingRight: `${canvasFormat.page.marginsIn.right}in`,
+            paddingBottom: `${canvasFormat.page.marginsIn.bottom}in`,
+            paddingLeft: `${canvasFormat.page.marginsIn.left}in`,
+            fontFamily: canvasFormat.defaults.fontFamily,
+            fontSize: `${canvasFormat.defaults.fontSizePt}pt`,
+            zoom: effectiveZoom,
           }}
         >
-          {showPageGuides && pageGuideOffsets.map((top, i) => (
+          <div data-testid="page-guides" aria-hidden className="absolute inset-0 pointer-events-none">
+          {pageGuideOffsets.map((top, i) => (
             <div key={i} className="absolute left-0 right-0 pointer-events-none z-10" style={{ top }} aria-hidden>
               <div className="border-t border-dashed border-stone-300 relative">
                 <span className="absolute -top-2.5 right-1 text-[9px] font-bold px-1 rounded" style={{ color: 'var(--text-muted)', background: 'var(--surface-1)' }}>
@@ -1135,185 +454,14 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
               </div>
             </div>
           ))}
+          </div>
           <EditorContent editor={editor} />
         </div>
-
-        {/* Stats Bar */}
-        <div className="border-t border-[var(--border-subtle)] px-4 sm:px-8 py-3 flex items-center justify-between text-[11px] font-medium text-[var(--text-tertiary)] bg-[var(--surface-0)] rounded-b-sm">
-          <div className="flex items-center gap-4 sm:gap-6">
-            <span className="flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
-              {stats.words} words
-            </span>
-            <span className="hidden sm:inline">{stats.characters} chars</span>
-            <span className="hidden md:inline">{stats.paragraphs} paragraphs</span>
-          </div>
-          <div className="flex items-center gap-3">
-            {currentSectionTitle && (
-              <span className="flex items-center gap-1.5 max-w-[160px] truncate" title={`In section: ${currentSectionTitle}`}>
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
-                <span className="truncate">{currentSectionTitle}</span>
-              </span>
-            )}
-            {currentSectionTitle && onAnalyzeSection && (
-              <button
-                onClick={() => onAnalyzeSection(getSectionText(currentSectionTitle), currentSectionTitle)}
-                className="flex items-center gap-1 px-2 py-0.5 rounded bg-stone-100 hover:bg-stone-200 transition-colors text-[10px] font-semibold"
-                style={{ color: 'var(--text-secondary)' }}
-                title={`Analyze "${currentSectionTitle}" section only`}
-              >
-                <Sparkles size={10} />
-                Analyze Section
-              </button>
-            )}
-            <span className="flex items-center gap-1.5"><Clock size={12} />{stats.readingTime} min read</span>
-          </div>
         </div>
+
       </div>
 
-      {/* Enhanced Bubble Menu — formatting + AI actions when text is selected */}
-      <BubbleMenu
-        editor={editor}
-        options={{ placement: 'top', offset: 10 }}
-        shouldShow={({ editor: e, from, to }) => {
-          if (e.isActive('resizableImage')) return false;
-          // Suppress text menu if selection spans an image node
-          let hasImg = false;
-          if (from !== to) e.state.doc.nodesBetween(from, to, n => { if (n.type.name === 'resizableImage') { hasImg = true; return false; } return true; });
-          return !hasImg && from !== to;
-        }}
-      >
-        <div className="bg-stone-900 text-white rounded-xl shadow-2xl border border-stone-700 overflow-hidden" style={{ maxWidth: '480px' }}>
-          {/* Formatting row */}
-          <div className="flex items-center gap-0.5 p-1 border-b border-stone-700 flex-wrap">
-            <button onMouseDown={e => { e.preventDefault(); editor.chain().focus().toggleBold().run(); }} className={`p-1.5 rounded hover:bg-stone-800 ${editor.isActive('bold') ? 'text-blue-400' : ''}`}><Bold size={14} /></button>
-            <button onMouseDown={e => { e.preventDefault(); editor.chain().focus().toggleItalic().run(); }} className={`p-1.5 rounded hover:bg-stone-800 ${editor.isActive('italic') ? 'text-blue-400' : ''}`}><Italic size={14} /></button>
-            <button onMouseDown={e => { e.preventDefault(); editor.chain().focus().toggleUnderline().run(); }} className={`p-1.5 rounded hover:bg-stone-800 ${editor.isActive('underline') ? 'text-blue-400' : ''}`}><UnderlineIcon size={14} /></button>
-            <div className="w-px h-4 bg-stone-700 mx-1" />
-            {BUBBLE_ACTIONS.map(action => (
-              <button
-                key={action.label}
-                onMouseDown={e => {
-                  e.preventDefault();
-                  const text = selectedTextRef.current || getSelectedText();
-                  if (!text) return;
-                  if (action.mode === 'transform' && onTransformSelection) {
-                    onTransformSelection(text, action.instruction, action.agent);
-                  } else {
-                    onSelectionQuery?.(text, action.instruction, action.agent);
-                  }
-                }}
-                className="px-2 py-1.5 rounded hover:bg-stone-800 text-[10px] font-medium flex items-center gap-1 whitespace-nowrap"
-                title={`${action.label} — ${action.mode === 'transform' ? 'creates accept/reject suggestion' : 'opens in chat'}`}
-              >
-                <action.icon size={11} />
-                {action.label}
-              </button>
-            ))}
-            <div className="w-px h-4 bg-stone-700 mx-1" />
-            <button
-              onMouseDown={e => { e.preventDefault(); const text = selectedTextRef.current || getSelectedText(); if (text && onRewriteSection) onRewriteSection(text); }}
-              className="px-2 py-1.5 rounded hover:bg-stone-800 text-[10px] font-medium flex items-center gap-1 whitespace-nowrap text-amber-400"
-              title="Rewrite and get accept/reject suggestion"
-            >
-              <RefreshCw size={11} />
-              Rewrite
-            </button>
-            <button
-              onMouseDown={e => { e.preventDefault(); const text = selectedTextRef.current || getSelectedText(); if (text && onVerifyClaim) onVerifyClaim(text); }}
-              className="px-2 py-1.5 rounded hover:bg-stone-800 text-[10px] font-medium flex items-center gap-1 whitespace-nowrap text-cyan-400"
-              title="Verify this claim against uploaded PDF sources"
-            >
-              <FileSearch size={11} />
-              Verify
-            </button>
-            {selectionWordCount > 5 && (
-              <button
-                onMouseDown={e => { e.preventDefault(); const text = selectedTextRef.current || getSelectedText(); if (text && onSearchSimilar) onSearchSimilar(text); }}
-                className="px-2 py-1.5 rounded hover:bg-stone-800 text-[10px] font-medium flex items-center gap-1 whitespace-nowrap text-violet-400"
-                title="Find similar published manuscripts for this selection"
-              >
-                <Search size={11} />
-                Find Similar
-              </button>
-            )}
-            {selectionWordCount >= 1 && selectionWordCount <= 2 && (
-              <button
-                onMouseDown={e => { e.preventDefault(); handleThesaurus(); }}
-                className="px-2 py-1.5 rounded hover:bg-stone-800 text-[10px] font-medium flex items-center gap-1 whitespace-nowrap text-green-400"
-                title="Find synonyms / alternatives"
-              >
-                <BookOpen size={11} />
-                Synonyms
-              </button>
-            )}
-            <button
-              onMouseDown={e => { e.preventDefault(); setShowSelectionBar(true); setTimeout(() => instructionInputRef.current?.focus(), 100); }}
-              className="px-2 py-1.5 rounded hover:bg-stone-800 text-[10px] font-medium flex items-center gap-1"
-              title="Custom instruction for selected text"
-            >
-              <MessageSquare size={11} />
-              Ask AI
-            </button>
-          </div>
-
-          {/* Thesaurus panel */}
-          {thesaurusWord && (
-            <div className="p-2 border-b border-stone-700">
-              <div className="text-[9px] uppercase tracking-widest text-stone-400 mb-1.5">Synonyms for "{thesaurusWord}"</div>
-              {thesaurusLoading ? (
-                <span className="text-[11px] text-stone-400 animate-pulse">Looking up...</span>
-              ) : thesaurusSynonyms.length > 0 ? (
-                <div className="flex flex-wrap gap-1">
-                  {thesaurusSynonyms.map(syn => (
-                    <button
-                      key={syn}
-                      onClick={() => replaceWithSynonym(syn)}
-                      className="px-2 py-0.5 rounded bg-stone-700 hover:bg-stone-600 text-[11px] font-medium transition-colors"
-                    >
-                      {syn}
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <span className="text-[11px] text-stone-400">No synonyms found</span>
-              )}
-            </div>
-          )}
-
-          {/* Custom instruction input — shown when "Ask AI" clicked */}
-          {showSelectionBar && (
-            <div className="flex items-center gap-1 p-1.5">
-              <select
-                value={selectionAgent}
-                onChange={e => setSelectionAgent(e.target.value as AgentType)}
-                className="bg-stone-800 text-white text-[10px] rounded px-1.5 py-1 border border-stone-600 focus:outline-none"
-              >
-                <option value="editor">Language Surgeon</option>
-                <option value="reviewer-2">Reviewer 2</option>
-                <option value="researcher">Clarity & Impact</option>
-                <option value="manager">Structure</option>
-              </select>
-              <input
-                ref={instructionInputRef}
-                value={selectionInstruction}
-                onChange={e => setSelectionInstruction(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter' && selectionInstruction.trim()) handleSelectionSend(selectionInstruction, selectionAgent); }}
-                placeholder="e.g. Make this more concise..."
-                className="flex-1 bg-stone-800 text-white text-[11px] rounded px-2 py-1 border border-stone-600 focus:outline-none focus:border-stone-400 placeholder-stone-500 min-w-[160px]"
-              />
-              <button
-                onMouseDown={e => { e.preventDefault(); handleSelectionSend(selectionInstruction || 'Suggest improvements for this text.', selectionAgent); }}
-                className="p-1.5 rounded bg-blue-600 hover:bg-blue-500 transition-colors"
-              >
-                <Send size={12} />
-              </button>
-            </div>
-          )}
-        </div>
-      </BubbleMenu>
-
-      {/* Image / Figure BubbleMenu — shows when image is selected, or when selection spans an image */}
+      {/* Figure controls float on the selected figure (or on a selection that spans one), and nowhere else. */}
       <BubbleMenu
         editor={editor}
         shouldShow={({ editor: e, from, to }) => {
@@ -1324,375 +472,38 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
         }}
         options={{ placement: 'top', offset: 8 }}
       >
-        <div className="bg-stone-900 text-white rounded-xl shadow-2xl border border-stone-700 overflow-hidden" style={{ maxWidth: '520px' }}>
-          {/* Row 1: layout controls */}
-          <div className="flex items-center gap-0.5 p-1.5 border-b border-stone-700 flex-wrap">
-            <span className="text-[9px] uppercase tracking-widest text-stone-500 px-1">Align</span>
-            {(['left', 'center', 'right'] as const).map(a => (
-              <button
-                key={a}
-                onMouseDown={e => { e.preventDefault(); editor.commands.updateAttributes('resizableImage', { align: a }); }}
-                className={`px-2 py-1 rounded text-[10px] transition-colors ${editor.getAttributes('resizableImage').align === a ? 'bg-stone-600' : 'hover:bg-stone-700'}`}
-                title={`Align ${a}`}
-              >
-                {a === 'left' ? '◧' : a === 'center' ? '▣' : '◨'}
-              </button>
-            ))}
-            <div className="w-px h-4 bg-stone-700 mx-1 shrink-0" />
-            <span className="text-[9px] uppercase tracking-widest text-stone-500 px-1">Size</span>
-            {([['S', '25%'], ['M', '50%'], ['L', '75%'], ['Full', '100%']] as const).map(([label, w]) => (
-              <button
-                key={label}
-                onMouseDown={e => { e.preventDefault(); editor.commands.updateAttributes('resizableImage', { width: w }); }}
-                className="px-2 py-1 rounded text-[10px] hover:bg-stone-700 transition-colors"
-                title={`Set width to ${w}`}
-              >
-                {label}
-              </button>
-            ))}
-            <div className="w-px h-4 bg-stone-700 mx-1 shrink-0" />
-            <button
-              onMouseDown={e => { e.preventDefault(); editor.chain().focus().deleteSelection().run(); }}
-              className="px-2 py-1 rounded text-[10px] hover:bg-rose-700 transition-colors text-rose-400"
-              title="Delete figure"
-            >
-              <Trash2 size={11} />
-            </button>
-          </div>
-          {/* Row 2: AI actions */}
-          <div className="flex items-center gap-0.5 p-1.5 flex-wrap">
-            <span className="text-[9px] uppercase tracking-widest text-stone-500 px-1 shrink-0">Figure AI</span>
-            {/* Visual description — what you literally see */}
-            <button
-              onMouseDown={e => {
-                e.preventDefault();
-                const attrs = editor.getAttributes('resizableImage');
-                if (!attrs.src || !onAnalyzeImage) return;
-                onAnalyzeImage(
-                  attrs.src,
-                  'Describe what you can see in this figure purely visually: shapes, colors, spatial layout, objects, text labels, axes, legends, and any other visible elements. Do not interpret the scientific meaning — focus only on what is visually present.',
-                  getImageContext()
-                );
-              }}
-              className="px-2 py-1 rounded text-[10px] hover:bg-stone-700 transition-colors flex items-center gap-1 text-sky-400"
-              title="Visual description of what is seen in the figure"
-            >
-              <EyeIcon size={11} />
-              Describe
-            </button>
-            {/* Integrity check — quality, spelling, colors, readability */}
-            <button
-              onMouseDown={e => {
-                e.preventDefault();
-                const attrs = editor.getAttributes('resizableImage');
-                if (!attrs.src || !onAnalyzeImage) return;
-                onAnalyzeImage(
-                  attrs.src,
-                  'Review this figure for visual integrity and quality issues. Check: (1) Is the resolution sufficient for publication? (2) Are all text labels, axis titles, and legends readable? (3) Check spelling of any text visible in the figure. (4) Are colors distinguishable (colorblind-friendly)? (5) Are there any visual artifacts, blurriness, or distortions? (6) Are axes properly labeled with units? (7) Is the overall layout clear and uncluttered? List each issue found with a specific recommendation.',
-                  getImageContext()
-                );
-              }}
-              className="px-2 py-1 rounded text-[10px] hover:bg-stone-700 transition-colors flex items-center gap-1 text-emerald-400"
-              title="Check figure quality, spelling, colors, readability"
-            >
-              <ShieldCheck size={11} />
-              Integrity
-            </button>
-            {/* Manuscript review — how well it supports the surrounding text */}
-            <button
-              onMouseDown={e => {
-                e.preventDefault();
-                const attrs = editor.getAttributes('resizableImage');
-                if (!attrs.src || !onAnalyzeImage) return;
-                onAnalyzeImage(
-                  attrs.src,
-                  'Review this figure in the context of the surrounding manuscript text. Does the figure clearly support the claims made in the text? Is it self-explanatory? Would a peer reviewer find it clear and convincing? What improvements would make it more effective for the manuscript?',
-                  getImageContext()
-                );
-              }}
-              className="px-2 py-1 rounded text-[10px] hover:bg-stone-700 transition-colors flex items-center gap-1 text-amber-400"
-              title="Review figure relevance and clarity in context of manuscript"
-            >
-              <FlaskConical size={11} />
-              Review
-            </button>
-            {/* Ask / custom */}
-            <button
-              onMouseDown={e => {
-                e.preventDefault();
-                setShowAskInput(p => !p);
-                setAskInputValue('');
-                setTimeout(() => askInputRef.current?.focus(), 50);
-              }}
-              className={`px-2 py-1 rounded text-[10px] transition-colors flex items-center gap-1 text-violet-400 ${showAskInput ? 'bg-stone-700' : 'hover:bg-stone-700'}`}
-              title="Ask a custom question about this figure"
-            >
-              <MessageSquare size={11} />
-              Ask
-            </button>
-          </div>
-          {/* Inline ask input */}
-          {showAskInput && (
-            <div className="flex items-center gap-1 px-1.5 pb-1.5">
-              <input
-                ref={askInputRef}
-                value={askInputValue}
-                onChange={e => setAskInputValue(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter' && askInputValue.trim()) {
-                    e.preventDefault();
-                    const attrs = editor.getAttributes('resizableImage');
-                    if (attrs.src && onAnalyzeImage) {
-                      onAnalyzeImage(attrs.src, askInputValue.trim(), getImageContext() || undefined);
-                    }
-                    setShowAskInput(false);
-                    setAskInputValue('');
-                  } else if (e.key === 'Escape') {
-                    setShowAskInput(false);
-                    setAskInputValue('');
-                  }
-                }}
-                placeholder="Ask about this figure… (Enter to send)"
-                className="flex-1 bg-stone-800 text-white text-[11px] rounded px-2 py-1 border border-stone-600 focus:outline-none focus:border-stone-400 placeholder-stone-500 min-w-[200px]"
-              />
-              <button
-                onMouseDown={e => {
-                  e.preventDefault();
-                  if (!askInputValue.trim()) return;
-                  const attrs = editor.getAttributes('resizableImage');
-                  if (attrs.src && onAnalyzeImage) {
-                    onAnalyzeImage(attrs.src, askInputValue.trim(), getImageContext() || undefined);
-                  }
-                  setShowAskInput(false);
-                  setAskInputValue('');
-                }}
-                className="p-1.5 rounded bg-violet-600 hover:bg-violet-500 transition-colors"
-              >
-                <Send size={11} />
-              </button>
-            </div>
-          )}
-          {/* Context hint — only show when text is selected around the figure */}
-          {getImageContext().length > 0 && (
-            <div className="px-2 pb-1.5">
-              <p className="text-[9px] text-stone-500">
-                Context: "{getImageContext().substring(0, 70)}{getImageContext().length > 70 ? '…' : ''}"
-              </p>
-            </div>
-          )}
-        </div>
+        <FigureControls
+          key={figure?.at ?? 'none'}
+          align={(figure?.align as 'left' | 'center' | 'right' | null) ?? null}
+          context={getImageContext(editor)}
+          onAlign={a => { editor.commands.updateAttributes('resizableImage', { align: a }); }}
+          onSize={w => { editor.commands.updateAttributes('resizableImage', { width: w }); }}
+          onDelete={() => { editor.chain().focus().deleteSelection().run(); }}
+          onDescribe={() => analyzeFigure(FIGURE_PROMPTS.describe)}
+          onQuality={() => analyzeFigure(FIGURE_PROMPTS.quality)}
+          onRelevance={() => analyzeFigure(FIGURE_PROMPTS.relevance)}
+          onAsk={q => analyzeFigure(q)}
+        />
       </BubbleMenu>
 
-      {/* Table grid picker — position:fixed escapes overflow clipping */}
       {showTablePicker && tablePickerPos && (
-        <div
-          id="table-picker-portal"
-          className="rounded-lg shadow-xl p-2.5"
-          style={{
-            position: 'fixed',
-            zIndex: 9999,
-            left: tablePickerPos.x,
-            top: tablePickerPos.y,
-            background: 'var(--surface-1)',
-            border: '1px solid var(--border)',
-          }}
-          onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
-        >
-          <p className="text-[9px] font-bold uppercase tracking-widest mb-2" style={{ color: 'var(--text-muted)' }}>
-            {tableHover.rows > 0 ? `${tableHover.rows} × ${tableHover.cols} table` : 'Insert table'}
-          </p>
-          <div style={{ display: 'grid', gap: '4px', gridTemplateColumns: 'repeat(6, 20px)' }}>
-            {(() => {
-              const cells = [];
-              for (let r = 0; r < 6; r++) {
-                for (let c = 0; c < 6; c++) {
-                  const highlighted = r < tableHover.rows && c < tableHover.cols;
-                  cells.push(
-                    <div
-                      key={`${r}-${c}`}
-                      onMouseEnter={() => setTableHover({ rows: r + 1, cols: c + 1 })}
-                      onMouseLeave={() => setTableHover({ rows: 0, cols: 0 })}
-                      onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); insertTable(r + 1, c + 1); }}
-                      style={{
-                        width: 20,
-                        height: 20,
-                        border: `1px solid ${highlighted ? 'var(--accent-blue)' : 'var(--border)'}`,
-                        background: highlighted ? 'rgba(59,111,212,0.2)' : 'var(--surface-2)',
-                        borderRadius: 2,
-                        cursor: 'pointer',
-                      }}
-                    />
-                  );
-                }
-              }
-              return cells;
-            })()}
-          </div>
-        </div>
+        <TablePicker pos={tablePickerPos} hover={tableHover} onHover={setTableHover} onPick={insertTable} />
       )}
+      {tableContextMenu && <TableContextMenu editor={editor} pos={tableContextMenu} onDone={() => setTableContextMenu(null)} />}
 
-      {/* Table right-click context menu */}
-      {tableContextMenu && (
-        <div
-          id="table-context-menu"
-          style={{
-            position: 'fixed',
-            zIndex: 9999,
-            left: tableContextMenu.x,
-            top: tableContextMenu.y,
-            background: 'var(--surface-1)',
-            border: '1.5px solid var(--border)',
-            borderRadius: 10,
-            boxShadow: '0 8px 32px rgba(0,0,0,0.18)',
-            minWidth: 160,
-            overflow: 'hidden',
-          }}
-          onMouseDown={e => e.stopPropagation()}
-        >
-          <div className="px-3 py-1.5 border-b" style={{ borderColor: 'var(--border)', background: 'var(--surface-2)' }}>
-            <span className="text-[9px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>Table</span>
-          </div>
-          {[
-            { label: 'Add column before', icon: '←', cmd: () => editor.chain().focus().addColumnBefore().run(), danger: false },
-            { label: 'Add column after',  icon: '→', cmd: () => editor.chain().focus().addColumnAfter().run(), danger: false },
-            { label: 'Add row above',     icon: '↑', cmd: () => editor.chain().focus().addRowBefore().run(), danger: false },
-            { label: 'Add row below',     icon: '↓', cmd: () => editor.chain().focus().addRowAfter().run(), danger: false },
-            null,
-            { label: 'Delete column', icon: '×', cmd: () => editor.chain().focus().deleteColumn().run(), danger: true },
-            { label: 'Delete row',    icon: '×', cmd: () => editor.chain().focus().deleteRow().run(), danger: true },
-            { label: 'Delete table',  icon: '⊠', cmd: () => editor.chain().focus().deleteTable().run(), danger: true },
-          ].map((item, i) => item === null
-            ? <div key={i} className="border-t my-0.5" style={{ borderColor: 'var(--border)' }} />
-            : (
-              <button
-                key={item.label}
-                onMouseDown={e => { e.preventDefault(); item.cmd(); setTableContextMenu(null); }}
-                className="w-full text-left flex items-center gap-2.5 px-3 py-1.5 text-[12px] transition-colors"
-                style={{ color: item.danger ? '#e11d48' : 'var(--text-primary)', background: 'transparent' }}
-                onMouseEnter={e => (e.currentTarget.style.background = item.danger ? 'rgba(225,29,72,0.08)' : 'var(--surface-2)')}
-                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-              >
-                <span className="w-4 text-center font-bold shrink-0" style={{ color: item.danger ? '#e11d48' : 'var(--accent-blue)', fontSize: 13 }}>{item.icon}</span>
-                {item.label}
-              </button>
-            )
-          )}
-        </div>
-      )}
-
-      {/* @ Citation picker */}
-      {citationPicker && isMounted && createPortal(
-        <div
-          className="fixed z-[9999] rounded-xl shadow-2xl overflow-hidden"
-          style={{
-            left: Math.min(citationPicker.x, window.innerWidth - 280),
-            top: citationPicker.y,
-            width: 260,
-            background: 'var(--surface-1)',
-            border: '1.5px solid var(--border)',
-            boxShadow: '0 8px 32px rgba(0,0,0,0.18)',
-          }}
-          onMouseDown={e => e.preventDefault()}
-        >
-          <div className="px-3 py-2 border-b flex items-center gap-1.5" style={{ borderColor: 'var(--border)', background: 'var(--surface-2)' }}>
-            <BookOpen size={10} style={{ color: 'var(--accent-blue)' }} />
-            <p className="text-[10px] font-bold uppercase tracking-wider" style={{ color: 'var(--text-secondary)' }}>Insert Citation</p>
-          </div>
-
-          {/* DOI detection row — shown when typed text looks like a DOI */}
-          {looksLikeDoi(citationFilter) && (
-            <div className="border-b" style={{ borderColor: 'var(--border)' }}>
-              {doiPickerState === 'error' ? (
-                <div className="px-3 py-2">
-                  <p className="text-[11px]" style={{ color: '#ef4444' }}>{doiPickerError}</p>
-                  <button
-                    className="text-[10px] mt-1 underline"
-                    style={{ color: 'var(--text-muted)' }}
-                    onMouseDown={e => { e.preventDefault(); setDoiPickerError(null); setDoiPickerState('idle'); }}
-                  >
-                    Dismiss
-                  </button>
-                </div>
-              ) : (
-                <button
-                  className="w-full text-left px-3 py-2 transition-colors flex items-center gap-2"
-                  style={{ background: 'rgba(59,111,212,0.06)' }}
-                  onMouseEnter={e => (e.currentTarget.style.background = 'rgba(59,111,212,0.12)')}
-                  onMouseLeave={e => (e.currentTarget.style.background = 'rgba(59,111,212,0.06)')}
-                  onMouseDown={e => {
-                    e.preventDefault();
-                    if (doiPickerState !== 'idle') return;
-                    const parts = citationFilter
-                      .split(',')
-                      .map(p => normalizeDoi(p.trim()))
-                      .filter(p => looksLikeDoi(p));
-                    if (parts.length > 1) {
-                      handleInsertMultipleDoi(parts);
-                    } else {
-                      handleInsertDoi(parts[0] ?? citationFilter);
-                    }
-                  }}
-                  disabled={doiPickerState === 'loading'}
-                >
-                  {doiPickerState === 'loading' ? (
-                    <Sparkles size={12} className="animate-spin shrink-0" style={{ color: 'var(--accent-blue)' }} />
-                  ) : (
-                    <ArrowRight size={12} className="shrink-0" style={{ color: 'var(--accent-blue)' }} />
-                  )}
-                  <div className="min-w-0">
-                    <p className="text-[11px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-                      {doiPickerState === 'loading'
-                        ? 'Fetching from Crossref…'
-                        : (() => {
-                            const count = citationFilter.split(',').filter(p => looksLikeDoi(normalizeDoi(p.trim()))).length;
-                            return count > 1 ? `Look up ${count} DOIs via Crossref` : 'Look up DOI via Crossref';
-                          })()}
-                    </p>
-                    <p className="text-[10px] truncate font-mono" style={{ color: 'var(--text-muted)' }}>{citationFilter}</p>
-                  </div>
-                </button>
-              )}
-            </div>
-          )}
-
-          {filteredCitationSources.length === 0 && !looksLikeDoi(citationFilter) ? (
-            <p className="px-3 py-3 text-[11px]" style={{ color: 'var(--text-muted)' }}>No sources — upload PDFs, search, or type a DOI like 10.1234/xxx.</p>
-          ) : null}
-          {(filteredCitationSources.length > 0 || !looksLikeDoi(citationFilter)) && (
-            <div className="max-h-64 overflow-y-auto">
-              {filteredCitationSources.map(src => {
-                const num = citationRegistry?.[src.id];
-                const label = src.type === 'api'
-                  ? (src.apiMeta?.authors?.split(/[,;]/)[0]?.trim() ?? src.name) + (src.apiMeta?.year ? `, ${src.apiMeta.year}` : '')
-                  : src.name.replace(/\.pdf$/i, '');
-                return (
-                  <button
-                    key={src.id}
-                    className="w-full text-left px-3 py-2 border-b last:border-0 transition-colors"
-                    style={{ borderColor: 'var(--border)', background: 'transparent' }}
-                    onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface-2)')}
-                    onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-                    onMouseDown={e => { e.preventDefault(); handleInsertCitation(src); }}
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] font-bold tabular-nums shrink-0 w-5 h-5 flex items-center justify-center rounded-md" style={{ background: 'var(--accent-blue)', color: '#fff' }}>
-                        {num ?? '?'}
-                      </span>
-                      <span className="text-[11px] font-medium truncate" style={{ color: 'var(--text-primary)' }}>{label}</span>
-                    </div>
-                    {src.type === 'api' && src.apiMeta?.title && (
-                      <p className="text-[10px] truncate pl-7 mt-0.5" style={{ color: 'var(--text-muted)' }}>{src.apiMeta.title}</p>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-          <div className="px-3 py-1.5 border-t" style={{ borderColor: 'var(--border)', background: 'var(--surface-2)' }}>
-            <p className="text-[9px]" style={{ color: 'var(--text-muted)' }}>Press Esc to close · Type a DOI (10.xxxx/…) to look up</p>
-          </div>
-        </div>,
-        document.body
+      {citation.at && isMounted && (
+        <CitationPicker
+          at={citation.at}
+          filter={citation.filter}
+          sources={citation.filtered}
+          registry={citationRegistry}
+          doiState={citation.doiState}
+          doiError={citation.doiError}
+          onChooseSource={citation.chooseSource}
+          onLookupDoi={citation.lookupDoi}
+          onLookupDois={citation.lookupDois}
+          onDismissError={citation.dismissError}
+        />
       )}
     </div>
   );

@@ -38,8 +38,6 @@
   --severity-style: #8a847a;
 
   /* Editor paper */
-  --editor-bg: #ffffff;
-  --editor-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 6px 24px rgba(0,0,0,0.02);
 }
 
 /* Dark mode */
@@ -66,9 +64,6 @@
   --severity-major: #d4a840;
   --severity-minor: #6b9aef;
   --severity-style: #7a7468;
-
-  --editor-bg: #1c1a17;
-  --editor-shadow: 0 1px 3px rgba(0,0,0,0.2), 0 6px 24px rgba(0,0,0,0.15);
 }
 
 [data-theme="dark"] .diff-remove {
@@ -458,3 +453,33 @@ mark {
   user-select: all;
   cursor: default;
 }
+
+/* The writing surface is a real page: width and margins come from the document format (inline). */
+.page-canvas {
+  background: var(--surface-1, #fff);
+  box-sizing: border-box;
+  /* The 1px ring is a spread shadow, not a border: a border would take 2px from the content box and skew the page pitch the guides are measured from. It gives the page an edge in dark mode, where the black shadow is invisible. */
+  box-shadow: 0 0 0 1px var(--border-subtle), 0 1px 3px rgba(0, 0, 0, 0.12), 0 8px 24px rgba(0, 0, 0, 0.06);
+  max-width: none;
+}
+
+/* ─── U shell: top bar, task rail, one panel, page canvas, status bar ─── */
+.u-shell { flex: 1 1 0%; min-width: 0; display: flex; flex-direction: column; height: 100%; overflow: hidden; position: relative; }
+.u-shell-top, .u-shell-status { flex: none; }
+.u-shell-top { position: relative; z-index: 40; } /* the top bar's menus open downward over the page */
+.u-shell-body { flex: 1 1 0%; min-height: 0; display: flex; position: relative; }
+.u-shell-canvas { flex: 1 1 0%; min-width: 0; overflow: hidden; }
+.u-shell-panel { flex: none; max-width: 100%; display: flex; min-height: 0; border-right: 1px solid var(--border); }
+.u-rail { flex: none; width: 44px; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 0; background: var(--surface-1); border-right: 1px solid var(--border); }
+.u-rail-btn { position: relative; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border-radius: 8px; color: var(--text-muted); background: transparent; border: 0; cursor: pointer; }
+.u-rail-btn:hover { background: var(--surface-2, rgba(0,0,0,.05)); color: var(--text-primary); }
+.u-rail-btn.is-active { background: var(--text-primary); color: var(--surface-1); }
+.u-rail-badge { position: absolute; top: -3px; right: -3px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px; font-size: 9px; font-weight: 700; line-height: 15px; text-align: center; background: var(--accent-blue, #2563eb); color: #fff; }
+.u-status { height: 28px; display: flex; align-items: center; gap: 16px; padding: 0 16px; font-size: 10px; font-weight: 500; color: var(--text-muted); background: var(--surface-1); border-top: 1px solid var(--border); white-space: nowrap; overflow: hidden; }
+.u-status-pages.is-over { color: #b91c1c; font-weight: 700; }
+.u-status-save { margin-left: auto; }
+/* Narrow windows: the panel floats over the canvas instead of squeezing the page. */
+@media (max-width: 767px) {
+  .u-shell-panel { position: absolute; top: 0; bottom: 0; left: 44px; right: 0; z-index: 30; background: var(--surface-1); border-right: 0; }
+}
+.u-shell-panel[hidden] { display: none; }

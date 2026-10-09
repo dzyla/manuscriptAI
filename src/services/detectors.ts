@@ -266,3 +266,13 @@ export function detectorSuggestions(text: string): Suggestion[] {
       kind: 'advisory' as const,
     }));
 }
+
+let detectorRuns = 0;
+/**
+ * `detectorSuggestions` for one analysis run, with ids that cannot repeat across runs. A row action looks its suggestion up by id,
+ * so a second run producing `detector-0-79` again would let an action land on the older row.
+ */
+export function freshDetectorSuggestions(text: string): Suggestion[] {
+  const run = `${Date.now().toString(36)}${(detectorRuns++).toString(36)}`;
+  return detectorSuggestions(text).map(d => ({ ...d, id: `${d.id}-${run}` }));
+}
