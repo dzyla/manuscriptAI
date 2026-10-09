@@ -697,12 +697,14 @@ export default function Sidebar({
                           )}
                           <div className="flex gap-1.5 mt-2">
                             <button
+                              data-testid={s.kind === 'advisory' ? 'control-card-insert-note' : 'control-card-accept'}
                               onClick={(e) => { e.stopPropagation(); onAcceptSuggestion(s); }}
                               className="flex-1 py-1.5 bg-stone-800 text-white rounded-lg text-[11px] font-medium hover:bg-stone-700 transition-colors"
                             >
                               {s.kind === 'advisory' ? 'Insert note' : 'Accept'}
                             </button>
                             <button
+                              data-testid={s.kind === 'advisory' ? 'control-card-dismiss' : 'control-card-reject'}
                               onClick={(e) => { e.stopPropagation(); onRejectSuggestion(s); }}
                               className="flex-1 py-1.5 border rounded-lg text-[11px] font-medium hover:bg-stone-50 transition-colors"
                               style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}

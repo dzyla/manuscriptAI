@@ -74,7 +74,7 @@ afterEach(cleanup);
  * `text:` never matches inside the document (a heading typed in the editor cannot stand in for a control). `ptext:` matches only inside the open panel, `htext:` the top bar,
  * `ctext:` the page canvas (the Editor's own stats bar and menus), `stext:` the status bar, `mtext:` a modal overlay.
  */
-export type Seed = 'cited-text' | 'saved-doc' | 'voice-profile' | 'table' | 'advisory' | 'local-model' | 'import' | 'snapshot' | 'grant' | 'suggestion' | 'history' | 'sources' | 'citations' | 'outline' | 'analyzing' | 'style-text' | 'text-selection' | 'word-selection' | 'figure' | 'many-suggestions';
+export type Seed = 'cited-text' | 'saved-doc' | 'voice-profile' | 'table' | 'advisory' | 'local-model' | 'import' | 'snapshot' | 'grant' | 'suggestion' | 'history' | 'sources' | 'citations' | 'outline' | 'analyzing' | 'style-text' | 'text-selection' | 'word-selection' | 'figure' | 'many-suggestions' | 'chat-suggestions';
 export interface EntryPoint { feature: string; path: string[]; pending?: number; now?: string[]; isNew?: true; seed?: Seed[] }
 
 const W = 'rail:write', C = 'rail:cite', R = 'rail:review', F = 'rail:format';
@@ -133,6 +133,10 @@ export const ENTRY_POINTS: EntryPoint[] = [
   row('reset the severity filter', [R, 'control:filter', 'control:filter-all'], undefined, undefined, ['suggestion']),
   row('show more review items', [R, 'control:show-more'], undefined, undefined, ['many-suggestions']),
   row('stop a request from the chat', [R, 'section:chat', 'title:Stop request'], undefined, undefined, ['analyzing']),
+  row('accept a suggestion from a chat card', [R, 'section:chat', 'control:card-accept'], undefined, undefined, ['chat-suggestions']),
+  row('reject a suggestion from a chat card', [R, 'section:chat', 'control:card-reject'], undefined, undefined, ['chat-suggestions']),
+  row('insert an advisory note from a chat card', [R, 'section:chat', 'control:card-insert-note'], undefined, undefined, ['chat-suggestions']),
+  row('dismiss an advisory from a chat card', [R, 'section:chat', 'control:card-dismiss'], undefined, undefined, ['chat-suggestions']),
   row('run an analysis', [R, 'control:analyze']),
   row('stop a running analysis', [R, 'control:stop'], undefined, undefined, ['analyzing']),
   row('run one named agent', [R, 'control:analyze-agent', 'control:analyze-agent-one']),
@@ -494,6 +498,10 @@ const seedAfter = async (seeds: Seed[] = []) => {
     if (seeds.includes('analyzing')) useAIStore.setState({ isAnalyzing: true });
     if (seeds.includes('suggestion')) useAIStore.setState({ suggestions: [{ id: 's1', originalText: 'Alpha', suggestedText: 'Beta', explanation: 'EXPLAIN_ME', agent: 'editor', startIndex: 0, endIndex: 5, severity: 'minor' } as any] });
     if (seeds.includes('many-suggestions')) useAIStore.setState({ suggestions: Array.from({ length: 150 }, (_, i) => ({ id: `m${i}`, originalText: `Quoted ${i}`, suggestedText: `Better ${i}`, explanation: `Why ${i}`, agent: 'editor', startIndex: i, endIndex: i + 5, severity: 'minor' })) as any });
+    if (seeds.includes('chat-suggestions')) useAIStore.setState({ messages: [{ id: 'm-cards', role: 'assistant', content: 'Here are two proposals.', agent: 'editor', suggestions: [
+      { id: 'c1', originalText: 'Alpha', suggestedText: 'Beta', explanation: 'Card change', agent: 'editor', startIndex: 0, endIndex: 5, severity: 'minor' },
+      { id: 'c2', originalText: 'Lambda', suggestedText: '', explanation: 'Card advisory', recommendation: 'Cite it.', agent: 'reviewer-2', startIndex: 0, endIndex: 6, severity: 'major', kind: 'advisory' },
+    ] }] as any });
     if (seeds.includes('history')) useAIStore.setState({ history: [{ id: 'h1', timestamp: 1, oldContent: '<p>a</p>', newContent: '<p>b</p>', originalText: 'Alpha', suggestedText: 'beta gamma', suggestionId: 's1', agent: 'editor' }] });
     if (seeds.includes('sources')) useSourceStore.setState({ sources: [
       { id: 'p1', name: 'paper.pdf', type: 'pdf', text: 'Body text of the paper', digest: 'dig', abstractText: 'abs' },
@@ -583,7 +591,7 @@ const balanced = (src: string, i: number): string | null => {
 const testidsIn = (tag: string): string[] => {
   const out: string[] = [];
   for (const m of tag.matchAll(/data-testid=(?:"([^"]+)"|\{)/g)) {
-    if (m[1]) out.push(m[1]); else out.push(...literals(balanced(tag, m.index! + m[0].length - 1) ?? ''));
+    if (m[1]) out.push(m[1]); else out.push(...literals((balanced(tag, m.index! + m[0].length - 1) ?? '').replace(/[=!]==?\s*(['"`])[^'"`]*\1/g, '')));
   }
   return out;
 };
@@ -628,6 +636,11 @@ export function textOnlyButtons(src: string): { words: string[]; line: number; t
   }
   return out;
 }
+/**
+ * Test ids that deliberately appear on more than one control in the guarded files (e.g. a per-row control extracted into its own file).
+ * Each entry MUST carry a reason: an entry without one is a defect and fails the test below. Sharing is allowed, never silent.
+ */
+const SHARED_TESTIDS: Record<string, string> = {};
 const GUARDED = ['src/App.tsx', 'src/components/Editor.tsx', 'src/components/Sidebar.tsx', 'src/components/style/StylePanel.tsx', 'src/components/style/VoiceProfileManager.tsx',
   'src/components/panels/ReviewPanel.tsx', 'src/components/panels/SuggestionBody.tsx', 'src/components/panels/suggestionParts.tsx'];
 
@@ -702,13 +715,20 @@ describe('the list itself', () => {
     for (const f of GUARDED) {
       const src = source(f);
       for (const m of src.matchAll(/data-testid=/g)) for (const id of testidsIn(tagAt(src, m.index!))) {
-        if (id.includes('$')) continue;
+        if (id.includes('$') || id in SHARED_TESTIDS) continue;
         const prev = seen.get(id);
         if (prev !== undefined && prev !== `${f}:${tagAt(src, m.index!)}`) dupes.push(`${id} (${prev.split(':')[0]} and ${f})`);
         seen.set(id, `${f}:${tagAt(src, m.index!)}`);
       }
     }
     expect(dupes).toEqual([]);
+  });
+  it('every shared test id states why it is shared, and is still shared', () => {
+    for (const [id, reason] of Object.entries(SHARED_TESTIDS)) {
+      expect(reason.trim().length, `SHARED_TESTIDS["${id}"] has no reason: an entry without one is a defect`).toBeGreaterThan(10);
+      const files = GUARDED.filter(f => source(f).includes(`"${id}"`) || source(f).includes(`'${id}'`));
+      expect(files.length, `SHARED_TESTIDS["${id}"} is not used by any guarded file any more; delete the entry`).toBeGreaterThan(0);
+    }
   });
   it('every EXCLUDED entry is a deliberate removal with a reason', () => {
     expect(EXCLUDED.map(x => x.feature)).toEqual(['editorWidth (normal/wide/full)', 'second version-history component (VersionHistoryPanel)']);

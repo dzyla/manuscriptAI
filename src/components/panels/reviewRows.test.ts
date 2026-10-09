@@ -157,4 +157,32 @@ describe('reviewRows', () => {
     const rows = reviewRows({ suggestions: [sug({ id: 'done' })], flagged: [], grammar: [], plainText: TEXT, appliedIds: new Set(['done']) });
     expect(rows).toEqual([]);
   });
+
+  describe('the fuzzy anchor cache never vouches for a place the text has left', () => {
+    const quote = 'The treated cohort showed a significantly greater reduction in tumour volume';
+    const near = 'The treated cohort showed a significantly greater reduction in tumor volume';
+    const mk = (id: string) => sug({ id, originalText: quote, startIndex: 0, endIndex: quote.length });
+    const other = (id: string) => sug({ id, originalText: 'Second finding is stated plainly here.', startIndex: 0, endIndex: 38 });
+
+    it('re-resolves a remembered hit when the text moved', () => {
+      const a = mk('cache-hit-a'), b = other('cache-hit-b');
+      const before = `${near}. Second finding is stated plainly here.`;
+      const after = `Second finding is stated plainly here. Padding words. ${near}.`;
+      expect(reviewRows({ suggestions: [a, b], flagged: [], grammar: [], plainText: before, appliedIds: new Set() }).map(r => r.id)).toEqual(['suggestion:cache-hit-a', 'suggestion:cache-hit-b']);
+      expect(reviewRows({ suggestions: [a, b], flagged: [], grammar: [], plainText: after, appliedIds: new Set() }).map(r => r.id)).toEqual(['suggestion:cache-hit-b', 'suggestion:cache-hit-a']);
+    });
+
+    it('drops a remembered hit when its text is gone', () => {
+      const a = mk('cache-gone');
+      reviewRows({ suggestions: [a], flagged: [], grammar: [], plainText: `Intro. ${near}. End.`, appliedIds: new Set() });
+      const rows = reviewRows({ suggestions: [a], flagged: [], grammar: [], plainText: 'Intro. Something unrelated now. End.', appliedIds: new Set() });
+      expect(rows[0].canAct).toBe(false);
+    });
+
+    it('does not reuse a miss recorded for a different document text', () => {
+      const a = mk('cache-miss');
+      expect(reviewRows({ suggestions: [a], flagged: [], grammar: [], plainText: 'Nothing relevant here at all.', appliedIds: new Set() })[0].canAct).toBe(false);
+      expect(reviewRows({ suggestions: [a], flagged: [], grammar: [], plainText: `Now it is back. ${near}. End.`, appliedIds: new Set() })[0].canAct).toBe(true);
+    });
+  });
 });

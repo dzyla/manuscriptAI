@@ -16,7 +16,7 @@ import { AuditMetrics, SentenceAudit, AgentType, Message, Suggestion, HistoryIte
 import { searchSimilarManuscripts } from './services/manuscriptSearch';
 import { expandCitationNums, formatCitationGroup, mergeAdjacentCitations } from './services/citations';
 import { analyzeText, chatWithAgent, chatWithManuscript, resolveConflicts, runJudgeAgent, verifySuggestions, dedupeAdvisories, rebutSuggestion, manuscriptSummary, rewriteSection, transformWithInstruction, analyzeSourceAgainstManuscript, verifyClaimAgainstSources, AGENT_INFO, AGENT_ICONS, estimateTokens } from './services/ai';
-import { detectorSuggestions } from './services/detectors';
+import { freshDetectorSuggestions } from './services/detectors';
 import { buildReviewNote } from './utils/reviewNotes';
 import { findTextSpan } from './utils/textMatch';
 import { auditText, flaggedSentences, MAX_REWRITE_WORDS } from './services/proseAudit/metrics';
@@ -512,9 +512,7 @@ export default function App() {
 
         // Deterministic detectors run regardless of provider — they never miss
         // and never fabricate, so they set a recall floor under the LLM agents.
-        // Ids are stamped per run: a re-run would otherwise repeat `detector-0-79`, and a row action looks its suggestion up by id.
-        const detectorRun = Date.now().toString(36);
-        const detectorAdvisories = detectorSuggestions(plainText).map(d => ({ ...d, id: `${d.id}-${detectorRun}` }));
+        const detectorAdvisories = freshDetectorSuggestions(plainText);
 
         // Advisory suggestions (flag-only) bypass the Judge/verifier, which are
         // built around edit ORIGINAL→REPLACE reasoning. Detector advisories go

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { detectorSuggestions, splitSentences } from './detectors';
+import { readFileSync } from 'node:fs';
+import { detectorSuggestions, freshDetectorSuggestions, splitSentences } from './detectors';
 
 /** Every advisory a detector produces must quote text that literally exists. */
 function assertQuotesAnchor(text: string) {
@@ -106,5 +107,21 @@ describe('detectorSuggestions integration', () => {
         .filter(n => !text.includes(n));
       expect(invented).toEqual([]);
     }
+  });
+});
+
+describe('freshDetectorSuggestions', () => {
+  const text = 'We observed a significant effect (p < 0.05) in the treated group, with n = 12 per arm.';
+  it('gives two analysis runs no repeated suggestion id', () => {
+    const a = freshDetectorSuggestions(text).map(s => s.id);
+    const b = freshDetectorSuggestions(text).map(s => s.id);
+    expect(a.length).toBeGreaterThan(0);
+    expect(a.filter(id => b.includes(id))).toEqual([]);
+    expect(new Set(a).size).toBe(a.length);
+  });
+  it('is what the app calls, so the stamp cannot be dropped at the call site', () => {
+    const app = readFileSync('src/App.tsx', 'utf8');
+    expect(app).toMatch(/freshDetectorSuggestions\(/);
+    expect(app).not.toMatch(/[^h]detectorSuggestions\(/);
   });
 });
