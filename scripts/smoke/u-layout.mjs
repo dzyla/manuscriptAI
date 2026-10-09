@@ -7,7 +7,11 @@
 // approximate page count; at rest the top bar holds no more than 8 controls; the console is clean; and, at 50% and
 // 200% zoom (CSS `zoom` on the canvas), ProseMirror's coordsAtPos/posAtCoords still agree and the fixed-position
 // citation picker still opens beside the caret.
-const { chromium } = await import(process.env.PLAYWRIGHT_MODULE ?? 'playwright');
+const USAGE = 'Usage: npm run dev (port 3000) in one shell, then\n  PLAYWRIGHT_MODULE=/path/to/node_modules/playwright-core/index.mjs [CHROME_PATH=/path/to/chrome] [APP_URL=http://localhost:3000] node scripts/smoke/u-layout.mjs';
+const die = (msg) => { console.error(`${msg}\n${USAGE}`); process.exit(2); };
+let chromium;
+try { ({ chromium } = await import(process.env.PLAYWRIGHT_MODULE ?? 'playwright')); }
+catch (e) { die(`Cannot load Playwright (${e.code ?? e.message}). It is not a repo dependency.`); }
 
 const URL = process.env.APP_URL ?? 'http://localhost:3000';
 const browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {});
@@ -24,7 +28,8 @@ const note = (t) => (BENIGN.some(re => re.test(t)) ? benign : errors).push(t);
 page.on('pageerror', (e) => note(`pageerror: ${e.message}`));
 page.on('console', (m) => { if (m.type() === 'error') note(`console.error: ${m.text()}`); });
 
-await page.goto(URL);
+try { await page.goto(URL); }
+catch (e) { await browser.close(); die(`Cannot reach ${URL} (${e.message.split('\n')[0]}). Is the dev server running?`); }
 await page.waitForSelector('.ProseMirror');
 await page.waitForSelector('[data-testid="page-canvas"]');
 
@@ -75,7 +80,7 @@ const setZoom = async (target) => {
 const zoomProbe = async (target) => {
   await setZoom(target);
   const applied = await page.getByTestId('page-canvas').evaluate(el => Number(getComputedStyle(el).zoom));
-  ok(`zoom ${target}%: canvas CSS zoom is ${applied} (fit-to-width never exceeds the request)`);
+  check(Math.abs(applied - target / 100) < 0.01, `zoom ${target}%: canvas CSS zoom is ${applied}`, `zoom ${target}%: canvas CSS zoom is ${applied}, not ${target / 100} (fit-to-width is capping the request)`);
   // coordsAtPos <-> posAtCoords round trip, at the start, middle and end of the last paragraph.
   const trip = await page.evaluate(() => {
     const view = document.querySelector('.ProseMirror').editor?.view;

@@ -68,6 +68,14 @@ describe('ReviewPanel', () => {
     expect(screen.getByText('chat here')).toBeTruthy();
   });
 
+  it('unmounts a collapsed Chat section (keepMounted is false here on purpose; the other panels keep theirs mounted)', () => {
+    render(<ReviewPanel rows={rows} {...noop} />);
+    fireEvent.click(screen.getByTestId('section-chat'));
+    expect(screen.getByText('chat here')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('section-chat'));
+    expect(screen.queryByText('chat here')).toBeNull();
+  });
+
   it('says so plainly when there is nothing to review', () => {
     render(<ReviewPanel rows={[]} {...noop} />);
     expect(screen.getByText(/nothing flagged/i)).toBeTruthy();

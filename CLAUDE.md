@@ -36,13 +36,13 @@ Three stores in `src/stores/` hold all runtime state:
 
 ### Persistence (Dexie / IndexedDB)
 
-`src/db/manuscriptDb.ts` defines a single Dexie database (`ManuscriptAIEditor`) with six tables: `documents`, `sources`, `chatHistory`, `suggestions`, `historyItems`, `versionSnapshots`. All stores have `initialize()` methods that fall back to legacy `localforage` keys and then migrate data to Dexie on first run.
+`src/db/manuscriptDb.ts` defines a single Dexie database (`ManuscriptAIEditor`) with thirteen tables: `documents`, `sources`, `chatHistory`, `suggestions`, `historyItems`, `versionSnapshots`, `grantTemplates`, `assets`, `docxPackages`, `autosaveBackups`, `preservationStores`, `importBackupParts`, `importReports`. The document itself is persisted as ProseMirror JSON (schema versioned, loaded and saved through the document repository in `useDocumentStore`); HTML is derived. Imported DOCX provenance (OOXML preservation stores, original packages, images as `assets`) lives in its own tables, and `autosaveBackups` keep recoverable copies. Never add a node or mark attribute to the editor schema without checking `src/docx/preserve/hash.test.ts`: its golden hashes would silently switch the preservation layer off. All stores have `initialize()` methods that fall back to legacy `localforage` keys and then migrate data to Dexie on first run.
 
 ### AI Service (`src/services/ai.ts`)
 
 All LLM calls go through this file. Key concepts:
 
-- **Four analysis agents**: `manager` (Structure Architect), `editor` (Language Surgeon), `reviewer-2` (Reviewer 2), `researcher` (Clarity & Impact). These run in parallel via `analyzeManuscript()`.
+- **Ten `AgentType`s** (`AGENT_INFO`): four core analysis agents, `manager` (Structure Architect), `editor` (Language Surgeon), `reviewer-2` (Reviewer 2), `researcher` (Clarity & Impact), run in parallel via `analyzeManuscript()`; the data agents `statistician`, `consistency` and `reporting` (advisory, flag-only); and `manuscript-ai` (chat), `literature-reviewer` and `citation-checker` (not offered as chat "reply as" agents).
 - **Judge Agent**: runs after analysis, deduplicates overlapping suggestions by asking the LLM which is highest-impact.
 - **Provider routing**: `gemini` uses `@google/genai`, `openai`/`anthropic`/`local` use the `openai` SDK pointed at the correct base URL. Anthropic and local are OpenAI-compatible.
 - **Chunking**: For local LLMs, manuscript is split by section (configurable `localChunkSize`); cloud APIs receive the full text.
@@ -53,7 +53,6 @@ All LLM calls go through this file. Key concepts:
 
 TipTap editor with custom extensions in `src/extensions/`:
 
-- **`CitationNode`** — renders `[N]` citation markers
 - **`SuggestionMark`** — highlights text spans that have pending suggestions
 - **`AutoComplete`** — Tab-triggered AI autocomplete (uses assistant-prefill prompt pattern)
 - **`GrammarChecker`** — passive grammar checking

@@ -38,8 +38,6 @@
   --severity-style: #8a847a;
 
   /* Editor paper */
-  --editor-bg: #ffffff;
-  --editor-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 6px 24px rgba(0,0,0,0.02);
 }
 
 /* Dark mode */
@@ -66,9 +64,6 @@
   --severity-major: #d4a840;
   --severity-minor: #6b9aef;
   --severity-style: #7a7468;
-
-  --editor-bg: #1c1a17;
-  --editor-shadow: 0 1px 3px rgba(0,0,0,0.2), 0 6px 24px rgba(0,0,0,0.15);
 }
 
 [data-theme="dark"] .diff-remove {

@@ -129,6 +129,7 @@ export const ENTRY_POINTS: EntryPoint[] = [
   row('open chat', [R, 'section:chat']),
   row('send a chat message', [R, 'section:chat', 'fill:hello', 'control:send']),
   row('switch between Manuscript AI and agents', [R, 'section:chat', 'control:agent-mode']),
+  // NOTE: the 'About Agents' control is inert (pre-existing): its toggle state was never rendered, so clicking it shows nothing. This row only proves the control is reachable, not that it does anything.
   row('read what each agent does', [R, 'section:chat', 'control:agent-info']),
   row('attach an image to a chat message', [R, 'section:chat', 'control:attach-image']),
   row('choose which sources the chat sees', [R, 'section:chat', 'control:attach-sources']),
