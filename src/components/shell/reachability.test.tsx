@@ -95,23 +95,23 @@ export const ENTRY_POINTS: EntryPoint[] = [
   row('preview a version snapshot', [W, 'section:versions', 'control:preview-version'], 6, ['title:Version History', 'title:Preview'], ['snapshot']),
   row('delete a version snapshot', [W, 'section:versions', 'control:delete-version'], 6, ['title:Version History', 'title:Delete'], ['snapshot']),
   // Cite
-  row('upload a PDF, DOCX, BibTeX or text source', [C, 'section:library', 'control:upload'], 5, [C, 'ptext:Browse files']),
-  row('add a source by DOI', [C, 'section:library', 'control:doi'], 5, [C, 'typein:10.1234/journal.article|10.1000/xyz', 'ptext:Add']),
-  row('remove a source', [C, 'section:library', 'control:remove-source'], 5, [C, 'icon:trash-2'], ['sources']),
-  row('regenerate a source summary', [C, 'section:library', 'control:regenerate-summary'], 5, [C, 'title:Regenerate AI summary'], ['sources']),
-  row('copy a source as BibTeX', [C, 'section:library', 'control:copy-bibtex'], 5, [C, 'title:Copy BibTeX entry to clipboard'], ['sources']),
-  row('compare a source with the manuscript', [C, 'section:library', 'control:compare-source'], 5, [C, 'ptext:Compare'], ['sources']),
-  row('chat about one source', [C, 'section:library', 'control:chat-source'], 5, [C, 'ptext:Chat'], ['sources']),
-  row('check a source against the citations', [C, 'section:library', 'control:check-citations'], 5, [C, 'ptext:Check Citations'], ['sources']),
-  row('find the published record of a PDF', [C, 'section:library', 'control:match-pdf'], 5, [C, 'ph:Search paper title or keywords…'], ['sources']),
-  row('search the literature', [C, 'section:search', 'control:query'], 5, [C, 'ph:Title, keywords, or paste abstract…']),
-  row('format a bibliography from a BibTeX source', [C, 'section:references', 'control:format-bibliography'], 5, [C, 'ptext:Insert'], ['sources']),
-  row('renumber citations', [C, 'section:references', 'control:renumber'], 5, [C, 'title:Renumber citations in document order'], ['sources', 'citations']),
-  row('search the reference list', [C, 'section:references', 'control:filter-references'], 5, [C, 'ph:Search references…'], ['sources', 'citations']),
-  row('jump to a citation in the document', [C, 'section:references', 'control:goto-citation'], 5, [C, 'title:Jump to citation in document'], ['sources', 'citations']),
-  row('jump to the first citation of a source', [C, 'section:references', 'control:first-citation'], 5, [C, 'title:Jump to first citation'], ['sources', 'citations']),
-  row('remove a citation', [C, 'section:references', 'control:remove-citation'], 5, [C, 'title:Remove citation'], ['sources', 'citations']),
-  row('insert the reference list', [C, 'section:references', 'control:insert-reference-list'], 5, [C, 'ptext:Insert reference list'], ['sources', 'citations']),
+  row('upload a PDF, DOCX, BibTeX or text source', [C, 'section:library', 'control:upload']),
+  row('add a source by DOI', [C, 'section:library', 'typein:10.1234/journal.article|10.1000/xyz', 'control:doi']),
+  row('remove a source', [C, 'section:library', 'control:remove-source'], undefined, undefined, ['sources']),
+  row('regenerate a source summary', [C, 'section:library', 'control:regenerate-summary'], undefined, undefined, ['sources']),
+  row('copy a source as BibTeX', [C, 'section:library', 'control:copy-bibtex'], undefined, undefined, ['sources']),
+  row('compare a source with the manuscript', [C, 'section:library', 'control:compare-source'], undefined, undefined, ['sources']),
+  row('chat about one source', [C, 'section:library', 'control:chat-source'], undefined, undefined, ['sources']),
+  row('check a source against the citations', [C, 'section:library', 'control:check-citations'], undefined, undefined, ['sources']),
+  row('find the published record of a PDF', [C, 'section:library', 'typein:Search paper title or keywords…|crispr screens', 'control:match-pdf'], undefined, undefined, ['sources']),
+  row('search the literature', [C, 'section:search', 'control:query']),
+  row('format a bibliography from a BibTeX source', [C, 'section:references', 'control:format-bibliography'], undefined, undefined, ['sources']),
+  row('renumber citations', [C, 'section:references', 'control:renumber'], undefined, undefined, ['sources', 'citations']),
+  row('search the reference list', [C, 'section:references', 'control:filter-references'], undefined, undefined, ['sources', 'citations']),
+  row('jump to a citation in the document', [C, 'section:references', 'control:goto-citation'], undefined, undefined, ['sources', 'citations']),
+  row('jump to the first citation of a source', [C, 'section:references', 'control:first-citation'], undefined, undefined, ['sources', 'citations']),
+  row('remove a citation', [C, 'section:references', 'control:remove-citation'], undefined, undefined, ['sources', 'citations']),
+  row('insert the reference list', [C, 'section:references', 'control:insert-reference-list'], undefined, undefined, ['sources', 'citations']),
   row('insert a citation with @', ['topbar:insert', 'item:citation'], 8, ['key:@', 'text:Insert Citation']),
   // Review
   row('open chat', [R, 'section:chat']),
@@ -140,7 +140,7 @@ export const ENTRY_POINTS: EntryPoint[] = [
   row('run an analysis', [R, 'control:analyze']),
   row('stop a running analysis', [R, 'control:stop'], undefined, undefined, ['analyzing']),
   row('run one named agent', [R, 'control:analyze-agent', 'control:analyze-agent-one']),
-  row('clear the reference search', [C, 'section:references', 'control:clear-reference-filter'], 5, [C, 'typein:Search references…|zz', 'icon:x'], ['sources', 'citations']),
+  row('clear the reference search', [C, 'section:references', 'typein:Search references…|zz', 'control:clear-reference-filter'], undefined, undefined, ['sources', 'citations']),
   row('filter suggestions to one severity', [R, 'control:filter', 'control:filter-severity'], undefined, undefined, ['suggestion']),
   row('run a single agent', [R, 'control:analyze-agent']),
   row('summarize the manuscript and its gaps', [R, 'control:summary']),
@@ -212,17 +212,17 @@ export const ENTRY_POINTS: EntryPoint[] = [
 
   // ── Round 1: the interactions, keyboard bindings and Cite/Editor details the first pass left out ──
   // Cite
-  row('run a literature search', [C, 'section:search', 'control:run-search'], 5, [C, 'typein:Title, keywords, or paste abstract…|crispr screens', 'ptext:Search', 'ptext:Mock paper 1 on screens']),
-  row('add a search result to the library', [C, 'section:search', 'control:add-result'], 5, [C, 'typein:Title, keywords, or paste abstract…|crispr screens', 'ptext:Search', 'ptext:Add source', 'expect:source:Mock paper 1 on screens']),
-  row('choose the bibliography style', [C, 'section:references', 'control:bib-style'], 5, [C, 'select:Vancouver'], ['sources']),
-  row('sort the reference list', [C, 'section:references', 'control:sort-references'], 5, [C, 'select:Year'], ['sources', 'citations']),
-  row('expand a reference row', [C, 'section:references', 'control:expand-reference'], 5, [C, 'ptext:More'], ['sources', 'citations']),
-  row('confirm a PDF match', [C, 'section:library', 'control:match-yes'], 5, [C, 'typein:Search paper title or keywords…|crispr screens', 'ptext:Search#2', 'ptext:Yes, this is it', 'expect:source:Mock paper 1 on screens'], ['sources']),
-  row('try the next PDF match', [C, 'section:library', 'control:match-next'], 5, [C, 'typein:Search paper title or keywords…|crispr screens', 'ptext:Search#2', 'ptext:Try next', 'ptext:Is this your paper? (2/2)'], ['sources']),
-  row('dismiss a PDF match', [C, 'section:library', 'control:match-dismiss'], 5, [C, 'typein:Search paper title or keywords…|crispr screens', 'ptext:Search#2', 'ptext:Dismiss', 'gone:Is this your paper?*'], ['sources']),
-  row('switch a PDF between summary and abstract', [C, 'section:library', 'control:source-tabs'], 5, [C, 'ptext:abstract#1', 'ptext:abs'], ['sources']),
-  row('re-extract a PDF abstract', [C, 'section:library', 'control:reextract-abstract'], 5, [C, 'ptext:abstract#1', 'title:Re-extract abstract'], ['sources']),
-  row('drop files on the sources area', [C, 'section:library', 'control:dropzone'], 5, [C, 'dropcss:.border-dashed|notes.txt', 'ptext:notes.txt']),
+  row('run a literature search', [C, 'section:search', 'typein:Title, keywords, or paste abstract…|crispr screens', 'control:run-search', 'ptext:Mock paper 1 on screens']),
+  row('add a search result to the library', [C, 'section:search', 'typein:Title, keywords, or paste abstract…|crispr screens', 'control:run-search', 'control:add-result', 'expect:source:Mock paper 1 on screens']),
+  row('choose the bibliography style', [C, 'section:references', 'control:bib-style', 'select:Vancouver'], undefined, undefined, ['sources']),
+  row('sort the reference list', [C, 'section:references', 'control:sort-references', 'select:Year'], undefined, undefined, ['sources', 'citations']),
+  row('expand a reference row', [C, 'section:references', 'control:expand-reference', 'ptext:Less'], undefined, undefined, ['sources', 'citations']),
+  row('confirm a PDF match', [C, 'section:library', 'typein:Search paper title or keywords…|crispr screens', 'control:match-pdf', 'control:match-yes', 'expect:source:Mock paper 1 on screens'], undefined, undefined, ['sources']),
+  row('try the next PDF match', [C, 'section:library', 'typein:Search paper title or keywords…|crispr screens', 'control:match-pdf', 'control:match-next', 'ptext:Is this your paper? (2/2)'], undefined, undefined, ['sources']),
+  row('dismiss a PDF match', [C, 'section:library', 'typein:Search paper title or keywords…|crispr screens', 'control:match-pdf', 'control:match-dismiss', 'gone:Is this your paper?*'], undefined, undefined, ['sources']),
+  row('switch a PDF between summary and abstract', [C, 'section:library', 'control:source-tabs', 'ptext:abstract#1', 'ptext:abs'], undefined, undefined, ['sources']),
+  row('re-extract a PDF abstract', [C, 'section:library', 'ptext:abstract#1', 'control:reextract-abstract'], undefined, undefined, ['sources']),
+  row('drop files on the sources area', [C, 'section:library', 'control:dropzone', 'dropcss:[data-testid="control-dropzone"]|notes.txt', 'ptext:notes.txt']),
   // Review (chat and suggestions)
   row('attach one source to a chat message', [R, 'section:chat', 'control:attach-sources', 'control:attach-one-source'], undefined, undefined, ['sources']),
   row('limit chat to the whole manuscript', [R, 'section:chat', 'control:attach-sources', 'control:scope-full', 'count:Full Manuscript=1']),
@@ -399,6 +399,7 @@ async function step(spec: string, isLast: boolean): Promise<void> {
   }
   if (kind === 'section' || kind === 'topbar') {
     const el = await waitStep(spec, () => candidates('testid', `${kind}-${arg}`)[0]);
+    if (el.getAttribute('aria-expanded') === 'true') return; // a section that starts open (Library) is reached as it is; clicking it would shut it
     click(el); await settle(0); return;
   }
   if (kind === 'item' || kind === 'control' || kind === 'row') {
@@ -522,6 +523,9 @@ const seedAfter = async (seeds: Seed[] = []) => {
 
 async function resetWorld() {
   cleanup();
+  // The source store persists with a clear() then a bulkPut() of what it held at the time. A row that ended just after adding a source (add a search result)
+  // can have that second write still in flight; clearing the tables now would let it land afterwards and seed the NEXT row's App with a stale source.
+  await new Promise(r => setTimeout(r, 60));
   localStorage.clear();
   useAIStore.setState(useAIStore.getInitialState(), true);
   useSourceStore.setState(useSourceStore.getInitialState(), true);
@@ -572,13 +576,19 @@ const ICON_ONLY_BUTTONS: Record<string, number> = {
   // Editor 9: mobile toolbar toggle (a phone-width control, `sm:hidden`, not reachable at desktop width by design), bubble Bold/Italic/Underline, synonym chips,
   // custom-instruction send, figure-question send, table menu items and @-picker sources (each has rows).
   'src/components/Editor.tsx': 9,
-  // Sidebar 8: tab bar, the inline chat suggestion cards' accept/reject, clear-reference-search, trash, source tabs, PDF tabs, agent chips, vision X, send.
-  // (Task 4 moved the severity filter and the suggestion cards' own buttons to the Review panel, which names its controls with test ids.)
-  'src/components/Sidebar.tsx': 8,
+  // Sidebar 4: tab bar, the inline chat suggestion cards' accept/reject, agent chips, vision X, send.
+  // (Task 4 moved the severity filter and the suggestion cards' own buttons to the Review panel, which names its controls with test ids.
+  // Task 5 moved clear-reference-search, trash, source tabs and PDF tabs to the Cite panel, which names every one with a test id.)
+  'src/components/Sidebar.tsx': 4,
   'src/components/style/StylePanel.tsx': 1, // jump to a flagged sentence
   'src/components/style/VoiceProfileManager.tsx': 0,
   'src/components/panels/ReviewPanel.tsx': 4, // section toggles (rows: read the style comparison / open chat), severity chips, row action buttons, named-agent items
   'src/components/panels/SuggestionBody.tsx': 0, 'src/components/panels/suggestionParts.tsx': 0,
+  'src/components/panels/CitePanel.tsx': 1, // section toggles (rows: every section: step)
+  'src/components/panels/cite/ReferenceManager.tsx': 1, // clear the reference search (row: clear the reference search)
+  'src/components/panels/cite/SourceCard.tsx': 1, // trash (row: remove a source)
+  'src/components/panels/cite/SourceTabs.tsx': 2, // the Summary/Abstract switch on a search-result card and on a document card (rows: switch a PDF between summary and abstract)
+  'src/components/panels/cite/Library.tsx': 0, 'src/components/panels/cite/PdfMatch.tsx': 0, 'src/components/panels/cite/Search.tsx': 0,
 };
 
 /** The body of the `{...}` that opens at `i` (balanced), or null. */
@@ -640,9 +650,15 @@ export function textOnlyButtons(src: string): { words: string[]; line: number; t
  * Test ids that deliberately appear on more than one control in the guarded files (e.g. a per-row control extracted into its own file).
  * Each entry MUST carry a reason: an entry without one is a defect and fails the test below. Sharing is allowed, never silent.
  */
-const SHARED_TESTIDS: Record<string, string> = {};
+const SHARED_TESTIDS: Record<string, string> = {
+  'control-regenerate-summary': 'the same Regenerate button on a search-result card (ApiSourceDetails) and on a PDF/text/BibTeX card (DocumentSourceTabs); one row proves the action, both cards render it',
+  'control-source-tabs': 'the Summary/Abstract switch on a search-result card and on a PDF/text/BibTeX card; one row proves the switch, both cards render it',
+  'control-compare-source': 'the Compare button on a search-result card and on a PDF/text card; one row proves it, both render it',
+};
 const GUARDED = ['src/App.tsx', 'src/components/Editor.tsx', 'src/components/Sidebar.tsx', 'src/components/style/StylePanel.tsx', 'src/components/style/VoiceProfileManager.tsx',
-  'src/components/panels/ReviewPanel.tsx', 'src/components/panels/SuggestionBody.tsx', 'src/components/panels/suggestionParts.tsx'];
+  'src/components/panels/ReviewPanel.tsx', 'src/components/panels/SuggestionBody.tsx', 'src/components/panels/suggestionParts.tsx',
+  'src/components/panels/CitePanel.tsx', 'src/components/panels/cite/Library.tsx', 'src/components/panels/cite/SourceCard.tsx', 'src/components/panels/cite/PdfMatch.tsx',
+  'src/components/panels/cite/SourceTabs.tsx', 'src/components/panels/cite/Search.tsx', 'src/components/panels/cite/ReferenceManager.tsx'];
 
 describe('the list itself', () => {
   it('covers every rail task', () => {
@@ -693,6 +709,9 @@ describe('the list itself', () => {
       'src/App.tsx': ['text', 'htext', 'stext', 'mtext'], 'src/components/Editor.tsx': ['text', 'ctext'],
       'src/components/Sidebar.tsx': ['ptext', 'select'], 'src/components/style/StylePanel.tsx': ['ptext'], 'src/components/style/VoiceProfileManager.tsx': ['ptext'],
       'src/components/panels/ReviewPanel.tsx': ['ptext'], 'src/components/panels/SuggestionBody.tsx': ['ptext'], 'src/components/panels/suggestionParts.tsx': ['ptext'],
+      'src/components/panels/CitePanel.tsx': ['ptext'], 'src/components/panels/cite/Library.tsx': ['ptext'], 'src/components/panels/cite/SourceCard.tsx': ['ptext'],
+      'src/components/panels/cite/PdfMatch.tsx': ['ptext'], 'src/components/panels/cite/SourceTabs.tsx': ['ptext'], 'src/components/panels/cite/Search.tsx': ['ptext'],
+      'src/components/panels/cite/ReferenceManager.tsx': ['ptext', 'select'],
     };
     const steps = ENTRY_POINTS.flatMap(stepsOf).map(st => ({ kind: st.slice(0, st.indexOf(':')), v: st.slice(st.indexOf(':') + 1).replace(/#\d+$/, '') }));
     const uncovered: string[] = [];
@@ -916,5 +935,5 @@ describe('unmounting with a pending editor timer', () => {
   };
   it('after a click on an outline heading', async () => { await unmountWhilePending([W, 'section:outline'], ['outline'], 'ptext:Intro'); }, 20000);
   it('after a click on a suggestion card', async () => { await unmountWhilePending([R, 'row:suggestion'], ['suggestion', 'outline'], 'ptext:EXPLAIN_ME'); }, 20000);
-  it('after jumping to a citation', async () => { await unmountWhilePending([C], ['sources', 'citations', 'cited-text'], 'title:Jump to citation in document'); }, 20000);
+  it('after jumping to a citation', async () => { await unmountWhilePending([C, 'section:references'], ['sources', 'citations', 'cited-text'], 'testid:control-goto-citation'); }, 20000);
 });
