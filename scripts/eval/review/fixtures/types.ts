@@ -8,9 +8,11 @@ export interface FixtureSection {
 
 /**
  * A planted weakness (the review should report it) or a trap (a passage that satisfies a check; a finding here is a
- * false alarm). A finding matches when it is on topic (same checkId, or its text matches `keywords`) AND located:
- * its quote overlaps a `quoteHints` entry; or it has no quote and sits in one of `sectionTitles`; or it carries no
- * quoteHints at all and sits in one of `sectionTitles`; or it sits in an `alsoIn` section and mentions `mention`.
+ * false alarm). The scorer assigns each finding to at most one expectation, in tiers: a planted weakness whose
+ * quoteHint the finding's quote overlaps; a planted weakness by location (no quote and a primary section; or no
+ * quoteHints and a primary section; or an alsoIn section whose `mention` the finding text matches); a trap by quote
+ * overlap; a trap by location. Within a tier, an expectation with the finding's checkId wins, then fixture order.
+ * A finding is on topic when its checkId equals the expectation's or its text matches `keywords`.
  */
 export interface Expectation {
   id: string;

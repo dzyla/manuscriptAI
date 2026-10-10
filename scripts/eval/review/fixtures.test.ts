@@ -65,6 +65,11 @@ describe('grant fixture', () => {
 });
 
 describe('manuscript fixture', () => {
+  it('has 12 planted weaknesses and 5 traps', () => {
+    expect(MANUSCRIPT_FIXTURE.planted).toHaveLength(12);
+    expect(MANUSCRIPT_FIXTURE.traps).toHaveLength(5);
+  });
+
   it('maps to IMRAD kinds', () => {
     const s = sectionMap(fixtureDoc(MANUSCRIPT_FIXTURE), 'manuscript');
     expect(s.map(x => x.kind)).toEqual(['abstract', 'introduction', 'methods', 'results', 'discussion']);
