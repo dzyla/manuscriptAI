@@ -17,6 +17,8 @@ export interface GrantTemplate {
   id: string;
   name: string;
   mechanism: string;
+  /** Project period in years, used by the scope and timeline checks. Unset when it varies (fellowships, custom). */
+  projectYears?: number;
   description: string;
   sections: GrantTemplateSection[];
 }
@@ -49,6 +51,7 @@ export const GRANT_TEMPLATES: GrantTemplate[] = [
     id: 'nih-r01',
     name: 'NIH R01 — Research Project Grant',
     mechanism: 'R01',
+    projectYears: 5,
     description: 'The standard NIH investigator-initiated award. Specific Aims (1 page) + Research Strategy (12 pages: Significance, Innovation, Approach).',
     sections: [
       { title: 'Project Summary / Abstract', pageLimit: 1, guidance: '30 lines max. A succinct description of the proposed work understandable to a scientifically literate reader: broad goals, specific objectives, methods, and expected significance.' },
@@ -63,6 +66,7 @@ export const GRANT_TEMPLATES: GrantTemplate[] = [
     id: 'nih-r21',
     name: 'NIH R21 — Exploratory/Developmental',
     mechanism: 'R21',
+    projectYears: 2,
     description: 'High-risk, high-reward exploratory research; preliminary data not required. Specific Aims (1 page) + Research Strategy (6 pages). Two-year limit.',
     sections: [
       { title: 'Project Summary / Abstract', pageLimit: 1, guidance: '30 lines max. Emphasize the exploratory, novel nature of the work and its potential to open new research directions.' },
@@ -77,6 +81,7 @@ export const GRANT_TEMPLATES: GrantTemplate[] = [
     id: 'nih-r03',
     name: 'NIH R03 — Small Grant',
     mechanism: 'R03',
+    projectYears: 2,
     description: 'Small, self-contained projects: pilot studies, secondary data analysis, method development. Specific Aims (1 page) + Research Strategy (6 pages). Two-year, $50k/yr limit.',
     sections: [
       { title: 'Project Summary / Abstract', pageLimit: 1, guidance: '30 lines max. Make clear the project is self-contained and feasible within two years with modest resources.' },
@@ -187,10 +192,12 @@ export function normalizeTemplate(raw: any, idPrefix = 'custom'): GrantTemplate 
       };
     });
   if (sections.length === 0) return null;
+  const years = Number(raw.projectYears);
   return {
     id: `${idPrefix}-${Date.now()}`,
     name: String(raw.name ?? 'Custom Template').trim().slice(0, 120) || 'Custom Template',
     mechanism: String(raw.mechanism ?? 'Custom').trim().slice(0, 20) || 'Custom',
+    projectYears: Number.isInteger(years) && years > 0 && years <= 10 ? years : undefined,
     description: String(raw.description ?? '').trim().slice(0, 400),
     sections,
   };

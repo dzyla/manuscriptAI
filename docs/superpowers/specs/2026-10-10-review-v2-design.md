@@ -243,8 +243,10 @@ the F31 template) counts as all three kinds when checks are selected, so no chec
    `responseJsonSchema`), with `checkId` and `sectionKey` as **enums** of the ids and keys actually in play:
 
 ```json
-{ "findings": [ { "checkId": "...", "sectionKey": "...", "quote": "... or null", "issue": "...", "recommendation": "...", "severity": "critical|major|minor" } ] }
+{ "findings": [ { "checkId": "...", "sectionKey": "...", "quote": "... or \"\" when missing", "issue": "...", "recommendation": "...", "severity": "critical|major|minor" } ] }
 ```
+
+On the wire "quote" is always a string, because not every provider's constrained decoding accepts a nullable type; "" means a missing-content finding and the mapper turns it into quote: null.
 
 No counts or quotas anywhere. A unit test asserts every check id appears in exactly one role's rendered prompt
 for a document containing every section kind.
