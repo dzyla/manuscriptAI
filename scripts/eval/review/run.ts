@@ -7,6 +7,7 @@
  * Env: EVAL_PROVIDER, ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY, EVAL_ANTHROPIC_MODEL / EVAL_OPENAI_MODEL /
  * EVAL_GEMINI_MODEL, EVAL_LOCAL_URL, EVAL_LOCAL_MODEL, EVAL_LOCAL_KEY, EVAL_CHUNK (local chunk size, default 2000).
  * Keys are read from the environment only and are never printed or written.
+ * LLM calls counts POST requests, so SDK retries count as calls.
  *
  * Prints a per-fixture report and one markdown table row per fixture for
  * docs/superpowers/plans/2026-07-04-eval-results.md, and writes the full result to
@@ -72,6 +73,20 @@ export function modelLabel(s: AISettings): string {
   return `${s.provider}/${model ?? '(default)'}`;
 }
 
+export function redactSecrets(s: string, keys: string[] = []): string {
+  let out = s.replace(/\b(sk-ant-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9_-]{8,}|AIza[0-9A-Za-z_-]{20,})/g, '[redacted]');
+  for (const k of keys) if (k) out = out.split(k).join('[redacted]');
+  return out;
+}
+
+/** Env var name of the selected cloud provider's missing key, or null when usable (always null for local). */
+export function missingKey(s: AISettings): string | null {
+  if (s.provider === 'anthropic') return s.anthropicApiKey ? null : 'ANTHROPIC_API_KEY';
+  if (s.provider === 'openai') return s.openaiApiKey ? null : 'OPENAI_API_KEY';
+  if (s.provider === 'gemini') return s.geminiApiKey ? null : 'GEMINI_API_KEY';
+  return null;
+}
+
 /** Count POST requests (one per LLM call on every provider path) by wrapping `target.fetch`. */
 export function installCallCounter(target: { fetch: typeof fetch } = globalThis): { count(): number; reset(): void; restore(): void } {
   const original = target.fetch;
@@ -90,6 +105,11 @@ const pct = (a: number, b: number) => (b ? `${Math.round((100 * a) / b)}%` : '�
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const settings = buildSettings(args.tier, process.env);
+  const missing = missingKey(settings);
+  if (missing) throw new Error(`Missing ${missing} for EVAL_PROVIDER=${settings.provider}.`);
+  const secrets = [process.env.ANTHROPIC_API_KEY, process.env.OPENAI_API_KEY, process.env.GEMINI_API_KEY, process.env.EVAL_LOCAL_KEY].filter((k): k is string => !!k);
+  const redact = (x: string) => redactSecrets(x, secrets);
+  let failed = false;
   const counter = installCallCounter();
   const { runBaseline } = await import('./baseline');
   const outDir = join(dirname(fileURLToPath(import.meta.url)), 'results');
@@ -101,7 +121,16 @@ async function main() {
     const fx = FIXTURES[doc];
     counter.reset();
     const t0 = Date.now();
-    const out = await runBaseline(fx, settings);
+    let out;
+    try {
+      out = await runBaseline(fx, settings);
+    } catch (e) {
+      failed = true;
+      console.log(`── ${fx.id}`);
+      console.log(`run failed: ${redact(e instanceof Error ? e.message : String(e))}\n`);
+      continue;
+    }
+    out.errors = out.errors.map(redact);
     const seconds = Math.round((Date.now() - t0) / 1000);
     const calls = counter.count();
     const score = scoreFindings(fx, out.findings);
@@ -119,11 +148,14 @@ async function main() {
 
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     writeFileSync(join(outDir, `${stamp}-baseline-${args.tier}-${doc}.json`), JSON.stringify({ fixture: fx.id, tier: args.tier, model: modelLabel(settings), calls, seconds, score, prose, errors: out.errors, findings: out.findings, summary: out.prose }, null, 2));
-    rows.push(`| ${new Date().toISOString().slice(0, 10)} | baseline | ${args.tier} | ${modelLabel(settings)} | ${doc} | ${score.hit.length}/${score.planted} (${pct(score.hit.length, score.planted)}) | ${score.falseAlarms.length}/${fx.traps.length} | ${score.total} (${score.unmatched} unmatched) | ${prose.mentioned.length}/${score.planted} | ${calls} | ${seconds}s |`);
+    const row = `| ${new Date().toISOString().slice(0, 10)} | baseline | ${args.tier} | ${modelLabel(settings)} | ${doc} | ${score.hit.length}/${score.planted} (${pct(score.hit.length, score.planted)}) | ${score.falseAlarms.length}/${fx.traps.length} | ${score.total} (${score.unmatched} unmatched) | ${prose.mentioned.length}/${score.planted} | ${calls} | ${seconds}s |`;
+    rows.push(row);
+    console.log(`${row}\n`);
   }
   counter.restore();
   console.log('Rows for docs/superpowers/plans/2026-07-04-eval-results.md:\n');
   console.log(rows.join('\n'));
+  if (failed) process.exitCode = 1;
 }
 
 // vitest imports this file for its pure helpers; only a real CLI run starts the eval.

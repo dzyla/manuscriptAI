@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseArgs, buildSettings, modelLabel, installCallCounter } from './run';
+import { parseArgs, buildSettings, modelLabel, installCallCounter, redactSecrets, missingKey } from './run';
 import { baselineCrew } from './baseline';
 
 describe('parseArgs', () => {
@@ -63,5 +63,24 @@ describe('baselineCrew', () => {
   it('matches useAnalysis.ts: no consistency agent for grants', () => {
     expect(baselineCrew('grant')).toEqual(['editor', 'reviewer-2', 'researcher', 'statistician']);
     expect(baselineCrew('manuscript')).toEqual(['editor', 'reviewer-2', 'researcher', 'statistician', 'consistency']);
+  });
+});
+
+describe('redactSecrets', () => {
+  it('redacts key-like strings and configured keys', () => {
+    const r = redactSecrets('401 key sk-ant-abcdefgh12345 bad');
+    expect(r).toContain('[redacted]');
+    expect(r).not.toContain('sk-ant-abcdefgh12345');
+    expect(redactSecrets('k AIzaSyA1234567890abcdefghij x')).not.toContain('AIza');
+    expect(redactSecrets('plain error 500')).toBe('plain error 500');
+    expect(redactSecrets('bad hunter2key here', ['hunter2key'])).toBe('bad [redacted] here');
+  });
+});
+
+describe('missingKey', () => {
+  it('names the missing env var', () => {
+    expect(missingKey(buildSettings('cloud', {}))).toBe('ANTHROPIC_API_KEY');
+    expect(missingKey(buildSettings('cloud', { EVAL_PROVIDER: 'openai', OPENAI_API_KEY: 'k' }))).toBeNull();
+    expect(missingKey(buildSettings('local', {}))).toBeNull();
   });
 });
