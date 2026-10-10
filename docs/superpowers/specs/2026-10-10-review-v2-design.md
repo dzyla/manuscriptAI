@@ -232,19 +232,21 @@ the F31 template) counts as all three kinds when checks are selected, so no chec
 
 ### 3.2 Prompt rendering
 
-`renderRolePrompt(role, docType, checks, ctx)` builds, in order:
+`renderRolePrompt(role, ctx)` builds, in order:
 
 1. **Preamble**: who the reviewer is and the document type. For grants it states the mechanism (from the grant
    template, when known), the project period, and the 2025 framework in two sentences. `customPrompts[role]`
    replaces this preamble only.
 2. **Funder instructions** (existing `grantInstructions`, capped at 4,000 chars, as now).
-3. **Checks**, numbered: `[g-rig-power] Power for the proposed work — <question>. Adequate when: <passes>.`
+3. **Checks** (derived from the role and the sections through `applicableChecks`), numbered: `[g-rig-power] Power for the proposed work — <question>. Adequate when: <passes>.`
    Only checks whose `sections` include a kind present in the input (or `any`).
 4. **Rules**: report only checks that fail; report nothing for checks that pass; at most one finding per check
-   per section unless the issues are distinct; quote the text exactly, or use `quote: null` when something is
-   missing; never write replacement text; never invent data, numbers or citations.
+   per section unless the issues are distinct; quote the text exactly, or use `quote: ""` when something is
+   missing (the mapper turns it into null); never write replacement text; never invent data, numbers or citations.
 5. **Output schema**, passed as constrained decoding where the provider supports it (`json_schema` /
-   `responseJsonSchema`), with `checkId` and `sectionKey` as **enums** of the ids and keys actually in play:
+   `responseJsonSchema`), with `checkId` and `sectionKey` as **enums** of the ids and keys actually in play. Sections with an empty body
+   and `references` sections are not offered as `sectionKey`s (a role with no anchor to offer is not run), and the
+   schema objects carry `additionalProperties: false`:
 
 ```json
 { "findings": [ { "checkId": "...", "sectionKey": "...", "quote": "... or \"\" when missing", "issue": "...", "recommendation": "...", "severity": "critical|major|minor" } ] }
@@ -397,19 +399,24 @@ them).
 
 - **Grant fixture** (`fixture-grant.ts`): a synthetic R01, about 1,500 words, sections Project Summary, Specific
   Aims, Significance, Innovation, Approach (with Aim 1-3 subsections, Preliminary Data, Rigor, Timeline). About 15
-  **planted weaknesses**, each `{ checkId, sectionKey, quoteHint? }`, including: Aim 2 depends on Aim 1; no power
+  **planted weaknesses**, each `{ checkId, sectionTitles, quoteHints?, keywords, alsoIn? }`, including: Aim 2 depends on Aim 1; no power
   analysis for Aim 3; SABV never addressed in a mouse study; the Aims page lists Aim 3 that the Approach omits;
   n = 40 in Significance and n = 60 in Approach; innovation claimed for a standard method; no alternatives for
   Aim 2; a timeline that runs past the five-year project period; Project Summary describes a different aim.
   About 8 **traps**: passages that satisfy a check (a proper power analysis under a "Rigor" subheading, SABV
   justified, alternatives given for Aim 1, a defined abbreviation reused correctly).
 - **Manuscript fixture**: the existing one, re-tagged with check ids, plus traps.
-- **Scored per run**: recall (planted weakness found: same `checkId`, same section or a section of the same kind,
-  and quote overlap when `quoteHint` is set); false alarms on traps; total findings (noise); LLM calls; wall time;
+- **Scored per run**: recall and false alarms from a single assignment of each finding to at most one expectation.
+  Tiers, in order, planted weaknesses first and then traps: (a) same `checkId` and quote overlap with a
+  `quoteHint`; (b) same `checkId` and located in a listed section (exact section titles; an `alsoIn` section needs
+  its cue in the text); (c) `keywords` match and quote overlap; (d) `keywords` match and located. The checkId
+  outranks keywords, planted outranks traps, quote outranks location, ties go to fixture order. Recall is the
+  planted weaknesses assigned at least once; a finding assigned to a trap is a false alarm; false alarms on traps; total findings (noise); LLM calls; wall time;
   for Copy-edit, guard rejections and edits that touch a citation.
 - **Baseline**: R1 scores the current pipeline (`analyzeText` crew + study section) on the new fixtures before
   anything changes; the numbers are recorded in `docs/superpowers/plans/2026-07-04-eval-results.md`.
-- **Gates** (checked at R2 and R4, both tiers must also beat the baseline):
+- **Gates** (checked at R2 and R4, both tiers must also beat the baseline). Copy-edit leaves Review in v2, so the
+  comparison is against the baseline numbers EXCLUDING the editor agent (the eval reports both):
 
   | Tier | Recall | False alarms on traps |
   |---|---|---|
