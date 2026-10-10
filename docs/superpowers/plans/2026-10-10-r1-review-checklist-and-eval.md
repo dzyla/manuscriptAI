@@ -2436,3 +2436,30 @@ git commit -m "docs(review): baseline review eval numbers for the current pipeli
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
+
+---
+
+## Amendments during execution (2026-10-10)
+
+The plan above is what was approved; these changes were made while executing it, each after a task or final review.
+
+- **Section map**: "Project Summary/Abstract" with an unspaced slash (the NIH spelling) normalises like the spaced form;
+  "Reference" and "References and Notes" are `references`.
+- **Fixtures** (Task 4 review: several passages would have punished correct answers): plant P11 (`g-imp-why`, the
+  text arguably states a consequence) replaced by `P11-stats-aim3`; P1/P3 also cover Aim 3, P14 gains an `alsoIn` for
+  Preliminary Data; trap MT3 made adequate ("n = 6 independent cultures per group") and plant `M12-n-missing` added;
+  the qPCR plant replaced by an undefined "TCD"; trap and plant keywords narrowed (T4, T6, T7, MT1, MT2, MT4, M8, M9,
+  M10, P12). The manuscript fixture has 12 planted weaknesses.
+- **Scorer**: each finding is assigned to at most one expectation, in tiers — checkId before keyword-only, planted
+  before traps, quote overlap before location, then fixture order. Containment counts only when the shorter quote has
+  at least 3 words; section attribution for legacy findings prefers exact/normalized matches over fuzzy ones.
+- **Prompt schema**: `additionalProperties: false` on both objects; `renderRolePrompt` returns null when no section
+  can be offered; sections whose provided `text` is empty are not offered as `sectionKey`s; pasted `"""` in funder
+  instructions is reduced; the framework sentence names 'presentation'.
+- **Runner**: per-document failure isolation, API-key redaction in every printed or written error, fail-fast on a
+  missing cloud key, a numeric check on `EVAL_CHUNK`, and every report split into all agents vs excluding the
+  `editor` agent (the R2/R4 gates use the latter).
+- **Task 7** was run by the controller. No cloud API key was available, so the cloud tier was measured twice: the
+  cloud code path against local Qwen, and the cloud code path against a Claude stand-in through an OpenAI-compatible
+  relay. See `docs/superpowers/plans/2026-07-04-eval-results.md`.
+- Commit trailers name the model that wrote each commit.

@@ -157,3 +157,45 @@ trim PASS · autocomplete PASS
 The five data-dependent agents now run flag-only: 35 advisory items, zero with
 replacement text. Recommendations are specific and data-free ("Name the test
 behind this p-value", "Report the effect size and 95% CI and state SD vs SEM").
+
+---
+
+## 2026-10-10 — Review v2 baseline (R1, current pipeline)
+
+Fixtures: `scripts/eval/review/fixtures/` (grant: synthetic R01, 15 planted weaknesses, 8 traps; manuscript:
+12 planted, 5 traps). Scorer: `scripts/eval/review/score.ts` (single assignment; checkId before keywords, planted
+before traps, quote before location). Runner: `npm run eval:review -- --tier local|cloud`. The current pipeline is
+driven exactly as `useAnalysis.ts` runs it (crew, detectors, Judge, verifier) plus the summary button (three-persona
+study section in grant mode). "Summary mentions" is a lenient keyword match on that summary text and is not linked
+to the document. Gates for R2/R4 (spec §6) compare against the **excl. editor** numbers.
+
+| Tier | Model | Fixture | Recall all (excl. editor) | Trap false alarms | Findings (excl. editor) | Summary mentions | LLM calls | Time |
+|---|---|---|---|---|---|---|---|---|
+| local (chunk 2000) | Qwen3.8-27B UD-IQ2_M, llama.cpp | grant | 8/15 (8/15, 53%) | 3/8 | 42 (33) | 14/15 | 37 | 222 s |
+| local (chunk 2000) | Qwen3.8-27B UD-IQ2_M, llama.cpp | manuscript | 10/12 (10/12, 83%) | 2/5 | 32 (28) | 8/12 | 63 | 131 s |
+| cloud path | Qwen3.8-27B UD-IQ2_M via OpenAI base URL | grant | 8/15 (7/15, 47%) | 1/8 | 23 (17) | 8/15 | 11 | 206 s |
+| cloud path | Qwen3.8-27B UD-IQ2_M via OpenAI base URL | manuscript | 6/12 (6/12, 50%) | 1/5 | 16 (12) | 7/12 | 10 | 278 s |
+| cloud path | Claude Sonnet stand-in (relay) | grant | 12/15 (12/15, 80%) | 2/8 | 42 (40) | 14/15 | 13 | n/a |
+| cloud path | Claude Sonnet stand-in (relay) | manuscript | 11/12 (9/12, 75%) | 1/5 | 33 (22) | 11/12 | 9 | n/a |
+
+How the runs were made:
+- **Local**: standalone `llama-server` on :8090 (not the ai-backend proxy, whose configured 35B model does not fit
+  in 16 GB), `-ngl 99 -c 24576 -np 3 -fa on -ctk q8_0 -ctv q8_0 --jinja`; VRAM 14.2 of 16.3 GB. The first local run
+  had server-side thinking on but the local path disables it per request; the cloud-path runs used
+  `--reasoning-budget 0`.
+- **Cloud path on Qwen**: `EVAL_PROVIDER=openai OPENAI_BASE_URL=http://127.0.0.1:8090/v1` — the real cloud code path
+  (full text per agent, `response_format` json_schema) against the local model.
+- **Claude stand-in**: no cloud API key was available. A local OpenAI-compatible relay held each request open while
+  a Claude Sonnet agent, given only that request, wrote the reply. It is the real cloud code path with a
+  frontier-class model, not the Anthropic API itself; wall time measures the agents, not an API. Two client retries
+  were answered with the identical earlier reply and are included in the call counts.
+
+Missed by the Claude stand-in (grant): timeline past the project period, Aim 3 statistics, Aim 3 preliminary data.
+Manuscript: undefined "TCD". Trap false alarms were on the premise paragraph and the Aims 1-2 power analysis (grant)
+and on the reported n (manuscript).
+
+What this means for R2: with a strong model the current pipeline already reaches 80% recall on the grant, so the
+cloud gate (>= 80% and beat the baseline) needs at least 13/15 with at most 1 trap false alarm. The local gate
+(>= 60%, beat 8/15) needs at least 10/15 with at most 2 false alarms. Both tiers currently produce many findings
+that match neither a plant nor a trap (20 on the local grant run, 20 on the Claude grant run, excluding the editor);
+R2 should report that number alongside recall.

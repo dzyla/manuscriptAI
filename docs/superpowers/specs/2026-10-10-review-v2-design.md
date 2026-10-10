@@ -411,8 +411,9 @@ them).
   `quoteHint`; (b) same `checkId` and located in a listed section (exact section titles; an `alsoIn` section needs
   its cue in the text); (c) `keywords` match and quote overlap; (d) `keywords` match and located. The checkId
   outranks keywords, planted outranks traps, quote outranks location, ties go to fixture order. Recall is the
-  planted weaknesses assigned at least once; a finding assigned to a trap is a false alarm; false alarms on traps; total findings (noise); LLM calls; wall time;
-  for Copy-edit, guard rejections and edits that touch a citation.
+  planted weaknesses assigned at least once; a finding assigned to a trap is a false alarm. Also reported: total
+  findings (noise), findings matching nothing, LLM calls, wall time, and for Copy-edit, guard rejections and edits
+  that touch a citation.
 - **Baseline**: R1 scores the current pipeline (`analyzeText` crew + study section) on the new fixtures before
   anything changes; the numbers are recorded in `docs/superpowers/plans/2026-07-04-eval-results.md`.
 - **Gates** (checked at R2 and R4, both tiers must also beat the baseline). Copy-edit leaves Review in v2, so the
