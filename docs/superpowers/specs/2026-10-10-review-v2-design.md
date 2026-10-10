@@ -116,12 +116,12 @@ studied, or justifies a single sex, or the work uses no vertebrate animals or hu
 |---|---|---|---|---|
 | `m-imp-question` — research question and gap clear | reviewer-2 | introduction | section | major |
 | `m-imp-novelty` — advance over prior work stated and accurate | reviewer-2 | introduction, discussion | section | major |
-| `m-imp-overclaim` — conclusions supported by the data; no causal language from correlational data | reviewer-2 | abstract, discussion | cross | critical |
+| `m-imp-overclaim` — conclusions supported by the data; no causal language from correlational data | reviewer-2 | abstract, results, discussion | cross | critical |
 | `m-log-structure` — each section does its job (results report, discussion interprets) | manager | any | section | minor |
 | `m-log-flow` — results answer the stated question, in order | manager | introduction, results | cross | major |
 | `m-log-abstract` — abstract matches the results | manager | abstract, results | cross | major |
 | `m-rig-tests` — tests named and appropriate | statistician | methods, results | section | critical |
-| `m-rig-n` — n reported and what n counts | statistician | methods, results | section | major |
+| `m-rig-n` — n reported and what n counts | statistician | introduction, methods, results | section | major |
 | `m-rig-variability` — SD/SEM/CI specified | statistician | results | section | major |
 | `m-rig-effect` — effect sizes reported alongside p-values | statistician | results | section | minor |
 | `m-rig-multiple` — multiple comparisons handled | statistician | methods, results | section | major |
@@ -133,9 +133,13 @@ studied, or justifies a single sex, or the work uses no vertebrate animals or hu
 | `m-con-numbers` — numbers agree across sections | consistency | any | cross | major |
 | `m-con-terms` — terms and abbreviations consistent | consistency | any | cross | minor |
 | `m-con-figures` — every figure and table is referenced and described consistently | consistency | results | cross | minor |
-| `m-con-uncited` — factual claims carry a citation | consistency | introduction, discussion | section | minor |
+| `m-con-uncited` — factual claims carry a citation | consistency | introduction, results, discussion | section | minor |
 
 Manuscript checks have no factor; the summary groups them by severity (critical and major → Major concerns).
+
+Three manuscript checks look in one more section than the table above first listed, so that problems where
+authors actually put them are in scope: `m-imp-overclaim` also reads `results`, `m-rig-n` also reads
+`introduction`, and `m-con-uncited` also reads `results`.
 
 ### 1.3 Invariants (unit-tested)
 
@@ -391,7 +395,7 @@ them).
 
 `scripts/eval/review/` with `npm run eval:review -- --tier cloud|local --doc grant|manuscript`.
 
-- **Grant fixture** (`fixture-grant.ts`): a synthetic R01, about 2,500 words, sections Project Summary, Specific
+- **Grant fixture** (`fixture-grant.ts`): a synthetic R01, about 1,500 words, sections Project Summary, Specific
   Aims, Significance, Innovation, Approach (with Aim 1-3 subsections, Preliminary Data, Rigor, Timeline). About 15
   **planted weaknesses**, each `{ checkId, sectionKey, quoteHint? }`, including: Aim 2 depends on Aim 1; no power
   analysis for Aim 3; SABV never addressed in a mouse study; the Aims page lists Aim 3 that the Approach omits;
