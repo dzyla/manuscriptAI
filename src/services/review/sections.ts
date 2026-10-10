@@ -8,7 +8,7 @@ import type { Node as PMNode } from '@tiptap/pm/model';
 import { formatCitationGroup } from '../../utils/citationFormat';
 import type { DocType, Section, SectionKind } from './types';
 
-const REFERENCES = /^(references|references cited|bibliography|literature cited|works cited)$/;
+const REFERENCES = /^(references?( and notes)?|references cited|bibliography|literature cited|works cited)$/;
 
 const GRANT_TABLE: [RegExp, SectionKind][] = [
   [/^(project )?summary( \/ abstract)?$|^(project )?abstract$/, 'summary'],

@@ -75,3 +75,17 @@ describe('manuscript fixture', () => {
     expect(s.map(x => x.kind)).toEqual(['abstract', 'introduction', 'methods', 'results', 'discussion']);
   });
 });
+
+describe('manuscript keyword boundaries', () => {
+  const kw = (id: string) => [...MANUSCRIPT_FIXTURE.planted, ...MANUSCRIPT_FIXTURE.traps].find(e => e.id === id)!.keywords;
+
+  it('M9 matches the numbers as whole numbers only', () => {
+    expect(kw('M9-abstract-mismatch').test('It rose 50% against 30%.')).toBe(true);
+    expect(kw('M9-abstract-mismatch').test('Funding for 2030 and 15000 cells.')).toBe(false);
+  });
+
+  it('M8 matches "sem" as a word only (not inside semantic)', () => {
+    expect(kw('M8-mean-no-variability').test('The semantic score is fine.')).toBe(false);
+    expect(kw('M8-mean-no-variability').test('Report the SEM.')).toBe(true);
+  });
+});

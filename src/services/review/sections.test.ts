@@ -45,6 +45,8 @@ describe('classifyHeading', () => {
     expect(classifyHeading('C. Approach', 'grant')).toBe('approach');
     expect(classifyHeading('Preliminary Data', 'grant')).toBe('approach');
     expect(classifyHeading('References Cited', 'grant')).toBe('references');
+    expect(classifyHeading('References and Notes', 'manuscript')).toBe('references');
+    expect(classifyHeading('Reference', 'manuscript')).toBe('references');
     expect(classifyHeading('Aim 1', 'grant')).toBeNull();
   });
 

@@ -10,7 +10,8 @@ export const FUNDER_INSTRUCTIONS_CAP = 4000;
 
 export interface PromptContext {
   docType: DocType;
-  sections: Pick<Section, 'key' | 'kind' | 'title'>[];
+  /** `text`, when given, lets empty-body sections be left out of the anchors (their kinds still count). */
+  sections: (Pick<Section, 'key' | 'kind' | 'title'> & { text?: string })[];
   /** Activity code from the grant template, e.g. 'R01'. */
   mechanism?: string;
   projectYears?: number;
@@ -49,7 +50,7 @@ const FRAMEWORK =
   'NIH reviews research applications under the Simplified Peer Review Framework (applications due on or after 25 January 2025). ' +
   'Factor 1, Importance of the Research, covers significance and innovation and is scored 1-9. ' +
   'Factor 2, Rigor and Feasibility, covers the approach and is scored 1-9. ' +
-  'Factor 3, Expertise and Resources, is rated sufficient or insufficient. Each check below says which factor it informs.';
+  'Factor 3, Expertise and Resources, is rated sufficient or insufficient. Each check below says which factor it informs, or \'presentation\' for issues outside the factors.';
 
 const RULES = [
   'Report a finding only for a check that FAILS. Report nothing for a check that passes, and do not mention passing checks.',
@@ -79,7 +80,8 @@ function factorLabel(c: ReviewCheck): string {
 export function renderRolePrompt(role: ReviewerRole, ctx: PromptContext): RolePrompt | null {
   const checks = applicableChecks(ctx.docType, role, ctx.sections);
   if (checks.length === 0) return null;
-  const sectionKeys = ctx.sections.filter(s => s.kind !== 'references').map(s => s.key);
+  const sectionKeys = ctx.sections.filter(s => s.kind !== 'references' && !(s.text !== undefined && s.text.trim() === '')).map(s => s.key);
+  if (sectionKeys.length === 0) return null;
 
   const parts: string[] = [ctx.customPreamble?.trim() || PREAMBLES[ctx.docType][role]];
   if (ctx.docType === 'grant') {
@@ -88,7 +90,7 @@ export function renderRolePrompt(role: ReviewerRole, ctx: PromptContext): RolePr
     context.push(ctx.projectYears ? `Project period: ${ctx.projectYears} years.` : 'Project period: not stated; judge scope against the mechanism.');
     parts.push(context.join('\n'));
   }
-  const funder = ctx.funderInstructions?.trim();
+  const funder = ctx.funderInstructions?.trim().replace(/"""/g, '"');
   if (funder) parts.push(`Funder instructions from the author:\n"""\n${funder.slice(0, FUNDER_INSTRUCTIONS_CAP)}\n"""`);
   parts.push(
     'Checks you own. Report a finding only when a check fails:\n' +
@@ -104,11 +106,13 @@ export function renderRolePrompt(role: ReviewerRole, ctx: PromptContext): RolePr
     sectionKeys,
     schema: {
       type: 'object',
+      additionalProperties: false,
       properties: {
         findings: {
           type: 'array',
           items: {
             type: 'object',
+            additionalProperties: false,
             properties: {
               checkId: { type: 'string', enum: checkIds },
               sectionKey: { type: 'string', enum: sectionKeys },
