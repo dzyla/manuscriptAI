@@ -83,19 +83,20 @@ export function matches(e: Expectation, f: NormalizedFinding): boolean {
 export interface Assignment { expectation: Expectation; kind: 'planted' | 'trap' }
 
 /**
- * Assign a finding to at most one expectation: planted by quote, planted by location, trap by quote, trap by location.
- * Within a tier the expectation with the finding's checkId wins, then fixture order.
+ * Assign a finding to at most one expectation. Tiers, in order, first planted then traps: checkId equal + quote
+ * overlap, checkId equal + location, keyword-only + quote overlap, keyword-only + location. Within a tier, fixture order.
  */
 export function assign(fx: ReviewFixture, f: NormalizedFinding): Assignment | null {
-  const tiers: [Expectation[], Assignment['kind'], (e: Expectation, f: NormalizedFinding) => boolean][] = [
-    [fx.planted, 'planted', quoteHit],
-    [fx.planted, 'planted', locationHit],
-    [fx.traps, 'trap', quoteHit],
-    [fx.traps, 'trap', locationHit],
+  const byId = (e: Expectation) => f.checkId !== undefined && f.checkId === e.checkId;
+  const byKeyword = (e: Expectation) => e.keywords.test(f.text);
+  const tiers: [(e: Expectation) => boolean, (e: Expectation, f: NormalizedFinding) => boolean][] = [
+    [byId, quoteHit], [byId, locationHit], [byKeyword, quoteHit], [byKeyword, locationHit],
   ];
-  for (const [list, kind, hit] of tiers) {
-    const candidates = list.filter(e => onTopic(e, f) && hit(e, f));
-    if (candidates.length) return { expectation: candidates.find(e => e.checkId === f.checkId) ?? candidates[0], kind };
+  for (const [list, kind] of [[fx.planted, 'planted'], [fx.traps, 'trap']] as const) {
+    for (const [topic, hit] of tiers) {
+      const found = list.find(e => topic(e) && hit(e, f));
+      if (found) return { expectation: found, kind };
+    }
   }
   return null;
 }

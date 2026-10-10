@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { quotesOverlap, matches, assign, scoreFindings, scoreProse, sectionTitleForQuote, fromSuggestions, type NormalizedFinding } from './score';
 import type { Expectation, ReviewFixture } from './fixtures/types';
 import type { Suggestion } from '../../../src/types';
+import { GRANT_FIXTURE, AIM3 } from './fixtures/grant';
 
 const planted: Expectation = {
   id: 'P', checkId: 'g-rig-power', sectionTitles: ['Aim 3'], quoteHints: ['using eight mice per group'],
@@ -88,6 +89,25 @@ describe('scoreFindings', () => {
   it('prefers a planted location match over a trap quote match', () => {
     const finding = f({ checkId: 'g-rig-power', sectionTitle: 'Rigor', quote: 'n = 12 mice per group gives 80% power', text: 'Powered for Aims 1 and 2 only; Aim 3 is not justified.' });
     expect(assign(fx, finding)).toMatchObject({ kind: 'planted', expectation: { id: 'P' } });
+  });
+});
+
+describe('assign tiers with the real grant fixture', () => {
+  it('lets the checkId outrank a keyword-only quote match', () => {
+    const finding = f({
+      checkId: 'g-rig-stats', sectionTitle: AIM3,
+      quote: 'Mice will undergo TAC and, four weeks later, receive the kinase inhibitor or vehicle for four weeks, using eight mice per group.',
+      text: 'No statistical test is named for this comparison with this sample size.',
+    });
+    expect(assign(GRANT_FIXTURE, finding)).toMatchObject({ kind: 'planted', expectation: { id: 'P11-stats-aim3' } });
+  });
+
+  it('a checkId-equal location match outranks a keyword-only quote match', () => {
+    const a: Expectation = { id: 'A', checkId: 'c-a', sectionTitles: ['S'], keywords: /zzz/i, note: '' };
+    const b: Expectation = { id: 'B', checkId: 'c-b', sectionTitles: ['S'], quoteHints: ['alpha beta gamma delta epsilon'], keywords: /topic/i, note: '' };
+    const t: ReviewFixture = { id: 't', docType: 'grant', sections: [], planted: [b, a], traps: [] };
+    const finding = f({ checkId: 'c-a', sectionTitle: 'S', quote: 'alpha beta gamma delta epsilon', text: 'topic' });
+    expect(assign(t, finding)?.expectation.id).toBe('A');
   });
 });
 
