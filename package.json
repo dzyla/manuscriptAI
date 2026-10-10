@@ -13,7 +13,8 @@
     "lint": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "eval:local": "EVAL_PROVIDER=local EVAL_LOCAL_URL=http://localhost:8080/v1/chat/completions EVAL_LOCAL_MODEL=ornith npx tsx scripts/eval/run.ts"
+    "eval:local": "EVAL_PROVIDER=local EVAL_LOCAL_URL=http://localhost:8080/v1/chat/completions EVAL_LOCAL_MODEL=ornith npx tsx scripts/eval/run.ts",
+    "eval:review": "npx tsx scripts/eval/review/run.ts"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",
