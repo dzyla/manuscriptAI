@@ -37,6 +37,7 @@ type ReviewerRole = 'manager' | 'reviewer-2' | 'statistician' | 'researcher' | '
 type SectionKind =
   | 'summary' | 'narrative' | 'aims' | 'significance' | 'innovation' | 'approach' | 'strategy'   // grant
   | 'abstract' | 'introduction' | 'methods' | 'results' | 'discussion'                             // manuscript
+  | 'references'                                                                                  // bibliography: never reviewed
   | 'any';
 type FactorGroup = 1 | 2 | 3 | 'presentation';
 
@@ -208,6 +209,11 @@ interface Section { key: string; kind: SectionKind; title: string; level: number
   IMRAD names; "Materials and Methods", "Background" → `introduction`, etc.).
 - A heading the table does not know inherits its parent's kind ("Aim 1", "Preliminary Data", "Rigor",
   "Expected Outcomes" under Approach → `approach`). A top-level unknown heading is `any`.
+- "References", "References Cited", "Bibliography", "Literature Cited" and "Works Cited" are `references`: no check
+  targets them and their text is never sent to a reviewer.
+- A specific parent kind always wins over a child's own keyword (a "Summary" subheading under Approach stays
+  `approach`); under `strategy` or `any` the child's keyword decides.
+- A preamble section (`key: 'preamble'`, kind `any`) is created only when there is text before the first heading.
 - `key` = the heading path, normalised and joined with `/`, plus `#n` when siblings share a title:
   `approach/aim-2-rationale#0`. It is text-based on purpose: it survives edits elsewhere.
 - No headings → one section `{ key: 'document', kind: 'any' }`.
