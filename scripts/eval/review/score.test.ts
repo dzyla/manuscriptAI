@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { quotesOverlap, matches, assign, scoreFindings, scoreProse, sectionTitleForQuote, fromSuggestions, type NormalizedFinding } from './score';
+import { scoreBySource, quotesOverlap, matches, assign, scoreFindings, scoreProse, sectionTitleForQuote, fromSuggestions, type NormalizedFinding } from './score';
 import type { Expectation, ReviewFixture } from './fixtures/types';
 import type { Suggestion } from '../../../src/types';
 import { GRANT_FIXTURE, AIM3 } from './fixtures/grant';
@@ -108,6 +108,21 @@ describe('assign tiers with the real grant fixture', () => {
     const t: ReviewFixture = { id: 't', docType: 'grant', sections: [], planted: [b, a], traps: [] };
     const finding = f({ checkId: 'c-a', sectionTitle: 'S', quote: 'alpha beta gamma delta epsilon', text: 'topic' });
     expect(assign(t, finding)?.expectation.id).toBe('A');
+  });
+});
+
+describe('scoreBySource', () => {
+  it('counts total findings, planted hits and trap false alarms per source', () => {
+    const r = scoreBySource(fx, [
+      f({ source: 'editor', text: 'unrelated' }),
+      f({ source: 'statistician', checkId: 'g-rig-power', quote: 'using eight mice per group' }),
+      f({ source: 'statistician', checkId: 'g-rig-power', quote: 'n = 12 mice per group gives 80% power' }),
+      f({ source: 'editor', text: 'Power analysis omits Aim 3.', sectionTitle: 'Rigor' }),
+    ]);
+    expect(r).toEqual({
+      editor: { total: 2, hits: 1, falseAlarms: 0 },
+      statistician: { total: 2, hits: 1, falseAlarms: 1 },
+    });
   });
 });
 

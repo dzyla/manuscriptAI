@@ -24,6 +24,11 @@ describe('buildSettings', () => {
     expect(s).toMatchObject({ provider: 'local', localBaseUrl: 'http://localhost:8080/v1/chat/completions', localModel: 'ornith', localChunkSize: 2000 });
   });
 
+  it('rejects a non-numeric EVAL_CHUNK', () => {
+    expect(() => buildSettings('local', { EVAL_CHUNK: 'abc' })).toThrow('EVAL_CHUNK must be a number');
+    expect(buildSettings('local', { EVAL_CHUNK: '500' }).localChunkSize).toBe(500);
+  });
+
   it('cloud tier: provider from env, whole-document calls', () => {
     const s = buildSettings('cloud', { EVAL_PROVIDER: 'openai', OPENAI_API_KEY: 'k' });
     expect(s).toMatchObject({ provider: 'openai', openaiApiKey: 'k', localChunkSize: 0 });

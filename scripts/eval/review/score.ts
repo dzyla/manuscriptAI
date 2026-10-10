@@ -115,6 +115,21 @@ export function scoreFindings(fx: ReviewFixture, findings: NormalizedFinding[]):
   return { planted: ids.length, hit: ids.filter(id => hit.has(id)), missed: ids.filter(id => !hit.has(id)), falseAlarms, total: findings.length, unmatched };
 }
 
+export interface SourceTally { total: number; hits: number; falseAlarms: number }
+
+/** Per producing agent: findings, findings assigned to a planted weakness, findings assigned to a trap. */
+export function scoreBySource(fx: ReviewFixture, findings: NormalizedFinding[]): Record<string, SourceTally> {
+  const out: Record<string, SourceTally> = {};
+  for (const f of findings) {
+    const t = (out[f.source] ??= { total: 0, hits: 0, falseAlarms: 0 });
+    t.total++;
+    const a = assign(fx, f);
+    if (a?.kind === 'planted') t.hits++;
+    else if (a?.kind === 'trap') t.falseAlarms++;
+  }
+  return out;
+}
+
 const label = (title: string) => title.split(':')[0].trim().toLowerCase();
 
 /** Lenient: a planted weakness counts as mentioned when one line or sentence is on topic and names its section or quote. */

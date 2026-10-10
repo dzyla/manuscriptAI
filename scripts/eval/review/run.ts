@@ -20,7 +20,7 @@ import type { AISettings } from '../../../src/types';
 import { GRANT_FIXTURE } from './fixtures/grant';
 import { MANUSCRIPT_FIXTURE } from './fixtures/manuscript';
 import type { ReviewFixture } from './fixtures/types';
-import { scoreFindings, scoreProse } from './score';
+import { scoreBySource, scoreFindings, scoreProse } from './score';
 
 export interface EvalArgs {
   tier: 'cloud' | 'local';
@@ -42,12 +42,14 @@ export function parseArgs(argv: string[]): EvalArgs {
 
 export function buildSettings(tier: 'cloud' | 'local', env: Record<string, string | undefined>): AISettings {
   if (tier === 'local') {
+    const chunk = env.EVAL_CHUNK ? Number(env.EVAL_CHUNK) : 2000;
+    if (!Number.isFinite(chunk)) throw new Error('EVAL_CHUNK must be a number');
     return {
       provider: 'local',
       localBaseUrl: env.EVAL_LOCAL_URL || 'http://localhost:8080/v1/chat/completions',
       localApiKey: env.EVAL_LOCAL_KEY || '',
       localModel: env.EVAL_LOCAL_MODEL || 'ornith',
-      localChunkSize: env.EVAL_CHUNK ? Number(env.EVAL_CHUNK) : 2000,
+      localChunkSize: chunk,
     };
   }
   const provider = (env.EVAL_PROVIDER || 'anthropic') as AISettings['provider'];
@@ -134,12 +136,18 @@ async function main() {
     const seconds = Math.round((Date.now() - t0) / 1000);
     const calls = counter.count();
     const score = scoreFindings(fx, out.findings);
+    // The edit agent leaves Review in v2, so the comparable baseline excludes it.
+    const noEditor = scoreFindings(fx, out.findings.filter(f => f.source !== 'editor'));
+    const bySource = scoreBySource(fx, out.findings);
     const prose = scoreProse(fx, out.prose);
 
     console.log(`── ${fx.id}`);
-    console.log(`recall           ${score.hit.length}/${score.planted} (${pct(score.hit.length, score.planted)})`);
-    console.log(`false alarms     ${score.falseAlarms.length} on ${fx.traps.length} traps${score.falseAlarms.length ? `  [${score.falseAlarms.map(x => x.trapId).join(', ')}]` : ''}`);
-    console.log(`findings         ${score.total} total, ${score.unmatched} unmatched`);
+    const recallLine = (r: typeof score) => `${r.hit.length}/${r.planted} (${pct(r.hit.length, r.planted)})`;
+    console.log(`recall           ${recallLine(score)} all, ${recallLine(noEditor)} excl. editor`);
+    console.log(`false alarms     ${score.falseAlarms.length} all, ${noEditor.falseAlarms.length} excl. editor, on ${fx.traps.length} traps${score.falseAlarms.length ? `  [${score.falseAlarms.map(x => x.trapId).join(', ')}]` : ''}`);
+    console.log(`findings         ${score.total} total (${noEditor.total} excl. editor), ${score.unmatched} unmatched (${noEditor.unmatched} excl. editor)`);
+    console.log('                 unmatched includes real weaknesses that were not planted, so it is not pure noise.');
+    console.log(`by source        ${Object.entries(bySource).map(([k, v]) => `${k}: ${v.total} total, ${v.hits} hits, ${v.falseAlarms} false alarms`).join(' | ') || '(none)'}`);
     console.log(`summary mentions ${prose.mentioned.length}/${score.planted} (lenient)`);
     console.log(`LLM calls        ${calls}, ${seconds}s`);
     if (score.missed.length) console.log(`missed           ${score.missed.join(', ')}`);
@@ -147,8 +155,8 @@ async function main() {
     console.log('');
 
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    writeFileSync(join(outDir, `${stamp}-baseline-${args.tier}-${doc}.json`), JSON.stringify({ fixture: fx.id, tier: args.tier, model: modelLabel(settings), calls, seconds, score, prose, errors: out.errors, findings: out.findings, summary: out.prose }, null, 2));
-    const row = `| ${new Date().toISOString().slice(0, 10)} | baseline | ${args.tier} | ${modelLabel(settings)} | ${doc} | ${score.hit.length}/${score.planted} (${pct(score.hit.length, score.planted)}) | ${score.falseAlarms.length}/${fx.traps.length} | ${score.total} (${score.unmatched} unmatched) | ${prose.mentioned.length}/${score.planted} | ${calls} | ${seconds}s |`;
+    writeFileSync(join(outDir, `${stamp}-baseline-${args.tier}-${doc}.json`), JSON.stringify({ fixture: fx.id, tier: args.tier, model: modelLabel(settings), calls, seconds, score, scoreExcludingEditor: noEditor, bySource, prose, errors: out.errors, findings: out.findings, summary: out.prose }, null, 2));
+    const row = `| ${new Date().toISOString().slice(0, 10)} | baseline | ${args.tier} | ${modelLabel(settings)} | ${doc} | ${recallLine(score)} all (${recallLine(noEditor)} excl. editor) | ${score.falseAlarms.length} all (${noEditor.falseAlarms.length} excl. editor)/${fx.traps.length} | ${score.total} all (${noEditor.total} excl. editor), ${score.unmatched} unmatched (${noEditor.unmatched} excl. editor) | ${prose.mentioned.length}/${score.planted} | ${calls} | ${seconds}s |`;
     rows.push(row);
     console.log(`${row}\n`);
   }
