@@ -36,6 +36,7 @@ export function normalizeHeading(title: string): string {
     .trim()
     .replace(/^(?:(?:[a-z]|[ivx]+|\d+)(?:\.\d+)+[.):]?\s+|(?:[a-z]|[ivx]+|\d+)[.):]\s+|\d+\s+)/, '')
     .replace(/&/g, ' and ')
+    .replace(/\s*\/\s*/g, ' / ')
     .replace(/[^a-z0-9/ ]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();

@@ -25,6 +25,10 @@ describe('normalizeHeading', () => {
     expect(normalizeHeading('Background & Significance')).toBe('background and significance');
   });
 
+  it('pads the slash so the unspaced NIH spelling normalizes the same way', () => {
+    expect(normalizeHeading('Project Summary/Abstract')).toBe('project summary / abstract');
+  });
+
   it('does not strip a word that merely starts the title', () => {
     expect(normalizeHeading('Aim 1: Define gating')).toBe('aim 1 define gating');
   });
@@ -34,6 +38,7 @@ describe('classifyHeading', () => {
   it('classifies grant headings', () => {
     expect(classifyHeading('Specific Aims', 'grant')).toBe('aims');
     expect(classifyHeading('Project Summary / Abstract', 'grant')).toBe('summary');
+    expect(classifyHeading('Project Summary/Abstract', 'grant')).toBe('summary');
     expect(classifyHeading('Project Narrative', 'grant')).toBe('narrative');
     expect(classifyHeading('Research Strategy', 'grant')).toBe('strategy');
     expect(classifyHeading('Background and Significance', 'grant')).toBe('significance');
