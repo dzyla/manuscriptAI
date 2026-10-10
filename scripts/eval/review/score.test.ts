@@ -18,7 +18,8 @@ const f = (x: Partial<NormalizedFinding>): NormalizedFinding => ({ text: '', sou
 describe('quotesOverlap', () => {
   it('accepts containment either way, ignoring case and spacing', () => {
     expect(quotesOverlap('Using  EIGHT mice per group', 'using eight mice per group')).toBe(true);
-    expect(quotesOverlap('eight mice', 'using eight mice per group')).toBe(true);
+    expect(quotesOverlap('eight mice per', 'using eight mice per group')).toBe(true);
+    expect(quotesOverlap('mice', 'using eight mice per group')).toBe(false);
   });
 
   it('accepts a shared run of five words and rejects shorter ones', () => {
@@ -100,6 +101,14 @@ describe('scoreProse', () => {
 
 describe('legacy adapter', () => {
   const sections = [{ title: 'Aim 2', text: 'Mice will undergo TAC.' }, { title: 'Aim 3', text: 'We are using eight mice per group.' }];
+
+  it('prefers an exact section over an earlier fuzzy one', () => {
+    const near = [
+      { title: 'A', text: 'Aim 2 will use the knock-in lines generated in Aim 1 today.' },
+      { title: 'B', text: 'Aim 3 will use the knock-in lines generated in Aim 1 today.' },
+    ];
+    expect(sectionTitleForQuote(near, 'Aim 3 will use the knock-in lines generated in Aim 1')).toBe('B');
+  });
 
   it('finds the section that contains a quote', () => {
     expect(sectionTitleForQuote(sections, 'using eight mice per group')).toBe('Aim 3');

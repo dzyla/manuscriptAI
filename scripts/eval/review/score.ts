@@ -28,6 +28,8 @@ export interface ScoreResult {
 }
 
 const MIN_WORD_RUN = 5;
+/** Containment only counts when the contained (shorter) string has at least this many words. */
+const MIN_CONTAINED_WORDS = 3;
 
 function norm(s: string): string {
   return normalizeForMatch(s).text.toLowerCase().replace(/\s+/g, ' ').trim();
@@ -52,7 +54,8 @@ export function quotesOverlap(a: string, b: string): boolean {
   const na = norm(a);
   const nb = norm(b);
   if (!na || !nb) return false;
-  if (na.includes(nb) || nb.includes(na)) return true;
+  const [shorter, longer] = na.length <= nb.length ? [na, nb] : [nb, na];
+  if (shorter.split(' ').length >= MIN_CONTAINED_WORDS && longer.includes(shorter)) return true;
   return longestWordRun(na.split(' '), nb.split(' ')) >= MIN_WORD_RUN;
 }
 
@@ -125,11 +128,18 @@ export function scoreProse(fx: ReviewFixture, prose: string): { mentioned: strin
   return { mentioned, missed: fx.planted.map(e => e.id).filter(id => !mentioned.includes(id)) };
 }
 
+/**
+ * Section whose text contains the quote. Exact and normalized matches win over fuzzy ones in every section, so a
+ * fuzzy match in an earlier parallel-structured section cannot steal an exact match in a later one.
+ */
 export function sectionTitleForQuote(sections: Pick<Section, 'title' | 'text'>[], quote: string): string | undefined {
-  for (const s of sections) {
-    if (s.title && s.text && findTextSpan(s.text, quote)) return s.title;
-  }
-  return undefined;
+  const usable = sections.filter(s => s.title && s.text);
+  const strict = usable.find(s => {
+    const m = findTextSpan(s.text, quote);
+    return m !== null && m.method !== 'fuzzy';
+  });
+  if (strict) return strict.title;
+  return usable.find(s => findTextSpan(s.text, quote) !== null)?.title;
 }
 
 export function fromSuggestions(suggestions: Suggestion[], sections: Pick<Section, 'title' | 'text'>[]): NormalizedFinding[] {
