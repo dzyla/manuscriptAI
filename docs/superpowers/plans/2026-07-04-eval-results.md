@@ -199,3 +199,11 @@ cloud gate (>= 80% and beat the baseline) needs at least 13/15 with at most 1 tr
 (>= 60%, beat 8/15) needs at least 10/15 with at most 2 false alarms. Both tiers currently produce many findings
 that match neither a plant nor a trap (20 on the local grant run, 20 on the Claude grant run, excluding the editor);
 R2 should report that number alongside recall.
+
+**Re-score before comparing (added 2026-10-11).** The rows above were produced with a scorer that rejected a correct
+finding whose quote was short but distinctive; the rule is now distinctiveness (commits `368caa7`, `3a07a7c`), so
+these numbers are slightly understated. Re-run the baseline, or re-score its saved findings, before judging R2
+against it. The "matches nothing" counts also include genuine unplanted weaknesses, so they are not noise.
+
+Measured strategy follow-up, with the numbers R2 should actually aim at:
+`docs/superpowers/specs/2026-10-10-review-prompting-spike.md`.
