@@ -36,6 +36,11 @@ any fixture or grant. The author's text stayed in the session scratchpad and is 
 | **S5** | S3 but the model sees an **outline, the verbatim aims, and only the paragraphs a keyword search found relevant** (~1,800 words) instead of the whole document. |
 | **S6** | S3 plus an **LLM fact sheet**: the document is split into parts, one call per part extracts aims, hypotheses, quantities, names and milestones; cross-document checks are judged from the merged sheet; per-aim checks run per Approach part. |
 
+> **Re-measured 2026-10-11.** The tables below are corrected. Two things changed them: the scorer was rejecting
+> correct findings whose quote was short but distinctive (now judged by distinctiveness; commits `368caa7`, `3a07a7c`),
+> and four deterministic cross-document detectors were prototyped and measured. Where a number moved, the corrected
+> one is used throughout.
+
 ## Results (recall on planted weaknesses / trap false alarms)
 
 | Strategy | synth. grant | synth. manuscript | Michelson | SNSF | R01 | total | trap FA | calls |
@@ -49,6 +54,49 @@ any fixture or grant. The author's text stayed in the session scratchpad and is 
 
 Documents up to ~9k tokens only (everything except the R01): S1 30/39, S2 34/39, **S3 34/39 with the fewest false
 alarms**, S4 33/39, S5 34/39, S6 29/39.
+
+### Corrected results, and the deterministic detectors
+
+LLM alone, re-scored:
+
+| Strategy | synth. grant | synth. ms. | Michelson | SNSF | R01 | total | trap FA | calls |
+|---|---|---|---|---|---|---|---|---|
+| S1 role-batched | 13/15 | 8/12 | 4/5 | 5/7 | 4/9 | 34/48 (71%) | 3 | 25 |
+| S2 per check | 14/15 | 9/12 | 5/5 | 6/7 | 2/9 | 36/48 (75%) | 2 | 133 |
+| S3 per check + procedure | 13/15 | 10/12 | 5/5 | 6/7 | 2/9 | 36/48 (75%) | **1** | 129 |
+| S4 + skeptic | 12/15 | 10/12 | 5/5 | 6/7 | 2/9 | 35/48 (73%) | 1 | 238 |
+| S5 retrieval | 14/15 | 10/12 | 5/5 | 5/7 | 3/9 | 37/48 (77%) | 2 | 129 |
+| S6 fact sheet | 12/15 | 8/12 | 5/5 | 4/7 | 1/9 | 30/48 (63%) | 1 | 243 |
+| S7 per-aim scoping | not run | not run | not run | 6/7 | 3/9 | 9/16 | 0 | 141 |
+
+The same runs with four deterministic cross-document detectors added:
+
+| Strategy | synth. grant | synth. ms. | Michelson | SNSF | R01 | total | trap FA |
+|---|---|---|---|---|---|---|---|
+| S1 role-batched | 13/15 | 8/12 | 4/5 | 5/7 | 5/9 | 35/48 (73%) | 3 |
+| **S3 per check + procedure** | 14/15 | 10/12 | 5/5 | **7/7** | 5/9 | **41/48 (85%)** | **1** |
+| **S5 retrieval** | 14/15 | 10/12 | 5/5 | 6/7 | **6/9** | **41/48 (85%)** | 2 |
+| S7 per-aim scoping | not run | not run | not run | 7/7 | 6/9 | 13/16 | 0 |
+
+The detectors alone, with no model at all: 18 ms on the 25k-token R01, and no false alarm on any trap.
+
+| Document | Caught deterministically |
+|---|---|
+| R01 | **4 of 9** — a dose given two ways, a strain renamed once, a milestone past the project period, a sub-aim missing from the Aims page |
+| SNSF | 1 of 7 — the attachment protein renamed once |
+| synthetic grant | 2 of 15 — the timeline overrun and the aim absent from the Approach |
+| Michelson, synthetic manuscript | 0 (neither has a cross-document plant) |
+
+The four are **quantity disagreement** (a number with a unit whose surrounding description matches another site with a
+different value), **entity drift** (a name used once that is one character from a name used throughout),
+**milestone overrun** (a year or quarter label beyond the project period) and **aim-list difference** (a set
+difference between the aim labels on the Aims page and in the Approach). Together they beat every prompting strategy
+on the R01, in 18 milliseconds, and they take the SNSF plan to 7 of 7.
+
+Precision differs by detector and should drive how each is presented. Quantity disagreement, milestone overrun and
+aim-list difference were exact on these five documents (every finding was a real problem). Entity drift was 2 right
+out of 8 flagged: the rest were figure-panel labels and numbered variants ("F1" against "F2"). It should ship as a
+short "names used once that resemble another name" list at minor severity, not as a finding card.
 
 ## What the numbers mean
 
@@ -65,7 +113,7 @@ alarms**, S4 33/39, S5 34/39, S6 29/39.
    of five documents and the run took 18 minutes on the R01.
 5. **Retrieval (S5) is the only thing that scales.** Equal to S3 on short documents, best on the R01, and its prompts
    stay near 3k tokens whatever the document's length.
-6. **The 25k-token R01 defeats every strategy (1-3 of 9).** The failures are of three kinds, and the diagnostic run
+6. **The 25k-token R01 defeats prompting alone (1-4 of 9), and detectors are what rescue it (to 6 of 9).** The failures are of three kinds, and the diagnostic run
    shows which is which:
    - **Cross-document comparisons** (a dose given as 1 and 10 µg in one paragraph and 1 and 5 µg in the next; a strain
      called B3 in one sentence and D8 in another; a sub-aim present in the Approach and absent from the Aims page).
@@ -99,13 +147,18 @@ Concretely, replacing §3.2 to §3.4 of the Review v2 spec:
    Specific Aims, and the paragraphs a deterministic search selects for that check (~1,800 words), with a score boost
    for paragraphs under a heading whose title matches the check's topic.
 5. **Per-aim checks** (design, power, statistics, sex as a biological variable, blinding, replication, pitfalls,
-   outcomes, preliminary data, measurable endpoint, expertise; and the manuscript rigor checks) are asked **once per
-   aim or sub-aim**, with any general rigor section attached to every call and the instruction to judge only that part.
-   This is what makes a deletion in one sub-aim findable, and it is how a study section actually reads an Approach.
-6. **Cross-document consistency becomes deterministic.** `g-con-numbers`, `m-con-numbers` and the name half of
-   `*-con-terms` are detector work, not LLM work: extract (number, unit, nearby noun) and (capitalised or
-   alphanumeric entity) tuples per section and report disagreements. Extend `src/services/detectors.ts`. Leave the LLM
-   the judgment-shaped consistency checks (summary against aims, abstract against results).
+   outcomes, preliminary data, measurable endpoint, expertise; and the manuscript rigor checks) **may** be asked once
+   per aim or sub-aim, with any general rigor section attached to every call and the instruction to judge only that
+   part. Measured in isolation (S7) this is worth **one extra planted weakness out of nine** on the R01 and takes the
+   finding count from 17 to 54, at 94 calls against 28. It is how a study section actually reads an Approach, and it
+   is the only thing that makes a deletion inside one sub-aim findable, but on this evidence it is **optional** and
+   should be a setting, not the default. Retrieval (point 4) reaches the same R01 recall far more cheaply.
+6. **Cross-document comparison becomes deterministic, and it is the single biggest win.** Four detectors —
+   quantity disagreement, entity drift, milestone overrun, aim-list difference — caught 4 of 9 R01 plants in 18 ms
+   with no false alarms, took the SNSF plan from 6/7 to 7/7, and raised the mixed-set total from 36-37/48 to 41/48.
+   They cover `*-con-numbers`, the name half of `*-con-terms`, `g-fea-timeline` and `g-log-aims-approach`. Extend
+   `src/services/detectors.ts`. Leave the LLM the judgment-shaped consistency checks (summary against aims, abstract
+   against results). Present entity drift as a minor-severity name list, not a finding card (precision 2 of 8).
 7. **Keep the verification call** from the spec (one batched pass over all findings), but drop the per-finding
    skeptical pass. Evidence-first prompting already does most of that work at a fraction of the cost.
 8. **Cost on the local tier**: about 30 calls for a short document and about 90 for a 25k-token R01 (per-aim checks
@@ -115,12 +168,35 @@ Concretely, replacing §3.2 to §3.4 of the Review v2 spec:
    Adopt the evidence-first output and the procedures there too, since both are free. **This is an assumption, not a
    measurement** — see Not tested.
 
+### What still escapes on the R01
+
+With the best measured configuration (retrieval plus detectors, 6 of 9) three plants remain, and all three are a
+single sentence deleted from or weakened inside a 25k-token document: the Aim 2 hypothesis reduced to "plays an
+important role" on the Aims page only, the deleted power justification for the mouse groups, and the deleted sentence
+stating that the microscopes are available. Per-aim scoping finds the power one; nothing found the other two. A
+reviewer reading the Approach aim by aim would. This is the honest ceiling of the current design on a long document,
+and R2 should report it rather than hide it.
+
 ## Gates for R2, revised from this evidence
 
-The R1 gates (cloud ≥ 80%, local ≥ 60%) hold for documents up to ~9k tokens; the recommended strategy already reaches
-73-77% on the local tier there. **Do not set a recall gate on a 25k-token real grant yet**: report the number, and
-treat beating 3/9 as the target once the deterministic cross-checks land (three of the nine R01 plants are number,
-name and aims-vs-approach comparisons that detectors should catch outright).
+The R1 gates (cloud ≥ 80%, local ≥ 60%) hold for documents up to ~9k tokens; the recommended configuration reaches
+**85% on the mixed set** and **7/7 on the author's SNSF plan** with one false alarm. On a 25k-token real grant the
+measured ceiling is **6 of 9**: make that the R2 gate for the long-document case, since it is reached by a
+configuration that exists, and raise it when the remaining three (single deleted or weakened sentences) are addressed.
+
+## Found by running on real grants (would not have surfaced on synthetic text)
+
+- **The scorer was under-counting.** `quotesOverlap` demanded three space-separated words, so a correct finding
+  quoting "receptor-bound HN" was scored as a miss; a 15-character floor then still rejected "Y6Q3 Go/No-Go". The rule
+  is now distinctiveness: containment is refused only for a single alphabetic token under eight characters. This moved
+  four R01 plants and one SNSF plant from missed to found, and it means **the R1 baseline numbers in
+  `2026-07-04-eval-results.md` are slightly understated** — anything compared against them should be re-scored first.
+- **Word's Symbol font breaks unit reading.** The R01 stores the micro sign as a literal private-use character
+  (U+F06D), not as `<w:sym>`, so "5<U+F06D>g" is not a dose to any reader and a model quoting it produces a quote that
+  cannot be found again. Ten occurrences in one file. The spike mapped the Symbol range itself; the real fix belongs in
+  the DOCX reader and is recorded in `2026-10-08-carried-items.md`.
+- **A regex with nested quantifiers hung on a 25k-token document.** Bounded repetition only, in anything that scans a
+  whole grant.
 
 ## Not tested
 

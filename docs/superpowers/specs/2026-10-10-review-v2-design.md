@@ -322,12 +322,16 @@ lossy to judge from, and it cost recall on three of five documents).
 2. **One call per check** (§3.2), run over the checks `applicableChecks` returns.
 3. **Per-aim checks** (`granularity: 'per-aim'`: design, power, statistics, sex as a biological variable, blinding,
    replication, pitfalls, outcomes, preliminary data, measurable endpoint, expertise, and the manuscript rigor and
-   methods checks) are asked **once per aim or sub-aim part** instead of once per document. Parts are cut at aim-like
-   headings under ~1,800 words; any general rigor or statistics section is attached to every part and declared to count
-   for every aim; the call is told to judge only that part. This is what makes a deletion inside one sub-aim findable,
-   and it is how a study section reads an Approach.
-4. **Cross-document consistency is deterministic, not LLM** (§3.6). No prompt made the weak model notice a dose given
-   as two different pairs of numbers in adjacent paragraphs, or a strain renamed once.
+   methods checks) **may** be asked once per aim or sub-aim part instead of once per document. Parts are cut at
+   aim-like headings under ~1,800 words; any general rigor or statistics section is attached to every part and declared
+   to count for every aim; the call is told to judge only that part. It is the only thing that makes a deletion inside
+   one sub-aim findable, but measured in isolation it is worth one extra planted weakness in nine on a real R01 while
+   tripling the findings and the calls. **Ship it as a setting ("review each aim separately"), default off**, and
+   revisit when the UI groups findings by aim.
+4. **Cross-document comparison is deterministic, not LLM** (§3.6), and it runs first. Measured on the author's own
+   grants, four detectors catch what no prompt catches — a dose given two ways, a strain renamed once, a milestone past
+   the project period, a sub-aim missing from the Aims page — in 18 ms with no false alarms, and they raise the
+   mixed-set recall from 36/48 to 41/48.
 5. **One batched verification call** over all findings, as in §3.3. The per-finding skeptical pass that the spike tried
    is **not** adopted: no recall gain, double the calls, and it deleted true findings.
 6. `recallPass` (existing setting, default on) repeats step 2 for the `critical` checks only.
@@ -351,10 +355,20 @@ quantity that disagrees between two paragraphs or an entity renamed once. R2 add
 the judgment-shaped consistency checks (summary against aims, abstract against results):
 
 - **quantity disagreement** → `*-con-numbers`: extract (value, unit, the nearest preceding noun phrase) per section;
-  report a pair describing the same thing with different values, quoting both sites.
+  report a pair describing the same thing with different values, **anchored at both sites** so the author sees both and
+  the finding does not depend on which site the scan met first. Units that are ambiguous when glued to a number
+  (`M`, `A`, `g`, `l`, `h`, `x`: "3M" is a triple mutant, "3 M" is molar) require whitespace.
+- **milestone overrun** → `g-fea-timeline`: a year or quarter label (`Y6Q3`, "year 6") beyond `projectYears`.
+- **aim-list difference** → `g-log-aims-approach`: a set difference between the aim and sub-aim labels on the Aims page
+  and those in the Approach, reported only when a sibling label of the same stem does appear on the Aims page.
 - **entity drift** → the name half of `*-con-terms`: extract capitalised or alphanumeric entity tokens (strains, cell
   lines, constructs, antibodies) with their counts per section; report a token that appears once where a
-  near-identical token dominates elsewhere.
+  near-identical token dominates elsewhere. Skip figure and table legends, two-letter lab shorthand, numbered variants
+  (`F1` against `F2`) and a common name with a citation number glued on (`E170G3`). Even then its precision was 2 of 8
+  on real grants, so present it as a minor-severity list of names to check, not as a finding card.
+- **Any detector that scans a whole grant uses bounded repetition**: a nested quantifier hung for minutes on a
+  25k-token document during the spike.
+- All four must be quiet on text that is merely precise, which the eval's trap set is what checks.
 
 Both must be quiet on text that is simply precise: a deliberate dose series, a figure panel label, or a legitimately
 new reagent introduced once. The eval's trap set is how that is checked.
