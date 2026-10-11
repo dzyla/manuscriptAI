@@ -28,6 +28,9 @@ PDF output and the document-engine program (A2b-A5) are out of scope here; Word 
 - Any server component. Everything stays client-side; providers unchanged (`gemini`, `openai`, `anthropic`, `local`).
 - Grant workspace features (drafting wizard, FOA-to-template, literature search).
 
+Measured follow-up: `docs/superpowers/specs/2026-10-10-review-prompting-spike.md` (which prompting strategy wins on a
+weak model, and why the local tier below looks as it does).
+
 ## 1. The checklist
 
 `src/services/review/checklist.ts` — plain data, no prompt prose.
@@ -52,6 +55,14 @@ interface ReviewCheck {
   question: string;           // what the reviewer asks
   passes: string;             // what counts as adequate, so the model knows when NOT to flag
   severity: 'critical' | 'major' | 'minor';
+  /** The procedure a weak model follows: 3-5 imperative steps, step 1 locating the evidence, the last stating the
+   *  decision rule including when the check does not apply. Rendered into the prompt (§3.2). */
+  steps: string[];
+  /** One generic example either side of the boundary, on a neutral invented topic. */
+  passExample: string;
+  failExample: string;
+  /** 'per-aim' checks are asked once per aim or sub-aim part (§3.4), not once per document. */
+  granularity?: 'document' | 'per-aim';
 }
 ```
 
@@ -145,7 +156,8 @@ authors actually put them are in scope: `m-imp-overclaim` also reads `results`, 
 
 Ids unique; id prefix matches `doc` and owner; every role owns at least one check per `doc`; every grant check has
 a `factor`; every manuscript check has none; every check's `sections` is non-empty and uses kinds of its `doc`
-(or `any`); every `passes` is non-empty.
+(or `any`); every `passes` is non-empty; every check has 3-5 `steps`, a non-empty `passExample` and `failExample`,
+and its first step locates evidence while its last states the decision rule.
 
 ## 2. Findings and anchors
 
@@ -208,6 +220,11 @@ provider routing; review prompt text moves out of it.
 interface Section { key: string; kind: SectionKind; title: string; level: number; from: number; to: number; text: string; headingFrom: number; headingTo: number; }
 ```
 
+- The keyword table must be wider than R1's. Real grants head sections "2.1 Current state of research", "A5.
+  Scientific Rigor and Consideration of Relevant Biological Variables", "C2.2b. Frequency of administration",
+  "Reason for the choice of research institution", "Project 1.", and run numbering into the heading; the spike needed
+  a widened table before any check applied to the author's SNSF plan. Headings also arrive as run-in bold starts of a
+  paragraph ("**A1. Re-emergence of measles.** MeV is...") in Word imports, which the import path must split.
 - Kind comes from a keyword table on the heading text ("Specific Aims" → `aims`; "Research Strategy" →
   `strategy`; "Significance", "Innovation", "Approach"; "Project Summary"/"Abstract"; "Project Narrative";
   IMRAD names; "Materials and Methods", "Background" → `introduction`, etc.).
@@ -232,7 +249,23 @@ the F31 template) counts as all three kinds when checks are selected, so no chec
 
 ### 3.2 Prompt rendering
 
-`renderRolePrompt(role, ctx)` builds, in order:
+**The prompt unit is one check, not one role** (measured: `docs/superpowers/specs/2026-10-10-review-prompting-spike.md`).
+`renderCheckPrompt(check, ctx)` builds a system prompt (reviewer context plus the standing rules) and a user prompt
+holding the document or its excerpts, then the check: id, name, `question`, "Adequate when: <passes>", the `steps`,
+`failExample` and `passExample`, then the fixed output order. Output schema:
+
+```json
+{ "evidence": ["<up to 3 passages copied from the document>"],
+  "verdict": "pass | fail | not_applicable",
+  "problems": [ { "sectionKey": "...", "quote": "... or \"\" when missing", "issue": "...", "recommendation": "..." } ] }
+```
+
+`evidence` comes first on purpose: making the model find the passage that would satisfy the check before ruling is
+what suppressed false alarms in the spike, and `not_applicable` is what stops it inventing a problem for a check that
+does not apply. `problems` is empty unless the verdict is `fail`; severity comes from the check, not the model.
+`sectionKey` is an enum of the offered keys and the objects carry `additionalProperties: false`, as below.
+
+`renderRolePrompt(role, ctx)` is kept for the cloud tier (§3.3) and builds, in order:
 
 1. **Preamble**: who the reviewer is and the document type. For grants it states the mechanism (from the grant
    template, when known), the project period, and the 2025 framework in two sentences. `customPrompts[role]`
@@ -257,7 +290,12 @@ On the wire "quote" is always a string, because not every provider's constrained
 No counts or quotas anywhere. A unit test asserts every check id appears in exactly one role's rendered prompt
 for a document containing every section kind.
 
-### 3.3 Cloud tier (about 7 calls)
+### 3.3 Cloud tier (about 7 calls, role-batched)
+
+The cloud tier keeps one call per role: R1's baseline shows a strong model reaching 80% recall on the synthetic grant
+that way, and per-check prompting would cost it six times the calls for a gain only the weak model needed. It adopts
+the `evidence`-first output and the `steps` text, which cost nothing. **Unmeasured** (the spike's strong-model run was
+blocked): if R2's cloud tier misses the 80% gate, switch it to the per-check unit before touching anything else.
 
 1. Five role calls in parallel. Input: the whole document with section markers
    (`=== [approach] approach/aim-2#0 — Aim 2 ===`), the role's checks.
@@ -269,27 +307,31 @@ for a document containing every section kind.
    anywhere in the document. Missing ids are kept. On failure every finding is kept as `unverified`.
 5. **Summary statement** (one call, §5).
 
-### 3.4 Local tier (about 25-35 calls for an R01)
+### 3.4 Local tier (about 30 calls for a short grant, about 90 for a 25k-token R01)
 
-1. **Fact sheet**: one call per section (long sections split at paragraph boundaries under
-   `localChunkSize`), schema:
-   ```json
-   { "aims": [{ "label": "Aim 1", "title": "...", "hypothesis": "..." }],
-     "sampleSizes": [{ "what": "...", "n": "..." }], "models": ["..."], "methods": ["..."],
-     "timeline": { "years": null, "milestones": ["..."] }, "prelimClaims": [{ "aim": "Aim 1", "claim": "..." }],
-     "statsMentioned": ["..."], "abbreviations": [{ "short": "...", "long": "..." }] }
-   ```
-   Each item is tagged with its `sectionKey` during the merge, which is deterministic (concatenate, dedupe by
-   normalised text). The merged sheet is capped at ~1,500 tokens by dropping `methods`, then `models`.
-2. **Section checks**: for each section (or piece), one call per role that has `scope: 'section'` checks for
-   that section's kind. Input: the section text, the fact sheet, the role's applicable checks.
-3. **Cross checks**: one call per role that has `scope: 'cross'` checks. Input: the fact sheet and the section
-   titles, not the text. Quotes in cross findings are optional; a cross finding without a resolvable quote
-   anchors to the first section in its check's `sections` that exists.
-4. **Verify missing-content findings** only, one batched call against the fact sheet; quote-bearing findings were
-   produced from the text they quote and are not re-verified locally.
-5. `recallPass` (existing setting, default on) repeats step 2 for the `critical` checks only.
-6. **Summary statement** from the findings and the fact sheet (no full text).
+Measured in the spike; the LLM fact sheet of the earlier draft is **dropped** (a 2-bit model's extraction was too
+lossy to judge from, and it cost recall on three of five documents).
+
+1. **Document delivery by size.** Under ~8k tokens the whole document goes in every call, with section markers; one
+   slot and prompt caching mean each later call only processes its own ~500-token question. Above that, each call gets
+   the outline (every section's key, kind, title and word count), the **verbatim Specific Aims**, and the paragraphs a
+   deterministic search selects for that check (~1,800 words): score by the check's cue words (from its `steps`) and
+   its `sections`, with a boost for paragraphs under a heading whose title matches the check's topic, then emit them in
+   document order under their section markers. The prompt says that a check with no relevant excerpt is to be treated
+   as missing material.
+2. **One call per check** (§3.2), run over the checks `applicableChecks` returns.
+3. **Per-aim checks** (`granularity: 'per-aim'`: design, power, statistics, sex as a biological variable, blinding,
+   replication, pitfalls, outcomes, preliminary data, measurable endpoint, expertise, and the manuscript rigor and
+   methods checks) are asked **once per aim or sub-aim part** instead of once per document. Parts are cut at aim-like
+   headings under ~1,800 words; any general rigor or statistics section is attached to every part and declared to count
+   for every aim; the call is told to judge only that part. This is what makes a deletion inside one sub-aim findable,
+   and it is how a study section reads an Approach.
+4. **Cross-document consistency is deterministic, not LLM** (§3.6). No prompt made the weak model notice a dose given
+   as two different pairs of numbers in adjacent paragraphs, or a strain renamed once.
+5. **One batched verification call** over all findings, as in §3.3. The per-finding skeptical pass that the spike tried
+   is **not** adopted: no recall gain, double the calls, and it deleted true findings.
+6. `recallPass` (existing setting, default on) repeats step 2 for the `critical` checks only.
+7. **Summary statement** from the findings and the outline.
 
 `pipelineMode` (`find-fix` / `single`) no longer applies to the review pass; it is removed from the settings UI
 when R4 deletes the old pipeline.
@@ -303,6 +345,19 @@ calls partly failed are kept and the failure is noted. Stop aborts everything in
 are kept and the run is marked `stopped`.
 
 ### 3.6 Detectors
+
+Cross-document consistency belongs here, not in the LLM: the spike showed no prompt makes a weak model notice a
+quantity that disagrees between two paragraphs or an entity renamed once. R2 adds two detectors and the LLM keeps only
+the judgment-shaped consistency checks (summary against aims, abstract against results):
+
+- **quantity disagreement** → `*-con-numbers`: extract (value, unit, the nearest preceding noun phrase) per section;
+  report a pair describing the same thing with different values, quoting both sites.
+- **entity drift** → the name half of `*-con-terms`: extract capitalised or alphanumeric entity tokens (strains, cell
+  lines, constructs, antibodies) with their counts per section; report a token that appears once where a
+  near-identical token dominates elsewhere.
+
+Both must be quiet on text that is simply precise: a deliberate dose series, a figure panel label, or a legitimately
+new reagent introduced once. The eval's trap set is how that is checked.
 
 `detectors.ts` stays deterministic and each detector maps to a check id: N-mismatch → `*-con-numbers`,
 abbreviation-before-definition → `*-con-terms`, uncited claim → `*-con-uncited`, the statistics detectors →
@@ -414,6 +469,9 @@ them).
   planted weaknesses assigned at least once; a finding assigned to a trap is a false alarm. Also reported: total
   findings (noise), findings matching nothing, LLM calls, wall time, and for Copy-edit, guard rejections and edits
   that touch a citation.
+- **Real-document caveat**: on a real grant, a finding that matches no plant and no trap is often a genuine weakness
+  that was never planted (the spike found many unjustified group sizes in the author's own R01). Recall on plants is
+  the comparison; the unmatched count is reported, never used to penalise a thorough strategy.
 - **Baseline**: R1 scores the current pipeline (`analyzeText` crew + study section) on the new fixtures before
   anything changes; the numbers are recorded in `docs/superpowers/plans/2026-07-04-eval-results.md`.
 - **Gates** (checked at R2 and R4, both tiers must also beat the baseline). Copy-edit leaves Review in v2, so the
@@ -422,7 +480,12 @@ them).
   | Tier | Recall | False alarms on traps |
   |---|---|---|
   | cloud | ≥ 80% | ≤ 1 |
-  | local (ornith-9b) | ≥ 60% | ≤ 2 |
+  | local (Qwen3.8-27B IQ2_M) | ≥ 60% | ≤ 2 |
+
+  These hold for documents up to ~9k tokens; the recommended strategy already reached 73-77% there on the local tier
+  in the spike. **A 25k-token real grant gets no recall gate yet**: the spike's best was 3 of 9 planted weaknesses,
+  three of which are quantity, entity and aims-against-approach comparisons that the new detectors (§3.6) should catch
+  outright. R2 reports that number; a gate is set once the detectors land.
 
 - **Private check**: the author's real R01 under `fixtures/private/` (gitignored), run by hand at the end of R3,
   findings read by the author.
