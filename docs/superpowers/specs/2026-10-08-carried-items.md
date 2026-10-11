@@ -69,3 +69,18 @@ live only in a scratch ledger that `git clean -fdx` destroys. Same reason as
 - Every keystroke runs `stripHtml(content)` twice in `App.tsx` (`:322`, `:404`) plus
   `useOutline` over the full HTML. `useOutline` is identity-stable so re-renders are
   avoided, but the regex passes are not. All four panels are now permanently mounted.
+
+## Found while measuring the review on real grants (2026-10-11)
+
+- **Symbol-font runs import as private-use characters.** The author's R01 draft stores the micro sign as a literal
+  U+F06D (a Symbol-font 'm') in `word/document.xml`, with the run's font set to Symbol, not as `<w:sym>`. The DOCX
+  reader has no mapping for the private-use area, so the character survives into the document text, where it renders
+  as a missing glyph and silently breaks anything that reads units: "5<U+F06D>g" is not a dose to a detector, and a
+  model quoting it produces a quote that cannot be found again. Ten occurrences in that one file (also U+F067 for
+  gamma). Fix belongs in `src/docx/read/`: map the Symbol and Wingdings private-use ranges to Unicode when the run's
+  font says so. The review spike worked around it with its own `deSymbol` map; R2's detectors need the real fix or the
+  same workaround.
+- **Real grant headings need a wider keyword table than `sections.ts` has.** "2.1 Current state of research",
+  "A5. Scientific Rigor and Consideration of Relevant Biological Variables", "C2.2b. Frequency of administration",
+  "Reason for the choice of research institution", "Project 1." all classify as `any` today, so no check applies to
+  them. Recorded in the Review v2 spec §3.1; the spike used a widened table.

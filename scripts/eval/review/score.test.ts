@@ -27,6 +27,11 @@ describe('quotesOverlap', () => {
     // two space-separated tokens, but 17 characters and unmistakable
     expect(quotesOverlap('a signal from receptor-bound HN.', 'receptor-bound HN')).toBe(true);
     expect(quotesOverlap('the HN protein', 'HN')).toBe(false);
+    // a milestone label: 13 characters, two tokens, unmistakable
+    expect(quotesOverlap('Eliciting a response by Y6Q3 Go/No-Go.', 'Y6Q3 Go/No-Go')).toBe(true);
+    // a long single word is distinctive; a short one is not
+    expect(quotesOverlap('the immunogenicity data', 'immunogenicity')).toBe(true);
+    expect(quotesOverlap('the group sizes', 'group')).toBe(false);
   });
 
   it('accepts a shared run of five words and rejects shorter ones', () => {
