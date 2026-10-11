@@ -28,8 +28,12 @@ export interface ScoreResult {
 }
 
 const MIN_WORD_RUN = 5;
-/** Containment only counts when the contained (shorter) string has at least this many words. */
+/** Containment counts when the contained (shorter) string is specific enough: this many words, OR this many
+ *  characters. The character floor matters because a hyphenated compound plus an entity ("receptor-bound HN") is
+ *  two space-separated tokens but is far more specific than a bare word, and rejecting it scores a correct finding
+ *  as a miss. Measured on a real grant, 2026-10-11. */
 const MIN_CONTAINED_WORDS = 3;
+const MIN_CONTAINED_CHARS = 15;
 
 function norm(s: string): string {
   return normalizeForMatch(s).text.toLowerCase().replace(/\s+/g, ' ').trim();
@@ -55,7 +59,8 @@ export function quotesOverlap(a: string, b: string): boolean {
   const nb = norm(b);
   if (!na || !nb) return false;
   const [shorter, longer] = na.length <= nb.length ? [na, nb] : [nb, na];
-  if (shorter.split(' ').length >= MIN_CONTAINED_WORDS && longer.includes(shorter)) return true;
+  const specific = shorter.split(' ').length >= MIN_CONTAINED_WORDS || shorter.length >= MIN_CONTAINED_CHARS;
+  if (specific && longer.includes(shorter)) return true;
   return longestWordRun(na.split(' '), nb.split(' ')) >= MIN_WORD_RUN;
 }
 

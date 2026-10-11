@@ -23,6 +23,12 @@ describe('quotesOverlap', () => {
     expect(quotesOverlap('mice', 'using eight mice per group')).toBe(false);
   });
 
+  it('accepts a short containment that is long enough to be specific', () => {
+    // two space-separated tokens, but 17 characters and unmistakable
+    expect(quotesOverlap('a signal from receptor-bound HN.', 'receptor-bound HN')).toBe(true);
+    expect(quotesOverlap('the HN protein', 'HN')).toBe(false);
+  });
+
   it('accepts a shared run of five words and rejects shorter ones', () => {
     expect(quotesOverlap('they will be using eight mice per group here', 'we plan using eight mice per group daily')).toBe(true);
     expect(quotesOverlap('using eight mice today', 'using eight rats today')).toBe(false);
