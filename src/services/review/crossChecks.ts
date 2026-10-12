@@ -69,6 +69,11 @@ function quantities(sections: Section[]): Quantity[] {
   return out;
 }
 
+/**
+ * The same described quantity given with two different values in two places. One finding per site, so the author sees
+ * both and the result does not depend on which site the scan met first. Units that are ambiguous glued to a number
+ * (M, A, g, l, h, x) need whitespace: "3M" is a triple mutant, "3 M" is molar.
+ */
 export function quantityDisagreements(sections: Section[]): CrossFinding[] {
   const byKey = new Map<string, Quantity[]>();
   for (const q of quantities(sections)) {
@@ -106,6 +111,11 @@ const LAB_ABBREV = /^(?:NS|RT|CT|SD|SE|SEM|PBS|FBS|BSA|WT|KO|OD|IU|ID|IM|IP|IV|S
 /** A figure or table legend names panels (A, B, C2) that are not entities. */
 const LEGEND = /^(?:fig|figure|table|panel|supplementary|scheme)\b|\bpanel\b/i;
 
+/**
+ * A name used once where a near-identical name dominates elsewhere. Skips figure and table legends, two-letter lab
+ * shorthand, numbered variants (F1 against F2) and a common name with a citation number glued on (E170G3). Minor
+ * severity: precision was 2 of 8 on real grants, so treat it as a list of names to check.
+ */
 export function entityDrift(sections: Section[]): CrossFinding[] {
   const counts = new Map<string, { n: number; first: { quote: string; sectionKey: string } }>();
   for (const s of sections) {
@@ -159,6 +169,7 @@ function editDistance(a: string, b: string): number {
 
 // ── milestone beyond the project period ─────────────────────────────────────────────────────────────
 // "Y6Q3" or "year 6" in a five-year project is arithmetic, not judgment.
+/** A year or quarter label (Y6Q3, "year 6") beyond the project period. Silent when `projectYears` is unknown. */
 export function milestoneOverrun(sections: Section[], projectYears?: number): CrossFinding[] {
   if (!projectYears) return [];
   const out: CrossFinding[] = [];
@@ -199,6 +210,10 @@ function labelsIn(sections: Section[], kinds: Set<string>): Map<string, { sectio
   return out;
 }
 
+/**
+ * Set difference between the aim labels on the Aims page and those in the Approach. A label is reported only when a
+ * sibling of the same stem appears on the other side, so an unrelated numbering scheme is not flagged.
+ */
 export function aimListMismatch(sections: Section[]): CrossFinding[] {
   const aims = labelsIn(sections, new Set(['aims', 'summary']));
   const approach = labelsIn(sections, new Set(['approach', 'strategy']));
