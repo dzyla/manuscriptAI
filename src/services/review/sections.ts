@@ -16,8 +16,15 @@ const GRANT_TABLE: [RegExp, SectionKind][] = [
   [/^(specific|research) aims?$/, 'aims'],
   [/^research (strategy|plan)$/, 'strategy'],
   [/^(background and )?significance( and background)?$|^background$/, 'significance'],
+  // Real grants (incl. non-NIH forms) name the same parts differently; see review-v2 design 3.1.
+  [/^current state of (the )?(research|art)|^scientific premise|^current gaps|^gaps? in |^medical need|^relevance and impact|^(relevance|impact)$/, 'significance'],
   [/^innovation$/, 'innovation'],
   [/^(research )?approach$|^preliminary (data|studies|results)$|^research design( and methods)?$/, 'approach'],
+  // Parts of the research plan. Career development, acknowledgements and the like deliberately stay unmatched.
+  [
+    /^current state of (your|our) own research|^(your|our) own (research|work)|^detailed research plan|^(schedule|timelines?|time ?line|work ?plan)\b|\bmilestones?$|^scientific rigor|^rigor\b|^rationale\b|^strategy and plan|^anticipated results|\bpitfalls\b|^alternative (strategies|approaches)|^project \d|^reason for the choice of research institution|^(research )?(environment|resources)\b|\b(immunogenicity|characterization|characterisation|in mice|in vivo|in vitro|administration|stability testing|methodology|experimental design)\b/,
+    'approach',
+  ],
 ];
 
 const MANUSCRIPT_TABLE: [RegExp, SectionKind][] = [
@@ -34,7 +41,7 @@ export function normalizeHeading(title: string): string {
     .normalize('NFKD').replace(/[̀-ͯ]/g, '')
     .toLowerCase()
     .trim()
-    .replace(/^(?:(?:[a-z]|[ivx]+|\d+)(?:\.\d+)+[.):]?\s+|(?:[a-z]|[ivx]+|\d+)[.):]\s+|\d+\s+)/, '')
+    .replace(/^(?:(?:[a-z]|[ivx]+|\d+)(?:\.\d+)+[.):]?\s+|(?:[a-z]|[ivx]+|\d+)[.):]\s+|[a-z]\d+(?:\.\d+)*[a-z]?[.):]?\s+|\d+\s+)/, '')
     .replace(/&/g, ' and ')
     .replace(/\s*\/\s*/g, ' / ')
     .replace(/[^a-z0-9/ ]+/g, ' ')

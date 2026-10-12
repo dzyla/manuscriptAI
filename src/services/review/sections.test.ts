@@ -60,6 +60,47 @@ describe('classifyHeading', () => {
   });
 });
 
+describe('classifyHeading on headings real grants use', () => {
+  const cases: [string, string | null][] = [
+    ['2.1 Current state of research in the field', 'significance'],
+    ['2.2. Current state of your own research', 'approach'],
+    ['2.3. Detailed research plan', 'approach'],
+    ['2.4. Schedule and milestones', 'approach'],
+    ['2.6. Relevance and impact', 'significance'],
+    ['2.7. Relevance for personal career development', null],
+    ['A5. Scientific Rigor and Consideration of Relevant Biological Variables', 'approach'],
+    ['A3. Scientific premise: why this target', 'significance'],
+    ['A4. Current gaps and medical need: unmet', 'significance'],
+    ['C. APPROACH.', 'approach'],
+    ['C1.1. Production and characterization of the antigen', 'approach'],
+    ['C2.2b. Frequency of administration and stability testing', 'approach'],
+    ['Project 1. Structure of the complex', 'approach'],
+    ['Rationale', 'approach'],
+    ['Strategy and plan', 'approach'],
+    ['Anticipated results and potential pitfalls', 'approach'],
+    ['Alternative strategies', 'approach'],
+    ['Timelines and milestones', 'approach'],
+    ['Immunogenicity in mice', 'approach'],
+    ['Reason for the choice of research institution(s)', 'approach'],
+    ['Relevance and impact', 'significance'],
+    ['Literature Cited', 'references'],
+    ['References', 'references'],
+    ['References Cited', 'references'],
+    ['Bibliography', 'references'],
+    ['Reference', 'references'],
+    ['References and Notes', 'references'],
+    ['Acknowledgements', null],
+    ['Career development plan', null],
+  ];
+  it.each(cases)('%s -> %s', (title, kind) => {
+    expect(classifyHeading(title, 'grant')).toBe(kind);
+  });
+  it('keeps the unknown top-level heading as any inside sectionMap', () => {
+    const s = sectionMap(doc(h(1, '2.7. Relevance for personal career development'), p('x')), 'grant');
+    expect(s[0].kind).toBe('any');
+  });
+});
+
 describe('slugify', () => {
   it('makes a short kebab slug and never returns empty', () => {
     expect(slugify('Aim 2: Rationale & Design')).toBe('aim-2-rationale-design');
