@@ -4,6 +4,7 @@
  * Simplified Peer Review Framework (applications due on or after 25 January 2025).
  */
 import type { DocType, ReviewCheck, ReviewerRole, SectionKind } from './types';
+import { PROCEDURES } from './checklistProcedures';
 
 export const ROLE_NAMES: Record<DocType, Record<ReviewerRole, string>> = {
   grant: {
@@ -22,7 +23,16 @@ export const ROLE_NAMES: Record<DocType, Record<ReviewerRole, string>> = {
   },
 };
 
-export const CHECKS: readonly ReviewCheck[] = [
+type CheckBase = Omit<ReviewCheck, 'steps' | 'passExample' | 'failExample' | 'granularity'>;
+
+/** Checks asked once per aim or sub-aim part rather than once per document (spec §3.4). */
+export const PER_AIM_IDS: ReadonlySet<string> = new Set([
+  'g-rig-design', 'g-rig-power', 'g-rig-stats', 'g-rig-sabv', 'g-rig-bias', 'g-rig-replication',
+  'g-fea-pitfalls', 'g-fea-outcomes', 'g-fea-prelim', 'g-log-measurable', 'g-exp-expertise',
+  'm-rig-tests', 'm-rig-n', 'm-rig-variability', 'm-rig-effect', 'm-rig-multiple', 'm-rig-controls', 'm-met-reproducible',
+]);
+
+const BASE_CHECKS: readonly CheckBase[] = [
   // ── Grant · Importance (Factor 1) ────────────────────────────────────────────
   { id: 'g-imp-gap', doc: 'grant', factor: 1, owner: 'reviewer-2', sections: ['aims', 'significance'], scope: 'section', severity: 'major',
     name: 'Knowledge gap stated',
@@ -237,6 +247,12 @@ export const CHECKS: readonly ReviewCheck[] = [
     question: 'Do factual claims about prior work or the field carry a citation?',
     passes: "Adequate when each such claim is cited; the paper's own results need none." },
 ];
+
+export const CHECKS: readonly ReviewCheck[] = BASE_CHECKS.map(c => {
+  const procedure = PROCEDURES[c.id];
+  if (!procedure) throw new Error(`No procedure for check ${c.id}`);
+  return { ...c, ...procedure, ...(PER_AIM_IDS.has(c.id) ? { granularity: 'per-aim' as const } : {}) };
+});
 
 export function checksFor(doc: DocType, role?: ReviewerRole): ReviewCheck[] {
   return CHECKS.filter(c => c.doc === doc && (role === undefined || c.owner === role));

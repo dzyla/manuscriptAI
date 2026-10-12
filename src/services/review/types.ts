@@ -46,6 +46,14 @@ export interface ReviewCheck {
   passes: string;
   /** Default severity when the check fails. */
   severity: Severity;
+  /** The procedure a weak model follows: 3-5 imperative steps, step 1 locating the evidence, the last stating the
+   *  decision rule including when the check does not apply. Rendered into the prompt (§3.2). */
+  steps: string[];
+  /** One generic example either side of the boundary, on a neutral invented topic. */
+  passExample: string;
+  failExample: string;
+  /** 'per-aim' checks are asked once per aim or sub-aim part (§3.4), not once per document. */
+  granularity?: 'document' | 'per-aim';
 }
 
 /** One heading and the blocks up to the next heading of any level (or the document / preamble when there is none). */

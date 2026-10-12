@@ -50,6 +50,28 @@ describe('checklist invariants', () => {
     }
   });
 
+  it('gives every check a procedure and an example either side of the boundary', () => {
+    for (const c of CHECKS) {
+      expect(c.steps.length, c.id).toBeGreaterThanOrEqual(3);
+      expect(c.steps.length, c.id).toBeLessThanOrEqual(5);
+      for (const s of c.steps) expect(s.trim(), c.id).not.toBe('');
+      expect(c.passExample.trim(), c.id).not.toBe('');
+      expect(c.failExample.trim(), c.id).not.toBe('');
+      expect(c.steps[0], `${c.id} first step locates evidence`).toMatch(/\b(find|locate|list|look|identify|read|collect)\b/i);
+      expect(c.steps[c.steps.length - 1], `${c.id} last step states the decision rule`).toMatch(/answer|pass|fail|not_applicable/i);
+    }
+  });
+
+  it('marks exactly the expected checks as per-aim', () => {
+    const perAim = CHECKS.filter(c => c.granularity === 'per-aim').map(c => c.id).sort();
+    expect(perAim).toEqual([
+      'g-exp-expertise', 'g-fea-outcomes', 'g-fea-pitfalls', 'g-fea-prelim', 'g-log-measurable', 'g-rig-bias',
+      'g-rig-design', 'g-rig-power', 'g-rig-replication', 'g-rig-sabv', 'g-rig-stats',
+      'm-met-reproducible', 'm-rig-controls', 'm-rig-effect', 'm-rig-multiple', 'm-rig-n', 'm-rig-tests', 'm-rig-variability',
+    ].sort());
+    expect(perAim).toHaveLength(18);
+  });
+
   it('covers every Factor 1, 2 and 3 for grants', () => {
     const factors = new Set(checksFor('grant').map(c => c.factor));
     expect([...factors].sort()).toEqual([1, 2, 3, 'presentation'].sort());
