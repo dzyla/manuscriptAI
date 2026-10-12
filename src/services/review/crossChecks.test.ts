@@ -83,6 +83,24 @@ describe('aimListMismatch', () => {
     ]);
     expect(f.some(x => x.issue.startsWith('Aim 2b'))).toBe(true);
   });
+  it('does not demand that every sub-sub-aim be itemised on the aims page', () => {
+    // C1.2a and C1.2b exist only in the Approach and no child of C1.2 is listed, so this is style, not a gap.
+    // C2.2e is a gap: its siblings C2.2a and C2.2b ARE listed. Measured on a real R01, 2026-10-11.
+    const f = aimListMismatch([
+      sec('aims#0', 'aims', 'Specific Aims', 'C1.2 screens isolates. C2.2 tests them. C2.2a uses soil. C2.2b uses water.'),
+      sec('approach#0', 'approach', 'Approach', 'C1.2a screens by plate. C1.2b screens by broth. C2.2a uses soil. C2.2b uses water. C2.2e adds a field trial.'),
+    ]);
+    expect(f.map(x => x.issue.split(' ')[0])).toEqual(['C2.2e']);
+  });
+
+  it('reports an aim promised on the aims page that the approach never delivers, with no sibling needed', () => {
+    const f = aimListMismatch([
+      sec('aims#0', 'aims', 'Specific Aims', 'Aim 1 maps genes. Aim 2 tests them. Aim 2b extends to leaves.'),
+      sec('approach#0', 'approach', 'Approach', 'Aim 1 uses mapping. Aim 2 uses assays.'),
+    ]);
+    expect(f.some(x => x.issue.startsWith('Aim 2b') && /never describes it/.test(x.issue))).toBe(true);
+  });
+
   it('stays quiet when the approach uses a numbering scheme with no counterpart on the aims page', () => {
     const f = aimListMismatch([
       sec('aims#0', 'aims', 'Specific Aims', 'Aim 1 maps drought genes. Aim 2 tests them.'),

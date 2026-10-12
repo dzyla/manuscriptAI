@@ -214,6 +214,49 @@ function labelsIn(sections: Section[], kinds: Set<string>): Map<string, { sectio
  * Set difference between the aim labels on the Aims page and those in the Approach. A label is reported only when a
  * sibling of the same stem appears on the other side, so an unrelated numbering scheme is not flagged.
  */
+/** True when a lower-level label on the other side sits under this one ("C2.2" covered by "C2.2a"). */
+function coveredByDescendant(label: string, other: Map<string, unknown>): boolean {
+  for (const candidate of other.keys()) {
+    if (candidate !== label && candidate.startsWith(label) && /^[.\s]?\d*[a-z]?$/i.test(candidate.slice(label.length))) return true;
+  }
+  return false;
+}
+
+/** True when the other side numbers its aims the same way ("Aim 2b" against "Aim 1", not against "C1"). */
+function sharesScheme(label: string, other: Map<string, unknown>): boolean {
+  const scheme = (x: string) => x.replace(/[\s.\d]+[a-z]?$/i, '').replace(/\d+$/, '') || x[0];
+  const mine = scheme(label);
+  for (const candidate of other.keys()) if (scheme(candidate) === mine) return true;
+  return false;
+}
+
+/**
+ * A label counts as a gap only when a SIBLING at its own level is listed on the other side. "C2.2e" present only in
+ * the Approach is a real gap when C2.2a to C2.2d are on the Aims page; "C1.2a" is not, because no child of C1.2 is
+ * itemised there and a proposal need not list every sub-sub-aim. Without this rule a real R01 produced seven
+ * findings where one was true (measured 2026-10-11).
+ */
+function hasListedSibling(label: string, other: Map<string, unknown>): boolean {
+  const parent = siblingParent(label);
+  if (parent === null) return false;
+  for (const candidate of other.keys()) {
+    if (candidate !== label && siblingParent(candidate) === parent) return true;
+  }
+  return false;
+}
+
+/** The label one level up: "C2.2e" -> "C2.2", "C2.2" -> "C2", "Aim 2" -> "Aim". Null when there is no level above. */
+function siblingParent(label: string): string | null {
+  const trimmed = label.replace(/[a-z]$/i, '');
+  if (trimmed !== label) return trimmed;
+  const dotted = label.replace(/\.\d+$/, '');
+  if (dotted !== label) return dotted;
+  const numbered = label.replace(/\s*\d+$/, '');
+  if (numbered !== label) return numbered;
+  const lettered = label.replace(/\d+$/, '');
+  return lettered !== label ? lettered : null;
+}
+
 export function aimListMismatch(sections: Section[]): CrossFinding[] {
   const aims = labelsIn(sections, new Set(['aims', 'summary']));
   const approach = labelsIn(sections, new Set(['approach', 'strategy']));
@@ -221,10 +264,7 @@ export function aimListMismatch(sections: Section[]): CrossFinding[] {
   const out: CrossFinding[] = [];
   for (const [label, where] of approach) {
     if (aims.has(label)) continue;
-    // only report a label whose siblings ARE on the aims page, so an unrelated numbering scheme is not flagged
-    const stem = label.replace(/[a-z]$/i, '').replace(/\.\d+$/, '');
-    const siblingOnAimsPage = [...aims.keys()].some(k => k.startsWith(stem));
-    if (!siblingOnAimsPage) continue;
+    if (!hasListedSibling(label, aims)) continue;
     out.push({
       checkId: 'g-log-aims-approach', sectionKey: where.sectionKey, quote: where.quote,
       issue: `${label} appears in the Approach but not on the Specific Aims page.`,
@@ -234,8 +274,12 @@ export function aimListMismatch(sections: Section[]): CrossFinding[] {
   }
   for (const [label, where] of aims) {
     if (approach.has(label)) continue;
-    const stem = label.replace(/[a-z]$/i, '').replace(/\.\d+$/, '');
-    if (![...approach.keys()].some(k => k.startsWith(stem))) continue;
+    // The two directions are not symmetric. A promise on the Aims page that the Approach never delivers is always a
+    // gap, so this direction needs no sibling. It needs only to be sure the two sides use the same numbering, or an
+    // Aims page numbered "Aim 1, Aim 2" against an Approach numbered "C1, C2" would report every aim as missing.
+    if (!sharesScheme(label, approach)) continue;
+    // "C2.2" is delivered when the Approach describes C2.2a and C2.2b, even if it never repeats the bare label.
+    if (coveredByDescendant(label, approach)) continue;
     out.push({
       checkId: 'g-log-aims-approach', sectionKey: where.sectionKey, quote: where.quote,
       issue: `${label} is promised on the Specific Aims page but the Approach never describes it.`,

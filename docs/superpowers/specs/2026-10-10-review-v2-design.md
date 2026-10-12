@@ -350,6 +350,17 @@ are kept and the run is marked `stopped`.
 
 ### 3.6 Detectors
 
+**Where this code lives.** The four cross-document checks are `src/services/review/crossChecks.ts`, not
+`detectors.ts`: that file is text-based and returns `Suggestion`s, while these need the section map. They return a
+`CrossFinding` (checkId, sectionKey, quote, issue, recommendation, severity, source) that R2 maps into a `Finding`.
+`deSymbol` lives in `src/utils/symbolFont.ts` because the DOCX reader needs it too.
+
+**Two precision rules the real grants forced, both tested:** the aim-list check reports an extra label in the
+Approach only when a sibling at its own level IS listed on the Aims page (a proposal need not itemise every
+sub-sub-aim; without this one real R01 gave seven findings where one was true), and it reports a label promised on
+the Aims page unless the Approach describes it or any of its sub-aims. The two directions are deliberately
+asymmetric: a promise not kept is always a gap, an extra sub-sub-aim is a matter of style.
+
 Cross-document consistency belongs here, not in the LLM: the spike showed no prompt makes a weak model notice a
 quantity that disagrees between two paragraphs or an entity renamed once. R2 adds two detectors and the LLM keeps only
 the judgment-shaped consistency checks (summary against aims, abstract against results):

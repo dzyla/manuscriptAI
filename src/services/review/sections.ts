@@ -13,13 +13,13 @@ const REFERENCES = /^(references?( and notes)?|references cited|bibliography|lit
 const GRANT_TABLE: [RegExp, SectionKind][] = [
   [/^(project )?summary( \/ abstract)?$|^(project )?abstract$/, 'summary'],
   [/^(project )?narrative$|^public health relevance( statement)?$/, 'narrative'],
-  [/^(specific|research) aims?$/, 'aims'],
+  [/^(specific|research) aims?\b/, 'aims'],
   [/^research (strategy|plan)$/, 'strategy'],
-  [/^(background and )?significance( and background)?$|^background$/, 'significance'],
+  [/^(background and )?significance\b|^background$/, 'significance'],
   // Real grants (incl. non-NIH forms) name the same parts differently; see review-v2 design 3.1.
   [/^current state of (the )?(research|art)|^scientific premise|^current gaps|^gaps? in |^medical need|^relevance and impact|^(relevance|impact)$/, 'significance'],
-  [/^innovation$/, 'innovation'],
-  [/^(research )?approach$|^preliminary (data|studies|results)$|^research design( and methods)?$/, 'approach'],
+  [/^innovation\b/, 'innovation'],
+  [/^(research )?approach\b|^preliminary (data|studies|results)\b|^research design( and methods)?\b/, 'approach'],
   // Parts of the research plan. Career development, acknowledgements and the like deliberately stay unmatched.
   [
     /^current state of (your|our) own research|^(your|our) own (research|work)|^detailed research plan|^(schedule|timelines?|time ?line|work ?plan)\b|\bmilestones?$|^scientific rigor|^rigor\b|^rationale\b|^strategy and plan|^anticipated results|\bpitfalls\b|^alternative (strategies|approaches)|^project \d|^reason for the choice of research institution|^(research )?(environment|resources)\b|\b(immunogenicity|characterization|characterisation|in mice|in vivo|in vitro|administration|stability testing|methodology|experimental design)\b/,

@@ -60,6 +60,21 @@ describe('classifyHeading', () => {
   });
 });
 
+describe('classifyHeading when the heading carries a title after the section name', () => {
+  // A real grant writes "2. Specific Aims- <project title>", not "Specific Aims". Anchoring on $ silently withheld
+  // every aims and innovation check from a real R01 (measured 2026-10-11).
+  const cases: [string, string][] = [
+    ['2. Specific Aims- "Thermostable glycoprotein as a new vaccine strategy"', 'aims'],
+    ['B. INNOVATION. This proposal embodies three levels of innovation', 'innovation'],
+    ['A. SIGNIFICANCE. Why this matters now', 'significance'],
+    ['C. APPROACH. Engineering and testing', 'approach'],
+    ['Preliminary data supporting the premise', 'approach'],
+  ];
+  it.each(cases)('%s -> %s', (title, kind) => {
+    expect(classifyHeading(title, 'grant')).toBe(kind);
+  });
+});
+
 describe('classifyHeading on headings real grants use', () => {
   const cases: [string, string | null][] = [
     ['2.1 Current state of research in the field', 'significance'],
