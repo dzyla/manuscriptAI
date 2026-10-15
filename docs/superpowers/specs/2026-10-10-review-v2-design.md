@@ -315,7 +315,11 @@ lossy to judge from, and it cost recall on three of five documents).
 1. **Document delivery by size.** Under ~8k tokens the whole document goes in every call, with section markers; one
    slot and prompt caching mean each later call only processes its own ~500-token question. Above that, each call gets
    the outline (every section's key, kind, title and word count), the **verbatim Specific Aims**, and the paragraphs a
-   deterministic search selects for that check (~1,800 words): score by the check's cue words (from its `steps`) and
+   deterministic search selects for that check (up to ~1,500 words, and **less when the context window is smaller**:
+   measured 2026-10-14, a flat budget plus a 50-section outline and the verbatim aims built a 6,659-token prompt, and
+   against a 6,144-token slot every one of the 28 calls on the real R01 failed with a context-size error and the
+   document scored 0 of 9 — a total failure that reads like a model finding nothing. The budget is computed from the
+   window the provider serves, minus the outline, the question and the reply): score by the check's cue words (from its `steps`) and
    its `sections`, with a boost for paragraphs under a heading whose title matches the check's topic, then emit them in
    document order under their section markers. The prompt says that a check with no relevant excerpt is to be treated
    as missing material.
@@ -507,10 +511,15 @@ them).
   | cloud | ≥ 80% | ≤ 1 |
   | local (Qwen3.8-27B IQ2_M) | ≥ 60% | ≤ 2 |
 
-  These hold for documents up to ~9k tokens; the recommended strategy already reached 73-77% there on the local tier
-  in the spike. **A 25k-token real grant gets no recall gate yet**: the spike's best was 3 of 9 planted weaknesses,
+  These hold for documents up to ~9k tokens. **Measured 2026-10-14** with the committed checklist, section map and
+  detectors driving the per-check prompt on the local 2-bit Qwen: synthetic grant 14/15 with 0 trap false alarms,
+  synthetic manuscript 10/12 with 0, Michelson 5/5 with 2, SNSF 6/7 with 0 — so the local tier clears the *cloud*
+  recall gate on the synthetic grant. The two false alarms are both on the headingless Michelson extract, which is
+  §9's "section keys from headings" risk measured: no headings costs precision, not recall. **A 25k-token real grant gets no recall gate yet**: the spike's best was 3 of 9 planted weaknesses,
   three of which are quantity, entity and aims-against-approach comparisons that the new detectors (§3.6) should catch
-  outright. R2 reports that number; a gate is set once the detectors land.
+  outright. R2 reports that number; a gate is set once the detectors land. **Measured 2026-10-14**: with the
+  detectors shipped, the real R01 reaches 6 of 9 with no false alarm (4 of the 6 from the detectors), which confirms
+  the ceiling the spike found. The three that escape are single deleted or weakened sentences.
 
 - **Private check**: the author's real R01 under `fixtures/private/` (gitignored), run by hand at the end of R3,
   findings read by the author.
