@@ -2134,14 +2134,42 @@ it('says "moved" when the quote was found outside its section', () => {
   expect(screen.getByText(/moved/i)).toBeInTheDocument();
 });
 
-it('groups findings in document order, not by severity', () => { /* two findings in two sections; assert DOM order follows the section order passed in */ });
+it('lists findings in document order, not by severity', () => {
+  const minorInAims = { ...finding, id: 'f0', severity: 'minor' as const, issue: 'Aims issue.', anchor: { sectionKey: 'specific-aims#0', quote: 'Aim 1', occurrence: 0 } };
+  const criticalInApproach = { ...finding, id: 'f1', severity: 'critical' as const, issue: 'Approach issue.' };
+  render(
+    <FindingList
+      findings={[criticalInApproach, minorInAims]}
+      sectionOrder={['specific-aims#0', 'approach#0']}
+      onLocate={vi.fn()}
+      onDismiss={vi.fn()}
+    />,
+  );
+  const rendered = screen.getAllByTestId('finding-card').map(el => el.textContent ?? '');
+  expect(rendered[0]).toContain('Aims issue.');
+  expect(rendered[1]).toContain('Approach issue.');
+});
 ```
 
 - [ ] **Step 4: Write `FindingCard.tsx` and `FindingList.tsx`**
 
 The card shows: the check name (`checkById(f.checkId)!.name`), a severity chip, the issue, the recommendation, the quote (or "missing from <section title>" when `anchor.quote === null`), and the buttons. Give the buttons literal test ids: `control-finding-locate`, `control-finding-dismiss`. Reuse the existing suggestion card's visual language rather than inventing a second one — read `src/components/panels/review/` and the suggestion card first and match its spacing, chip and button components.
 
-`FindingList` takes `findings`, an `anchorState: Record<string, 'ok' | 'moved' | 'lost'>` computed by the panel from `resolveAnchor`, and the two callbacks. It sorts by the section order of the current document, then by the position of the quote inside the section, so the list reads in document order.
+`FindingList` takes:
+
+```ts
+interface FindingListProps {
+  findings: Finding[];
+  /** Section keys in document order, from `sectionMap`. Findings sort by this, then by quote position. */
+  sectionOrder?: string[];
+  /** Per finding id, what `resolveAnchor` said. Computed once per render by the panel, not per card. */
+  anchorState?: Record<string, 'ok' | 'moved' | 'lost'>;
+  onLocate: (f: Finding) => void;
+  onDismiss: (f: Finding) => void;
+}
+```
+
+Every card carries `data-testid="finding-card"` so the order test can read the list. Severity sets the chip colour and nothing else: the list reads in document order, because that is the order the author will fix things in.
 
 - [ ] **Step 5: Wire `useAnalysis.ts`**
 
@@ -2296,13 +2324,40 @@ The last task measures what was built against the recorded baseline. It is the o
 `scripts/eval/review/v2.test.ts`: assert the mapping, not the model. Drive `runV2` with a fake `callLLM` that returns one failing verdict, and check that the resulting `NormalizedFinding` carries `sectionTitle` (not `sectionKey`) and the quote, because the scorer matches on section **titles**.
 
 ```ts
-it('maps a finding sectionKey to the section TITLE the scorer expects', async () => {
-  // callLLM mocked to fail g-rig-power with sectionKey 'approach#0'
-  const out = await runV2(GRANT_FIXTURE, LOCAL);
-  const f = out.findings.find(x => x.checkId === 'g-rig-power')!;
-  expect(f.sectionTitle).toBe('Approach');
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { GRANT_FIXTURE } from './fixtures/grant';
+import type { AISettings } from '../../../src/types';
+
+const callLLM = vi.fn();
+vi.mock('../../../src/services/ai', () => ({ callLLM: (...a: unknown[]) => callLLM(...a) }));
+const { runV2 } = await import('./v2');
+
+const LOCAL = { provider: 'local', localBaseUrl: 'http://127.0.0.1:1/v1/chat/completions', localModel: 'test' } as AISettings;
+
+beforeEach(() => { callLLM.mockReset(); });
+
+describe('runV2', () => {
+  it('maps a finding sectionKey to the section TITLE the scorer expects', async () => {
+    callLLM.mockImplementation(async (user: string) =>
+      user.includes('[g-rig-power]')
+        ? JSON.stringify({ evidence: [], verdict: 'fail', problems: [{ sectionKey: 'approach#0', quote: '', issue: 'No power analysis.', recommendation: 'Add one.' }] })
+        : JSON.stringify({ evidence: [], verdict: 'pass', problems: [] }));
+    const out = await runV2(GRANT_FIXTURE, LOCAL);
+    const f = out.findings.find(x => x.checkId === 'g-rig-power')!;
+    expect(f.sectionTitle).toBe('Approach');
+    expect(out.calls).toBeGreaterThan(0);
+  });
+
+  it('reports the drop counters so a provider ignoring the schema is visible', async () => {
+    callLLM.mockResolvedValue(JSON.stringify({ evidence: [], verdict: 'fail', problems: [{ sectionKey: 'not-a-section', quote: 'x', issue: 'y', recommendation: 'z' }] }));
+    const out = await runV2(GRANT_FIXTURE, LOCAL);
+    expect(out.findings.filter(f => f.source !== 'detector')).toEqual([]);
+    expect(out.drops).toBeGreaterThan(0);
+  });
 });
 ```
+
+The `approach#0` key must match what `sectionMap` returns for the grant fixture; print it once if the assertion fails rather than adjusting `slugify`.
 
 - [ ] **Step 2: Write `v2.ts`**
 
