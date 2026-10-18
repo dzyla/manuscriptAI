@@ -224,8 +224,11 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
     },
   });
 
-  useEffect(() => { styleSentencesRef.current = styleSentences ?? []; editor?.commands.refreshStyleAudit(); }, [styleSentences, editor]);
-  useEffect(() => { styleAuditEnabledRef.current = !!styleAuditEnabled; editor?.commands.refreshStyleAudit(); }, [styleAuditEnabled, editor]);
+  // Every effect below that touches the editor checks isDestroyed. useEditor destroys an editor that is still unmounted 1 ms after
+  // creating it; when the first commit is slower than that (the production bundle), the editor this render captured is already
+  // destroyed when its effects run, and its `view` throws. useEditor hands over a replacement, and these effects run again for it.
+  useEffect(() => { styleSentencesRef.current = styleSentences ?? []; if (editor && !editor.isDestroyed) editor.commands.refreshStyleAudit(); }, [styleSentences, editor]);
+  useEffect(() => { styleAuditEnabledRef.current = !!styleAuditEnabled; if (editor && !editor.isDestroyed) editor.commands.refreshStyleAudit(); }, [styleAuditEnabled, editor]);
   useEffect(() => { onStyleAuditRef.current = onStyleAudit; }, [onStyleAudit]);
 
   const { effectiveZoom, pageGuideOffsets } = usePageCanvas({ editor, fitRef, pageGuideContainerRef, editorZoom, format, content });
@@ -233,7 +236,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
   // Handle clicks on highlight marks: find suggestion by ProseMirror position (TipTap Highlight
   // doesn't render custom attributes to DOM, so we can't use data-suggestion-id on the element)
   useEffect(() => {
-    if (!editor) return;
+    if (!editor || editor.isDestroyed) return;
     const editorEl = editor.view.dom;
 
     const handleDomClick = (e: MouseEvent) => {
@@ -256,7 +259,11 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
   }, [editor, suggestions, onSuggestionClick]);
 
   const citation = useCitationPicker({ editor, sources, onInsertCitation });
-  useEffect(() => { onEditorReady?.(editor); return () => onEditorReady?.(null); }, [editor, onEditorReady]);
+  useEffect(() => {
+    if (editor?.isDestroyed) return;
+    onEditorReady?.(editor);
+    return () => onEditorReady?.(null);
+  }, [editor, onEditorReady]);
 
   // Close table picker on click outside
   useEffect(() => {
@@ -272,7 +279,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
 
   // Right-click context menu for table editing
   useEffect(() => {
-    if (!editor) return;
+    if (!editor || editor.isDestroyed) return;
     const editorEl = editor.view.dom;
     const handleContextMenu = (e: MouseEvent) => {
       if (!editor.isActive('tableCell') && !editor.isActive('tableHeader')) return;
@@ -352,7 +359,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
   // Feed a freshly loaded document as JSON (runs before the content sync below, which stands down meanwhile).
   const lastPendingAppliedRef = useRef<{ editor: unknown; json: string } | null>(null);
   useEffect(() => {
-    if (!editor || !pendingDocument) return;
+    if (!editor || editor.isDestroyed || !pendingDocument) return;
     // Dev StrictMode runs the app's init effect (and so initialize()) twice, delivering an identical document
     // twice: apply a given document to a given editor once.
     const json = JSON.stringify(pendingDocument);
@@ -367,7 +374,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
 
   // Sync content from parent
   useEffect(() => {
-    if (!editor) return;
+    if (!editor || editor.isDestroyed) return;
     // The JSON path owns this load. This effect depends on pendingDocument so that it re-runs when the flag clears:
     // a content write that arrived meanwhile is then applied (or is a no-op, as applyDocument already made
     // content === lastExternalContent on the normal path) instead of being dropped.
@@ -383,7 +390,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
   // Declared after the content sync effect on purpose: in a commit that does both, content is applied first.
   const documentReadyFiredRef = useRef(false);
   useEffect(() => {
-    if (!editor || !loadSettled || pendingDocument || documentReadyFiredRef.current) return;
+    if (!editor || editor.isDestroyed || !loadSettled || pendingDocument || documentReadyFiredRef.current) return;
     documentReadyFiredRef.current = true;
     onDocumentReady?.();
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -392,7 +399,7 @@ const Editor = forwardRef<EditorRef, EditorProps>(({ content, onChange, onDocCha
   // Draw the suggestions' highlighting. These are decorations (SuggestionHighlights), not marks: the document's own highlight mark is
   // Word's highlighting once a .docx is imported, and this effect runs on every new suggestions array (e.g. when an import clears them).
   useEffect(() => {
-    if (!editor) return;
+    if (!editor || editor.isDestroyed) return;
     const ranges: SuggestionRange[] = [];
     suggestions.forEach(s => {
       const color = s.agent === 'manager' ? '#1c1917' :

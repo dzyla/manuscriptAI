@@ -39,7 +39,7 @@ export function useCitationPicker({ editor, sources, onInsertCitation }: {
 
   // `@` opens it; Escape closes it; Space inserts DOIs that are typed after the `@`.
   useEffect(() => {
-    if (!editor) return;
+    if (!editor || editor.isDestroyed) return;
     const dom = editor.view.dom;
     const onKey = (e: KeyboardEvent) => {
       if (openRef.current) {
